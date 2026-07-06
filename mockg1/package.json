@@ -1,0 +1,18 @@
+{
+  "name": "botbrain-mockg1",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone rosbridge-compatible mock endpoint for BotBrain G1 frontend development.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

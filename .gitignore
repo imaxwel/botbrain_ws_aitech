@@ -73,6 +73,7 @@ botbrain_ws/src/g1_right_dex3/yolonas_ocr/
 # ===== 日志与运行时数据 =====
 **/log/
 *.log
+.run/
 
 # ===== 第三方库自带的测试数据/文档演示图片视频（已确认 ignore） =====
 botbrain_ws/src/fcl/test/fcl_resources/

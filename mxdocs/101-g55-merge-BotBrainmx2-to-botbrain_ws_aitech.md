@@ -35,6 +35,7 @@ Browser
 | `mission-supervisor` service/types | `BotBrainmx2` 已有，`botbrain_ws_aitech` 缺失 | 迁移 |
 | `components/mission-control` | `BotBrainmx2` 已有 Playback/TestCase 面板，`botbrain_ws_aitech` 缺失 | 迁移 |
 | 菜单入口 | `BotBrainmx2` 有 `missionControl` action 和 `ClipboardList` 入口，`botbrain_ws_aitech` 缺失 | 补齐 |
+| `mockg1` | `BotBrainmx2/mockg1` 提供 rosbridge-compatible G1 mock 与 Mission Supervisor mirror | 迁移为本地开发/回归工具，不接入真机控制 |
 | 真机建图/导航/灵巧手 | `botbrain_ws_aitech` 已有 `fast_lio`、`open3d_loc`、`bot_navigation`、`g1_pkg`、`g1_manipulation_pkg`、`g1_right_dex3` 等 | 冻结，不作为本次迁移改动对象 |
 
 ## 1. 必须坚持的架构原则
@@ -110,6 +111,10 @@ botbrain_ws_aitech/frontend/src/contexts/MissionSupervisorContext.tsx
 botbrain_ws_aitech/frontend/src/services/mission-supervisor.ts
 botbrain_ws_aitech/frontend/src/types/mission-control.ts
 botbrain_ws_aitech/frontend/src/components/mission-control/
+botbrain_ws_aitech/mockg1/
+botbrain_ws_aitech/scripts/run-mockg1-bt-stack.sh
+botbrain_ws_aitech/scripts/stop-mockg1-bt-stack.sh
+botbrain_ws_aitech/scripts/run-36-flow-mock-validation.sh
 botbrain_ws_aitech/mxdocs/*
 ```
 
@@ -425,6 +430,109 @@ NEXT_PUBLIC_REQUIRE_AUTH_FOR_MISSION_CONTROL=false
 ```
 
 如果 `web_server` 容器用 `env_file: ./frontend/.env`，确认生产机器上实际有该文件。不要把真实 token、Supabase secret、Wi-Fi 密码提交进仓库。
+
+### 3.6 mockg1 本地仿真栈
+
+`BotBrainmx2/mockg1` 已迁移到：
+
+```text
+botbrain_ws_aitech/mockg1/
+```
+
+它是独立 Node ESM 工程，提供 rosbridge-compatible WebSocket mock，默认端点：
+
+```text
+ws://127.0.0.1:9090
+```
+
+支持的 scenario：
+
+```text
+default
+low_battery
+emergency
+unstable_network
+```
+
+迁移边界：
+
+- `mockg1` 只模拟前端使用的 rosbridge topic/service 契约。
+- `mockg1` 不连接 Unitree SDK2、CycloneDDS、ROS 2 graph、Dex3 或 Nav2 action。
+- 任何 mock 指令都没有真机副作用。
+- Mission Control 任务写操作仍然走 Mission Supervisor；mockg1 只用于前端遥测、Health 和本地回归。
+
+配套脚本已迁移到：
+
+```text
+scripts/run-mockg1-bt-stack.sh
+scripts/stop-mockg1-bt-stack.sh
+scripts/run-36-flow-mock-validation.sh
+```
+
+脚本设计原则：
+
+- 默认 `MISSION_SUPERVISOR_PROFILE=fake`。
+- 默认 `MISSION_SUPERVISOR_AUTO_APPROVE=1`，只用于 fake/test 验证。
+- 运行日志和 pid 文件写入 `.run/mockg1-bt/`，该目录已加入 `.gitignore`。
+- 不依赖 Linux-only 的 `setsid`、`timeout`、`ss`、`/proc`，在 macOS/Linux 上用 Node TCP probe、pid 文件和 `lsof` 做启动/清理。
+- 前端 dev server 由脚本注入 `NEXT_PUBLIC_ROS_IP=127.0.0.1` 和 `NEXT_PUBLIC_ROS_PORT=9090`，因此 mock 模式不会修改生产 `.env` 或真机默认连接。
+
+首次安装：
+
+```bash
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech/mockg1
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
+npm ci
+npm test
+
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech/frontend
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
+npm ci
+```
+
+启动完整本地 mock Mission Control 栈：
+
+```bash
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
+./scripts/run-mockg1-bt-stack.sh --scenario default
+```
+
+启动后访问：
+
+```text
+http://localhost:3000/mission-control
+http://localhost:3000/health
+```
+
+注意：`botbrain_ws_aitech` 当前页面仍按 BotBrainmx2 的行为要求登录。未登录访问 `/mission-control` 或 `/health` 会被全局 middleware 重定向到 `/`。
+
+停止本地 mock 栈：
+
+```bash
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech
+./scripts/stop-mockg1-bt-stack.sh --ports 3000,8787,9090
+```
+
+36 case fake 回归：
+
+```bash
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
+./scripts/run-36-flow-mock-validation.sh --pace fast --keep-stack 0
+```
+
+如果需要把 Mission Supervisor snapshot 同步到 mock rosbridge topic：
+
+```bash
+./scripts/run-mockg1-bt-stack.sh --mirror 1
+```
+
+这会发布 `/mock/mission_snapshot`，便于前端或调试工具观察 Mission Supervisor 状态投影。
 
 ## 4. API 契约
 
@@ -754,6 +862,55 @@ http://<robot-private-ip>:8787
 ```
 
 proxy 会通过 `target` 参数转发，但仍只允许 localhost/private IPv4。
+
+### Phase 3.5：用 mockg1 做本地端到端回归
+
+在不连接 Unitree G1 EDU 真机的情况下，可以启动 `mockg1 + Mission Supervisor fake + botbrain_ws_aitech frontend`：
+
+```bash
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
+
+cd mockg1
+npm ci
+npm test
+
+cd ../frontend
+npm ci
+
+cd ..
+./scripts/run-mockg1-bt-stack.sh --scenario default
+```
+
+打开：
+
+```text
+http://localhost:3000/mission-control
+http://localhost:3000/health
+```
+
+预期：
+
+- 未登录时仍重定向到 `/`。
+- 登录后 Mission Control 能通过 `/api/mission-supervisor/*` 看到 fake Mission Supervisor。
+- Health/ROS 前端连接地址可指向 `ws://127.0.0.1:9090`。
+- `low_battery`、`emergency`、`unstable_network` scenario 能在页面上体现相应状态。
+- 所有日志在 `.run/mockg1-bt/<run-id>/`。
+
+停止：
+
+```bash
+./scripts/stop-mockg1-bt-stack.sh --ports 3000,8787,9090
+```
+
+36 case fake 验证：
+
+```bash
+./scripts/run-36-flow-mock-validation.sh --pace fast --keep-stack 0
+```
+
+这个阶段不应启动 `botbrain_ws_aitech/botbrain_ws`、不应运行 Docker compose、不应调用 Unitree G1 EDU 真机 bringup。
 
 ### Phase 4：对比 BotBrainmx2 与 botbrain_ws_aitech 页面输出
 
@@ -1111,7 +1268,7 @@ Mission Supervisor 不变
 
 ## 10. 推荐提交拆分
 
-不要一次提交所有改动。推荐拆成四个 commit：
+不要一次提交所有改动。推荐拆成五个 commit：
 
 ### Commit 1：Mission Control 静态迁移
 
@@ -1151,7 +1308,34 @@ npm run build
 mxdocs/101-g55-merge-BotBrainmx2-to-botbrain_ws_aitech.md
 ```
 
-### Commit 4：可选 gateway
+### Commit 4：mockg1 本地仿真与回归脚本
+
+```text
+mockg1/
+scripts/run-mockg1-bt-stack.sh
+scripts/stop-mockg1-bt-stack.sh
+scripts/run-36-flow-mock-validation.sh
+.gitignore
+```
+
+验证：
+
+```bash
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech/mockg1
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
+npm ci
+npm test
+
+cd ..
+bash -n scripts/run-mockg1-bt-stack.sh \
+  scripts/stop-mockg1-bt-stack.sh \
+  scripts/run-36-flow-mock-validation.sh
+./scripts/run-mockg1-bt-stack.sh --help
+./scripts/run-36-flow-mock-validation.sh --help
+```
+
+### Commit 5：可选 gateway
 
 只有当 Mission Supervisor 当前没有能连接 `botbrain_ws_aitech` 真机 runtime 的 gateway 时才做：
 
@@ -1168,6 +1352,10 @@ docker-compose.yaml, 仅新增 service
 
 ```bash
 cd /Users/fausto/mdev/aitech/4g1edu
+
+# 0. 使用指定 Node.js
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
 
 # 1. 复制 Mission Control 前端文件
 mkdir -p botbrain_ws_aitech/frontend/src/app/mission-control
@@ -1216,6 +1404,24 @@ http://127.0.0.1:3000/mission-control
 http://127.0.0.1:3000/health
 ```
 
+如需同时迁移并运行 `mockg1`：
+
+```bash
+cd /Users/fausto/mdev/aitech/4g1edu/botbrain_ws_aitech
+source ~/.nvm/nvm.sh
+nvm use v24.12.0
+
+cd mockg1
+npm ci
+npm test
+
+cd ../frontend
+npm ci
+
+cd ..
+./scripts/run-mockg1-bt-stack.sh --scenario default
+```
+
 ## 12. 最终验收清单
 
 迁移完成后逐项打勾：
@@ -1228,6 +1434,10 @@ http://127.0.0.1:3000/health
 [ ] /api/mission-supervisor/stream 可持续输出 SSE。
 [ ] MissionSupervisorContext 无前端异常。
 [ ] fake/test profile 下 36 case、events、pending decisions 正常。
+[ ] mockg1 `npm test` 通过。
+[ ] `run-mockg1-bt-stack.sh` 能启动 mockg1、Mission Supervisor fake 和 botbrain_ws_aitech 前端。
+[ ] `stop-mockg1-bt-stack.sh` 能清理 mock 栈进程。
+[ ] `run-36-flow-mock-validation.sh --pace fast --keep-stack 0` 能输出 runner summary。
 [ ] preflight NO-GO 时不能批准启动任务。
 [ ] BotBrainmx2 与 botbrain_ws_aitech 同连一个 Supervisor 时显示一致。
 [ ] 未修改 g1_pkg、fast_lio、open3d_loc、bot_navigation、g1_manipulation_pkg、g1_right_dex3。
