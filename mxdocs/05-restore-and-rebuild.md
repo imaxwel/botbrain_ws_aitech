@@ -7,9 +7,9 @@
 ```bash
 cd /data/unitree
 git clone git@github.com:imaxwel/botbrain_ws_aitech.git botbrain_ws
-cd botbrain_ws
-git lfs pull
 ```
+
+> 说明：仓库未使用 Git LFS（模型权重/3D网格/地图/文档演示等二进制资源已确认彻底不要，不入库），因此不需要 `git lfs pull`。这些资源需要按下文清单另行获取。
 
 ## 2. 还原被排除的敏感配置
 
@@ -89,4 +89,8 @@ docker compose ps
 | g1_pkg/maps/rtabmap.db | 运行时地图数据（已确认不入库） | 重新建图或从原机器拷贝 |
 | yolo11n.engine | TensorRT 编译产物，设备相关（已确认不入库） | 用 yolo11n.pt 在目标设备重新 export |
 | botbrain_ws/src/g1_right_dex3/yolonas_ocr | 第三方 OCR 子项目（已确认整体不入库） | 需要时从原机器直接拷贝该目录，或从其原始来源 `https://github.com/SatArw/yolonas_ocr` 重新获取 |
+| 所有模型权重 (*.pt/*.onnx/*.pth/*.engine 等) | 已确认彻底不要，不入库 | bot_yolo 等模型需重新训练/下载，或从原机器拷贝 |
+| 所有 3D 网格文件 (*.STL/*.obj/*.dae 等) | 已确认彻底不要，不入库 | 从原机器拷贝，或从 CAD/上游模型源重新导出 |
+| botbrain_ws/src/fcl/test/fcl_resources、fast_lio/doc、joystick-bot/docs | 第三方库自带测试数据/文档演示资源，已确认不入库 | 不影响编译运行，如需完整文档可从对应上游仓库重新获取 |
+| hardware/**/*.3mf | 3D 打印文件，已确认不入库 | 从原机器拷贝 |
 | colcon build/install/log | 编译产物 | 在新机器重新 colcon build |

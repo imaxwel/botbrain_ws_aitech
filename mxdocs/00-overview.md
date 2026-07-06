@@ -1,8 +1,16 @@
 # BotBrain 工作区 GitHub 备份规划 - 总览
 
 生成时间: 2026-07-06
-目标仓库: git@github.com:imaxwel/botbrain_ws_aitech.git（当前为空仓库，SSH 已直连验证通过，无需代理）
-工作区路径: /data/unitree/botbrain_ws （当前总大小 3.9G）
+执行状态: **已完成，已推送**（2026-07-06）
+目标仓库: git@github.com:imaxwel/botbrain_ws_aitech.git（SSH 直连，无需代理）
+工作区路径: /data/unitree/botbrain_ws （当前总大小 3.9G，入库后 .git 体积 12M）
+
+## 最终结果
+
+- 首次提交 `f88e0c2` 已推送到 `origin/main`
+- 1582 个文件纳入版本管理，`.git` 目录 12M
+- clone 验证通过，`.env`、`robot_config.yaml` 等敏感文件未出现在克隆结果中
+- 二进制资源（模型权重、3D网格、地图点云、第三方库测试数据/文档）最终方案为**彻底不要，全部 .gitignore 排除**，未使用 Git LFS（详见 03 文档的方案变更记录）
 
 ## 目标
 
@@ -32,24 +40,26 @@
 | frontend/public/robot-models | 135M | 保留（前端必需静态资源），建议 LFS |
 | src/g1_right_dex3/yolonas_ocr | 273M（含 .git 110M pack + 150M .pb 模型） | 排除，整个目录忽略（已确认不保留内容/历史） |
 | src/g1_right_dex3/unitree_dex3_cpp/build | 79M | 排除（嵌套 build 目录） |
-| src/fast_lio/doc/*.gif, *.pdf | ~98M | LFS |
-| 各 mesh 文件 (*.STL/*.obj/*.dae) | 累计 ~50M+ | LFS |
-| bot_yolo/models/*.pt, *.onnx | ~16M | LFS |
+| src/fast_lio/doc/*.gif, *.pdf 及整个 doc/ 目录 | ~98M+ | 排除（第三方库文档演示资源，已确认 ignore） |
+| 各 mesh 文件 (*.STL/*.obj/*.dae) | 累计 ~50M+ | 排除（已确认彻底不要，不用 LFS） |
+| bot_yolo/models/*.pt, *.onnx | ~16M | 排除（已确认彻底不要，不用 LFS） |
 | bot_yolo/models/*.engine (及其他 *.engine) | 8.2M | 排除（TensorRT 编译产物，设备相关，已确认 ignore） |
 | g1_pkg/maps/rtabmap.db | 12M | 排除（运行时地图数据，已确认 ignore） |
-| src/fcl/.git | 0（损坏的空仓库残留） | 直接删除该 .git 目录，fcl 源码作为普通文件保留 |
+| src/fcl/test/fcl_resources/、src/joystick-bot/docs/ | 合计数十 MB | 排除（第三方库自带测试数据/演示视频，已确认 ignore） |
+| hardware/**/*.3mf | ~1.5M | 排除（3D 打印文件，已确认 ignore） |
+| src/fcl/.git | 0（损坏的空仓库残留） | 已删除该 .git 目录，fcl 源码作为普通文件保留 |
 
-预计排除 build/install/log/node_modules/.next/open3d/yolonas_ocr 内容后，主仓库实际入库体积约 900M~1.1G（含大量二进制资源），建议二进制资源改用 LFS 后 Git 历史本身可控制在数十 MB 级别。
+最终实际入库 `.git` 体积仅 **12M**，1582 个文件。二进制资源最终决定彻底不要，未使用 Git LFS。
 
 ## 执行顺序（对应后续文档）
 
 1. `01-secrets-and-config.md` — 先处理敏感信息，这是不可逆操作前必须做的第一步
 2. `02-gitignore-plan.md` — 制定 .gitignore 规则
-3. `03-nested-repos-and-lfs.md` — 处理嵌套 git 仓库（fcl 空壳删除、yolonas_ocr 整体忽略）与大文件（LFS）
+3. `03-nested-repos-and-lfs.md` — 处理嵌套 git 仓库（fcl 空壳删除、yolonas_ocr 整体忽略）与二进制资源（最终方案：彻底不要，不用 LFS）
 4. `04-execution-steps.md` — 实际执行命令清单（git init → 首次提交 → push）
 5. `05-restore-and-rebuild.md` — 备份完成后，新机器如何还原/重新构建运行环境
 
-## 风险提示
+## 风险提示（执行记录）
 
-- 该仓库路径目前**没有任何 .gitignore/.git**（除嵌套的两个），是首次 git 化，属于中等风险操作（新增文件、不涉及删除现有数据），但一旦 push 到远程且仓库被设为 public，`.env`/`robot_config.yaml` 中的密钥泄露是**不可逆**的，因此密钥处理必须在 `git add` 之前完成。
-- 建议先确认 GitHub 仓库的可见性（private/public），若为 public，务必更严格执行密钥排查。
+- 首次 git 化（新增文件，不涉及删除现有数据），密钥处理（`.env`、`robot_config.yaml` 替换为 `.example` 模板）在 `git add` 之前完成，已通过 clone 验证确认未泄露。
+- 仓库可见性（private/public）未在本次操作中确认，建议登录 GitHub 手动检查 `imaxwel/botbrain_ws_aitech` 的仓库设置，如为 public 建议改为 private。

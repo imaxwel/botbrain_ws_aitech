@@ -1,4 +1,6 @@
-# 03 嵌套 Git 仓库处理 与 Git LFS 规划
+# 03 嵌套 Git 仓库处理 与二进制资源处理
+
+> **最终方案变更记录**：原计划对模型权重/网格/文档等二进制文件使用 Git LFS 管理，执行过程中确认改为**彻底不要这些二进制资源**，全部通过 `.gitignore` 排除，仓库不再使用 Git LFS（已执行 `git lfs uninstall` 并删除 `.gitattributes`）。以下内容按最终方案更新。
 
 ## 3.1 嵌套 .git 目录处理
 
@@ -27,69 +29,58 @@ rm -rf /data/unitree/botbrain_ws/botbrain_ws/src/fcl/.git
 ```
 删除后 fcl 作为普通源码目录纳入主仓库（无需 submodule，因为这个 .git 本身是空壳，不含任何有效历史）。
 
-## 3.2 Git LFS 规划
+## 3.2 二进制资源处理（最终方案：彻底不要，不使用 LFS）
 
-机器上已安装 `git-lfs 3.0.2`，建议纳管以下几类文件：
+机器上安装了 `git-lfs 3.0.2`，最初计划用它管理大文件，但执行过程中确认：**这些二进制资源全部不入库**，仓库只保留代码和脚本。因此撤销了 LFS 配置：
 
 ```bash
-git lfs install   # 在主仓库根目录执行一次
-
-git lfs track "*.STL"
-git lfs track "*.stl"
-git lfs track "*.obj"
-git lfs track "*.dae"
-git lfs track "*.pb"
-git lfs track "*.onnx"
-git lfs track "*.engine"
-git lfs track "*.pt"
-git lfs track "*.db"
-git lfs track "*.gif"
-git lfs track "*.pdf"
+git lfs uninstall           # 已执行，移除仓库级 LFS hooks
+rm -f .gitattributes         # 已执行，删除 LFS track 记录
 ```
 
-执行后会生成/更新 `.gitattributes`，需要把这个文件加入首次提交。
+改为在 `.gitignore` 中用模式规则整体排除，不再逐个 track。
 
-### 具体涉及的文件（供参考核对）
+### 排除的文件类型与对应 .gitignore 规则
 
-| 文件 | 大小 | 类型 |
+| 类型 | 规则 | 示例文件 |
 |---|---|---|
-| src/fast_lio/doc/real_experiment2.gif | 50M | 演示动图 |
-| src/fast_lio/doc/ulhkwh_fastlio.gif | 35M | 演示动图 |
-| src/fast_lio/doc/Fast_LIO_2.pdf | 13M | 论文文档 |
-| src/bot_description/meshes/botbrain.obj | 17M | 模型网格 |
-| src/g1_right_dex3/unitree_g1_dex3_stack/robots/g1_description/meshes/torso_link_23dof_rev_1_0.STL | 7.5M | 模型网格 |
-| src/g1_pkg/meshes/torso_link_23dof_rev_1_0.STL | 7.5M | 模型网格（重复文件，多个包共用同一个 mesh，可考虑后续去重，本次不处理） |
-| src/g1_manipulation_pkg/description_files/meshes/torso_link_23dof_rev_1_0.STL | 7.5M | 同上 |
-| src/go2w_pkg/meshes/base.dae | 11M | 模型网格 |
-| src/go2_pkg/meshes/trunk.dae | 11M | 模型网格 |
-| src/bot_yolo/models/yolo11n.onnx | 11M | 模型权重 |
-| src/bot_yolo/models/yolo11n.engine | 8.2M | 模型权重（TensorRT engine，通常是设备相关的编译产物，建议评估是否真的要入库，还是运行时在设备上重新生成） |
-| src/bot_yolo/models/yolo11n.pt | 5.4M | 模型权重 |
-| src/g1_pkg/maps/rtabmap.db | 12M | 运行时地图数据库，**已确认：按运行时数据处理，ignore，不入库** |
+| AI 模型/权重 | `**/*.pt` `**/*.pth` `**/*.onnx` `**/*.tflite` `**/*.pb` `**/*.h5` `**/*.caffemodel` `**/*.engine` `**/Ultralytics/` | src/bot_yolo/models/yolo11n.{pt,onnx,engine} |
+| 3D 模型/网格 | `**/*.STL` `**/*.stl` `**/*.dae` `**/*.obj` `**/*.step` `**/*.stp` | src/bot_description/meshes/botbrain.obj、各 torso_link*.STL |
+| 地图/点云（运行时数据） | `**/*.pgm` `**/*.pcd` `**/*.ply` `**/rtabmap.db` | src/g1_pkg/maps/rtabmap.db、accumulated.pgm |
+| 大型文档/演示媒体 | `**/*.gif` `**/*.pdf` | src/fast_lio/doc/*.gif、*.pdf |
+| 第三方库自带测试数据/文档（追加确认） | 见下方专项规则 | fcl 测试用例、fast_lio doc 目录、joystick-bot docs 目录 |
+| 3D 打印/CAD 交换文件（追加确认） | `**/*.3mf` | hardware/**/*.3mf |
 
-### 已确认事项
+### 追加确认：第三方库自带的测试数据与文档演示资源
 
-1. **`yolo11n.engine`**：已确认不保留，加入 `.gitignore`（仅列出路径，不做 LFS）。部署文档里写明"用 `yolo11n.pt` 通过 export 命令在目标设备上重新生成"。
-2. **`g1_pkg/maps/rtabmap.db`**：已确认按运行时数据处理，加入 `.gitignore`。
-3. **`yolonas_ocr`**：已确认整个目录忽略，不保留、不 submodule。
-
-对应 `.gitignore` 追加：
+首次 `git add` 后发现 `.git` 体积仍有 336M，排查后发现是几个第三方 ROS 包自带的非代码资源（不是自己写的代码），确认一并忽略：
 
 ```gitignore
-# TensorRT 编译产物，设备相关，不入库
-**/yolo11n.engine
+# 第三方库自带的测试数据/文档演示图片视频（已确认 ignore）
+botbrain_ws/src/fcl/test/fcl_resources/
+botbrain_ws/src/fast_lio/doc/
+botbrain_ws/src/joystick-bot/docs/
 
-# 运行时地图数据
-botbrain_ws/src/g1_pkg/maps/rtabmap.db
-
-# 第三方 OCR 子项目，整体不入库
-botbrain_ws/src/g1_right_dex3/yolonas_ocr/
+# 3D 打印/CAD 交换文件
+**/*.3mf
 ```
 
-## 待执行
+涉及文件举例：`fcl/test/fcl_resources/**`（FCL 碰撞检测库测试用例，单个最大 5.9M）、`fast_lio/doc/results/*.png`（README 展示图，单个最大 5M）、`joystick-bot/docs/images/running_example.mp4`（4.5M）、`hardware/**/*.3mf`（3D 打印文件）。
+
+补齐这条规则后重新 `git add .`，`.git` 从 336M 降到 **12M**。
+
+### 已确认事项汇总
+
+1. **`yolo11n.engine`**：ignore。部署文档里写明"用 `yolo11n.pt` 通过 export 命令在目标设备上重新生成"。
+2. **`g1_pkg/maps/rtabmap.db`**：ignore，运行时数据。
+3. **`yolonas_ocr`**：整个目录 ignore，不保留、不 submodule。
+4. **所有模型权重/网格/地图/文档演示类二进制文件**：彻底不要，不使用 LFS，全部 ignore。
+
+## 已完成
 
 - [x] 确认 yolo11n.engine 处理方式 — ignore
 - [x] 确认 rtabmap.db 处理方式 — ignore
 - [x] 确认 yolonas_ocr 处理方式 — 整体 ignore
-- [ ] 删除 fcl 的空壳 .git
-- [ ] 执行 git lfs track 并生成 .gitattributes（不含 yolonas_ocr 相关文件，因整体已 ignore）
+- [x] 删除 fcl 的空壳 .git
+- [x] 撤销 Git LFS（`git lfs uninstall` + 删除 `.gitattributes`），改用 `.gitignore` 规则整体排除二进制资源
+- [x] 追加排除第三方库自带的测试数据/文档演示资源（fcl/test、fast_lio/doc、joystick-bot/docs、*.3mf）
