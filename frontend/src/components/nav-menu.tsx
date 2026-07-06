@@ -9,7 +9,6 @@ import useWindowWidth from '@/hooks/useWindowWidth';
 import { JoysticksWrapper } from './ui/JoysticksWrapper';
 import useMenuActions from '@/hooks/useMenuActions';
 import { usePathname } from 'next/navigation';
-import Link from 'next/link';
 import {
   Network,
   Layout,
@@ -22,8 +21,8 @@ import {
   Settings,
   ChevronDown,
   ChevronUp,
-  Home,
-  LayoutDashboard
+  LayoutDashboard,
+  ClipboardList
 } from 'lucide-react';
 
 const defaultPath = '/icons/list-purple.svg';
@@ -31,7 +30,6 @@ const defaultPath = '/icons/list-purple.svg';
 export default function NavMenu() {
   const [open, setOpen] = useState(false);
   const [listIcon, setListIcon] = useState(defaultPath);
-  const [isDarkMode, setIsDarkMode] = useState(false);
   const { joystickEnabled } = useHeader();
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -49,6 +47,7 @@ export default function NavMenu() {
     'Dashboard': LayoutDashboard,
     'Fleet': Network,
     'Robot Control': null, // Keep custom SVG for Robot Control
+    'Mission Control': ClipboardList,
     'My UI': Layout,
     'Labs': FlaskConical,
     'AI': Sparkles,
@@ -65,6 +64,7 @@ export default function NavMenu() {
     menuActions.dashboard,
     menuActions.fleet,
     menuActions.home,
+    menuActions.missionControl,
     menuActions.myUi,
     menuActions.labs,
     menuActions.maps,
@@ -93,7 +93,6 @@ export default function NavMenu() {
   useEffect(() => {
     const checkDarkMode = () => {
       const isDark = document.documentElement.classList.contains('dark');
-      setIsDarkMode(isDark);
       if (isDark) {
         setListIcon('/icons/white/list.svg');
       } else {
@@ -148,7 +147,8 @@ export default function NavMenu() {
             isActive={
               (btn.label === 'Dashboard' && pathname === '/dashboard') ||
               (btn.label === 'Fleet' && pathname === '/fleet') ||
-              (btn.label === 'Home' && pathname === '/robot-home') ||
+              (btn.label === 'Cockpit' && pathname === '/cockpit') ||
+              (btn.label === 'Mission Control' && pathname === '/mission-control') ||
               (btn.label === 'My UI' && pathname === '/my-ui') ||
               (btn.label === 'User' && pathname === '/profile') ||
               (btn.label === 'Settings' && pathname === '/settings') ||
@@ -186,7 +186,8 @@ export default function NavMenu() {
                 isActive={
                   (btn.label === 'Dashboard' && pathname === '/dashboard') ||
                   (btn.label === 'Fleet' && pathname === '/fleet') ||
-                  (btn.label === 'Home' && pathname === '/robot-home') ||
+                  (btn.label === 'Cockpit' && pathname === '/cockpit') ||
+                  (btn.label === 'Mission Control' && pathname === '/mission-control') ||
                   (btn.label === 'My UI' && pathname === '/my-ui') ||
                   (btn.label === 'User' && pathname === '/profile') ||
                   (btn.label === 'Settings' && pathname === '/settings') ||

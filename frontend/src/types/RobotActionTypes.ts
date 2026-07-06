@@ -15,6 +15,7 @@ export type MenuActionTypeName =
   | 'fleet'
   | 'dashboard'
   | 'home'
+  | 'missionControl'
   | 'chart'
   | 'chatMenu'
   | 'chatNew'

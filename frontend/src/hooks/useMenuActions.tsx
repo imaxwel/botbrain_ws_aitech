@@ -58,6 +58,11 @@ export default function useMenuActions(): Record<
       icon: `${getDarkModeFolder()}bot-home`,
       action: () => navigate('/cockpit'),
     },
+    missionControl: {
+      label: 'Mission Control',
+      icon: `${getDarkModeFolder()}list`,
+      action: () => navigate('/mission-control'),
+    },
     chart: {
       label: 'Chart',
       icon: `${getDarkModeFolder()}chart`,
