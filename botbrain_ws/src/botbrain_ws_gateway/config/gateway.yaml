@@ -1,0 +1,91 @@
+schema_version: botbrain_ws.gateway.config.v1
+
+http:
+  host: 127.0.0.1
+  port: 8899
+  robot_prefix: /g1
+
+robot:
+  robot_id: g1-edu
+  runtime: botbrain_ws_aitech
+  navigation_stack: fastlio2_icp_nav2
+  ros_namespace: /g1_robot
+  map_frame: g1_robot/map
+  odom_frame: g1_robot/odom
+  base_frame: g1_robot/base_footprint
+
+pois:
+  # Installed path in the botbrain_ws_aitech container/workspace.
+  waypoint_file: /botbrain_ws/src/bot_navigation/nav_waypoints.yaml
+  fallback_waypoint_file: src/bot_navigation/nav_waypoints.yaml
+
+nav2:
+  navigate_to_pose_action: /g1_robot/navigate_to_pose
+  follow_waypoints_action: /g1_robot/follow_waypoints
+  action_server_wait_s: 2.0
+  default_timeout_s: 300.0
+  lifecycle_nodes:
+    - controller_server
+    - smoother_server
+    - planner_server
+    - behavior_server
+    - bt_navigator
+    - waypoint_follower
+  require_lifecycle_active: true
+
+services:
+  current_mode: /g1_robot/current_mode
+  emergency_stop: /g1_robot/emergency_stop
+
+topics:
+  # G1 hardware interface topics from g1_read.py.
+  battery: /g1_robot/battery
+  odom: /g1_robot/odom
+  imu: /g1_robot/imu/data
+  joint_states: /g1_robot/joint_states
+  state_machine_status: /g1_robot/state_machine/status
+
+  # fast_lio + open3d_loc production localization chain.
+  fastlio_odom: /Odometry_loc
+  fastlio_cloud_world: /cloud_registered_1
+  fastlio_cloud_body: /cloud_registered_body_1
+  fastlio_map: /Laser_map_1
+  fastlio_path: /path_1
+  icp_pose: /localization_3d
+  icp_confidence: /localization_3d_confidence
+  icp_delay_ms: /localization_3d_delay_ms
+  icp_baselink2map: /baselink2map
+
+  # Nav2 map/costmap inputs.
+  map: /map
+  diagnostics: /diagnostics
+  floor_estimate: /g1/floor_estimate
+
+freshness:
+  battery_max_age_s: 2.0
+  odom_max_age_s: 0.5
+  imu_max_age_s: 0.5
+  joint_states_max_age_s: 0.5
+  state_machine_status_max_age_s: 2.0
+  fastlio_odom_max_age_s: 0.5
+  fastlio_cloud_world_max_age_s: 0.8
+  fastlio_cloud_body_max_age_s: 0.8
+  icp_pose_max_age_s: 1.0
+  icp_confidence_max_age_s: 1.0
+  map_max_age_s: 10.0
+  diagnostics_max_age_s: 5.0
+  floor_estimate_max_age_s: 2.0
+
+battery:
+  min_percentage_go: 0.30
+  min_percentage_continue: 0.20
+
+localization:
+  min_icp_confidence_go: 0.70
+  required_tf:
+    - [g1_robot/map, g1_robot/base_footprint]
+    - [g1_robot/odom, g1_robot/base_footprint]
+
+tasks:
+  default_timeout_s: 120.0
+  implemented_action_classes: []
