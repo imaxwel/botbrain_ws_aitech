@@ -81,3 +81,5 @@ botbrain_ws/src/joystick-bot/docs/
 
 # ===== 3D 打印/CAD 交换文件 =====
 **/*.3mf
+botbrain_ws/src/install
+install
