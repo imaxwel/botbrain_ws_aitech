@@ -1,0 +1,22 @@
+# 电梯按键检测节点配置参数
+
+# 检测参数
+detection:
+  confidence_threshold: 0.5      # 检测置信度阈值
+  max_distance: 1.5              # 最大检测距离（米）
+  min_distance: 0.3              # 最小检测距离（米）
+
+# 相机参数
+camera:
+  width: 1280                    # 图像宽度
+  height: 720                    # 图像高度
+  fps: 30                        # 帧率
+
+# 深度处理
+depth:
+  filter_enable: true            # 是否启用深度滤波
+  median_window: 5               # 中值滤波窗口大小
+
+# 坐标变换
+transform:
+  matrix_file: '../transforms/camera_to_robot.npy'  # 变换矩阵文件路径

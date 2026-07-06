@@ -1,0 +1,69 @@
+FROM botbotrobotics/botbrain:base
+
+# ── manipulation 依赖（一次性构建，不用每次启动重装） ──
+RUN sed -i 's@//.*archive.ubuntu.com@//mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list && \
+    sed -i 's@//.*security.ubuntu.com@//mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list
+
+RUN pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 更新ROS2 GPG密钥（在apt-get update之前）
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | apt-key add -
+
+# 配置apt允许未签名仓库
+RUN echo 'Acquire::AllowInsecureRepositories "true";' > /etc/apt/apt.conf.d/99allow-insecure && \
+    echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99allow-insecure
+
+# pinocchio (IK solver)
+RUN pip3 install --no-cache-dir pin
+
+# unitree_sdk2_python (DDS for arm/hand control)
+# 使用 HongTu 版本（适配当前机器人固件）
+# 注意：HongTu 的 cyclonedds 是空的 git submodule，需删除后单独 pip install
+RUN git clone https://ghfast.top/https://github.com/yuanqizhiti/HongTu.git /tmp/HongTu && \
+    mv /tmp/HongTu/unitree_sdk2_python /unitree_sdk2_python && \
+    rm -rf /unitree_sdk2_python/cyclonedds && \
+    rm -rf /tmp/HongTu
+
+# cyclonedds Python 绑定（unitree_sdk2py IDL 需要 cyclonedds.idl）
+# aarch64 无预编译 wheel，需从源码构建。
+# cyclonedds 0.10.2 的 good_directory() 要求:
+#   $CYCLONEDDS_HOME/include/  (目录，含 dds/ 子目录)
+#   $CYCLONEDDS_HOME/bin/      (目录)
+#   $CYCLONEDDS_HOME/lib/libddsc.so (文件)
+# ROS 2 aarch64 把文件放在 lib/aarch64-linux-gnu/ 多架构子目录。
+# 解决：创建 /cyclonedds_home 符号链接目录满足检测。
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ros-humble-cyclonedds cmake build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# 探查实际路径并构建符号链接目录
+RUN set -ex && \
+    mkdir -p /cyclonedds_home/lib /cyclonedds_home/bin /cyclonedds_home/include && \
+    DDSC=$(find /opt/ros/humble -name "libddsc.so" -print -quit) && \
+    echo "libddsc.so found at: ${DDSC}" && \
+    ln -sf "$(dirname $DDSC)"/* /cyclonedds_home/lib/ && \
+    INC=$(find /opt/ros/humble/include -maxdepth 2 -name "dds" -type d -print -quit) && \
+    echo "include/dds found at: ${INC}" && \
+    ln -sf "$(dirname $INC)"/* /cyclonedds_home/include/ && \
+    BIN=$(find /opt/ros/humble -name "ddsperf" -print -quit 2>/dev/null) && \
+    if [ -n "$BIN" ]; then ln -sf "$(dirname $BIN)"/* /cyclonedds_home/bin/; \
+    else touch /cyclonedds_home/bin/.placeholder; fi && \
+    ls /cyclonedds_home/lib/libddsc.so && \
+    ls /cyclonedds_home/include/dds && \
+    echo "=== cyclonedds_home ready ==="
+
+ENV CYCLONEDDS_HOME=/cyclonedds_home
+ENV LD_LIBRARY_PATH="/cyclonedds_home/lib:${LD_LIBRARY_PATH}"
+
+RUN pip3 install --no-cache-dir cyclonedds==0.10.2
+
+# 安装 unitree_sdk2py（cyclonedds 目录已删，setuptools 只发现一个顶层包）
+RUN cd /unitree_sdk2_python && pip3 install --no-cache-dir -e .
+
+# interactive_markers (如果 base 镜像缺少)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-interactive-markers \
+    ros-humble-tf2-geometry-msgs \
+    && rm -rf /var/lib/apt/lists/*

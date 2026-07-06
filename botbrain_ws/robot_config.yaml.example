@@ -1,0 +1,12 @@
+robot_configuration:
+  robot_name: "g1_robot"
+  robot_model: "g1"
+  description_file_type: "xacro"
+  network_interface: "enP8p1s0"
+  tita_namespace: ""
+  openai_api_key: ""
+  wifi_interface: "YOUR_WIFI_INTERFACE"
+  wifi_ssid: "YOUR_WIFI_SSID"
+  wifi_password: "YOUR_WIFI_PASSWORD"
+  default_map: "rtabmap.db"
+  default_static_map: "accumulated.yaml"

@@ -1,0 +1,6 @@
+int32 command
+string name
+string[] names
+---
+bool success
+string message

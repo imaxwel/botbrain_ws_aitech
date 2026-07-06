@@ -1,0 +1,83 @@
+# ===== 敏感配置 =====
+.env
+.env.*
+!.env.example
+botbrain_ws/robot_config.yaml
+botbrain_ws/robot_config.yaml.bak
+*.bak
+*.bak.*
+*.bak_*
+
+# ===== ROS2 / colcon 编译产物 =====
+botbrain_ws/build/
+botbrain_ws/install/
+botbrain_ws/log/
+
+# ===== 通用编译/缓存产物 =====
+**/build/
+**/__pycache__/
+**/*.pyc
+**/CMakeFiles/
+**/CMakeCache.txt
+**/*.o
+**/*.so
+!deps/**/*.so
+
+# ===== 前端 (node/next) =====
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+frontend/*.tsbuildinfo
+
+# ===== 第三方预编译依赖，不入库 =====
+deps/open3d141/
+
+# ===== 第三方 OCR 子项目，整体不入库（已确认） =====
+botbrain_ws/src/g1_right_dex3/yolonas_ocr/
+
+# ===== AI 模型/权重文件，整体不入库（已确认：彻底不要二进制资源） =====
+**/*.pt
+**/*.pth
+**/*.onnx
+**/*.tflite
+**/*.pb
+**/*.h5
+**/*.caffemodel
+**/*.engine
+**/Ultralytics/
+
+# ===== 3D 模型/网格文件，整体不入库（已确认：彻底不要二进制资源） =====
+**/*.STL
+**/*.stl
+**/*.dae
+**/*.obj
+**/*.step
+**/*.stp
+
+# ===== 地图与点云数据（运行时生成，已确认不入库） =====
+**/*.pgm
+**/*.pcd
+**/*.ply
+**/rtabmap.db
+
+# ===== 大型文档/演示媒体（已确认不入库） =====
+**/*.gif
+**/*.pdf
+
+# ===== 系统/编辑器杂项 =====
+.DS_Store
+*.swp
+*~
+
+# ===== 日志与运行时数据 =====
+**/log/
+*.log
+
+# ===== 第三方库自带的测试数据/文档演示图片视频（已确认 ignore） =====
+botbrain_ws/src/fcl/test/fcl_resources/
+botbrain_ws/src/fast_lio/doc/
+botbrain_ws/src/joystick-bot/docs/
+
+# ===== 3D 打印/CAD 交换文件 =====
+**/*.3mf

@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>unitree_g1_dex3_stack</name>
+  <version>0.1.0</version>
+  <description>Full manipulation stack for the Unitree G1 humanoid robot with DEX3 hands: joint state publishing, hand control, trajectory execution, OMPL+FCL+IK-based planning, and 2D object detection to 3D object projection using depth images.</description>
+
+  <maintainer email="keremkahraman53@gmail.com">Muhammed Kerem Kahraman</maintainer>
+  <license>None</license>
+
+  <!-- Core build tool -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ROS2 core dependencies -->
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>trajectory_msgs</depend>
+
+  <!-- Unitree custom messages -->
+  <depend>unitree_hg</depend>
+
+  <!-- URDF and robot model -->
+  <depend>urdf</depend>
+  <depend>kdl_parser</depend>
+
+  <!-- IK, planning, and collision -->
+  <depend>trac_ik_lib</depend>
+  <depend>ompl</depend>
+  <depend>fcl</depend>
+  <depend>geometric_shapes</depend>
+  <depend>resource_retriever</depend>
+
+  <!-- OpenCV dependency -->
+  <depend>OpenCV</depend>
+
+  <!-- Perception message types -->
+  <depend>vision_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- ROS2 Python client library for Python nodes -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <!-- AprilTag detector runtime deps (Phase 7) -->
+  <exec_depend>python3-opencv</exec_depend>
+
+  <!-- ament_index_cpp for resource lookup -->
+  <depend>ament_index_cpp</depend>
+
+  <!-- Export information for build tools -->
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,15 @@
+ik_fcl_ompl_planner:
+  ros__parameters:
+    tcp_offset_x: 0.12
+    adaptive_orientation_enabled: true
+    collision_detection_enabled: false
+    velocity_scale: 0.02
+    fallback_enabled: true
+    fallback_max_retraction: 0.05
+    fallback_step: 0.005
+    ik_timeout: 0.1
+    ik_random_seed_tries: 3
+
+tcp_torso_pose:
+  ros__parameters:
+    tcp_offset_x: 0.12

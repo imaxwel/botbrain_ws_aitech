@@ -1,0 +1,16 @@
+Gravity Calibration Report
+========================================
+
+Poses used: 32
+RMSE before: 2.8470 Nm
+RMSE after:  0.7203 Nm
+Improvement: 74.7%
+
+Per-joint error breakdown (calibrated model):
+  Joint 0 (right_shoulder_pitch_link): RMSE=0.6500 Nm, max=1.9659 Nm
+  Joint 1 (right_shoulder_roll_link): RMSE=1.4548 Nm, max=3.5517 Nm
+  Joint 2 (right_shoulder_yaw_link): RMSE=0.4519 Nm, max=1.4791 Nm
+  Joint 3 (right_elbow_link): RMSE=0.8503 Nm, max=1.6728 Nm
+  Joint 4 (right_wrist_roll_link): RMSE=0.2189 Nm, max=0.6677 Nm
+  Joint 5 (right_wrist_pitch_link): RMSE=0.3108 Nm, max=0.7956 Nm
+  Joint 6 (right_wrist_yaw_link): RMSE=0.1457 Nm, max=0.4520 Nm

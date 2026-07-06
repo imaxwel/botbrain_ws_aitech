@@ -1,0 +1,87 @@
+v4l2_apriltag_trigger:
+  ros__parameters:
+    camera_id: "d435i_front"
+    expected_serial: "253243060636"
+    video_device: "auto"
+    expected_usb_interface_num: "03"
+    image_width: 640
+    image_height: 480
+    fps: 6.0
+    fourcc: "YUYV"
+    sample_count: 4
+    warmup_frames: 12
+    warmup_min_s: 2.0
+    sample_interval_s: 0.05
+    continuous_capture: false
+
+    tag_family: "tag36h11"
+    tag_size: 0.08
+    target_tag_id: 0
+    offset_xyz: [-0.10, -0.10, -0.04]
+    decision_margin_min: 25.0
+    detect_scale: 0.5
+
+    camera_matrix: [602.0224609375, 0.0, 330.956695556641, 0.0, 601.472839355469, 256.269927978516, 0.0, 0.0, 1.0]
+    dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+    camera_frame: "camera_color_optical_frame"
+    output_frame: "torso_link"
+    tf_lookup_timeout_s: 0.2
+
+    goal_pose_topic: "/goal_pose"
+    tag_pose_topic: "/apriltag/tag_pose"
+    target_pose_topic: "/apriltag/target_pose"
+    joint_trajectory_topic: "/joint_trajectory_targets"
+    reach_max_distance: 0.55
+    trigger_key: ""
+    trigger_topic: "/apriltag/capture_trigger"
+    publish_intermediate_poses: false
+    detect_only: true
+    fixed_orientation_enabled: false
+    fixed_rpy: [-0.0873, -0.0340, 0.0199]
+
+    save_debug_images: true
+    debug_image_dir: "/botbrain_ws/detect_img"
+    save_raw_images: false
+    jpeg_quality: 90
+    baseline_compensation_enabled: true
+    baseline_x: 0.4680
+    baseline_y: -0.0700
+    baseline_z: 0.1322
+
+apriltag_button_press_node:
+  ros__parameters:
+    trigger_key: "g"
+    target_pose_topic: "/apriltag/target_pose"
+    goal_pose_topic: "/goal_pose"
+    joint_trajectory_topic: "/joint_trajectory_targets"
+    return_to_standing_topic: "/executor/return_to_standing"
+    capture_trigger_topic: "/apriltag/capture_trigger"
+    base_rpy: [0.0117, -0.0823, 0.0013]
+    alt_rpy_y_threshold: -0.0954
+    alt_rpy: [-0.0340, -0.1024, 0.5480]
+    pre_contact_offset_x: 0.05
+    dex3_setpoint_script: "/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/example/control_dex3_right_setpoint.py"
+    dex3_net_if: "enP8p1s0"
+    pre_extend_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 0.0, 0.0]
+    close_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 1.7, 1.8]
+    pre_extend_wait_s: 2.5
+    close_wait_s: 2.5
+    capture_wait_timeout_s: 6.0
+    target_pose_stale_s: 1.5
+    traj_wait_timeout_s: 5.0
+    traj_completion_buffer_s: 0.8
+    ramp_wait_s: 3.5
+    dry_run: false
+
+ik_fcl_ompl_planner:
+  ros__parameters:
+    tcp_offset_x: 0.22
+    adaptive_orientation_enabled: false
+    collision_detection_enabled: false
+    velocity_scale: 0.01
+    fallback_enabled: true
+    fallback_max_retraction: 0.05
+    fallback_step: 0.005
+    ik_timeout: 0.1
+    ik_random_seed_tries: 3
+    fallback_total_timeout_s: 2.0
