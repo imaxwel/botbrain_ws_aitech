@@ -8,7 +8,6 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(nav2_bringup REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -34,6 +33,7 @@ install(PROGRAMS
   scripts/nav2_utils.py
   scripts/waypoint_recorder.py
   scripts/waypoint_navigator.py
+  scripts/localization_monitor.py
   DESTINATION lib/${PROJECT_NAME}
 )
 ament_python_install_package(${PROJECT_NAME})

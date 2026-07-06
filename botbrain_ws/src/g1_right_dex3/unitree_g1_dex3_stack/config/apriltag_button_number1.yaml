@@ -17,7 +17,7 @@ v4l2_apriltag_trigger:
     tag_family: "tag36h11"
     tag_size: 0.08
     target_tag_id: 0
-    offset_xyz: [-0.10, -0.06, -0.04]
+    offset_xyz: [0.00, -0.12, 0.09]
     decision_margin_min: 25.0
     detect_scale: 0.5
 
@@ -43,7 +43,7 @@ v4l2_apriltag_trigger:
     debug_image_dir: "/botbrain_ws/detect_img"
     save_raw_images: false
     jpeg_quality: 90
-    baseline_compensation_enabled: true
+    baseline_compensation_enabled: false
     baseline_x: 0.4680
     baseline_y: -0.0700
     baseline_z: 0.1322
@@ -56,16 +56,20 @@ apriltag_button_press_node:
     joint_trajectory_topic: "/joint_trajectory_targets"
     return_to_standing_topic: "/executor/return_to_standing"
     capture_trigger_topic: "/apriltag/capture_trigger"
-    base_rpy: [0.0117, -0.0823, 0.0013]
+    base_rpy: [-1.5708, -0.5236, 0.0]  # roll=-90°, pitch=-30°, yaw=0° (moderate wrist rotation)
     alt_rpy_y_threshold: -0.0954
     alt_rpy: [-0.0340, -0.1024, 0.5480]
     pre_contact_offset_x: 0.05
     dex3_setpoint_script: "/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/example/control_dex3_right_setpoint.py"
     dex3_net_if: "enP8p1s0"
-    pre_extend_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 0.0, 0.0]
-    close_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 1.7, 1.8]
+    pre_extend_pose: [0.0, 0.0, 0.0, 1.8, 1.8, -0.3, -1.0]
+    close_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     pre_extend_wait_s: 2.5
     close_wait_s: 2.5
+    tactile_guard_enabled: false
+    tactile_guard_script: "/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/example/tactile_press_guard.py"
+    tactile_threshold: 0.05
+    tactile_ready_timeout_s: 8.0
     capture_wait_timeout_s: 6.0
     target_pose_stale_s: 1.5
     traj_wait_timeout_s: 5.0
@@ -76,12 +80,14 @@ apriltag_button_press_node:
 ik_fcl_ompl_planner:
   ros__parameters:
     tcp_offset_x: 0.22
+    tcp_offset_y: 0.0
+    tcp_offset_z: 0.0
     adaptive_orientation_enabled: false
     collision_detection_enabled: false
     velocity_scale: 0.01
     fallback_enabled: true
     fallback_max_retraction: 0.05
     fallback_step: 0.005
-    ik_timeout: 0.1
-    ik_random_seed_tries: 3
-    fallback_total_timeout_s: 2.0
+    ik_timeout: 0.3
+    ik_random_seed_tries: 15
+    fallback_total_timeout_s: 5.0

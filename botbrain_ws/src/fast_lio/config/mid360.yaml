@@ -7,12 +7,12 @@
     filter_size_map: 0.5
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/ug_scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
       # lid_topic:  "/livox/lidar"
       lid_topic: "/livox/lidar"
-      imu_topic: "/livox/imu"  # 改为与bringup发布的话题一致
+      imu_topic: "/livox/imu_corrected"
       time_sync_en: false # ONLY turn on when external time synchronization is really not possible
       time_offset_lidar_to_imu:
         0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
@@ -45,8 +45,7 @@
       scan_bodyframe_pub_en: true # true: output the point cloud scans in IMU-body-frame
 
     pcd_save:
-      pcd_save_en: true  # 使用 maps/scans.pcd 现成地图: 禁止退出时覆盖, 同时关闭实时 grid_accumulator
+      pcd_save_en: false  # 使用 maps/scans.pcd 现成地图: 禁止退出时覆盖, 同时关闭实时 grid_accumulator
       interval:
         -1 # how many LiDAR frames saved in each pcd file;
         # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
-

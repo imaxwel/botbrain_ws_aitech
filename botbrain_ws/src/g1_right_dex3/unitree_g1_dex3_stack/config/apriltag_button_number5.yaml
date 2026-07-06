@@ -43,7 +43,7 @@ v4l2_apriltag_trigger:
     debug_image_dir: "/botbrain_ws/detect_img"
     save_raw_images: false
     jpeg_quality: 90
-    baseline_compensation_enabled: true
+    baseline_compensation_enabled: false
     baseline_x: 0.4680
     baseline_y: -0.0700
     baseline_z: 0.1322
@@ -76,6 +76,8 @@ apriltag_button_press_node:
 ik_fcl_ompl_planner:
   ros__parameters:
     tcp_offset_x: 0.22
+    tcp_offset_y: -0.025
+    tcp_offset_z: -0.006
     adaptive_orientation_enabled: false
     collision_detection_enabled: false
     velocity_scale: 0.01

@@ -66,7 +66,7 @@ yaw_goal_tolerance: 0.15  # 朝向容差 (rad, ≈ 8.6°)
 **位置**：`global_costmap` 和 `local_costmap` 的 `obstacle_layer → cloud`（两处相同，需同步修改）
 
 ```yaml
-min_obstacle_height: 0.15   # 点云最低有效高度 (m)
+    min_obstacle_height: 0.15   # 点云最低有效高度 (m)
 max_obstacle_height: 1.30   # 点云最高有效高度 (m)
 obstacle_range: 3.0         # 标记障碍物的最大距离 (m)
 raytrace_range: 3.0         # 清除旧障碍的光线追踪距离 (m)

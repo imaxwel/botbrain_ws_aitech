@@ -80,6 +80,10 @@ class AprilTagButtonPressNode(Node):
         self.declare_parameter('close_pose', [0.0, -1.05, -1.7, 1.7, 1.8, 1.7, 1.8])
         self.declare_parameter('pre_extend_wait_s', 2.5)
         self.declare_parameter('close_wait_s', 2.5)
+        self.declare_parameter('tactile_guard_enabled', False)
+        self.declare_parameter('tactile_guard_script', '/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/example/tactile_press_guard.py')
+        self.declare_parameter('tactile_threshold', 0.05)
+        self.declare_parameter('tactile_ready_timeout_s', 8.0)
         self.declare_parameter('capture_wait_timeout_s', 6.0)
         self.declare_parameter('target_pose_stale_s', 1.5)
         self.declare_parameter('traj_wait_timeout_s', 5.0)
@@ -109,6 +113,10 @@ class AprilTagButtonPressNode(Node):
         self.close_pose = [float(v) for v in list(self.get_parameter('close_pose').value)[:7]]
         self.pre_extend_wait_s = float(self.get_parameter('pre_extend_wait_s').value)
         self.close_wait_s = float(self.get_parameter('close_wait_s').value)
+        self.tactile_guard_enabled = _as_bool(self.get_parameter('tactile_guard_enabled').value)
+        self.tactile_guard_script = str(self.get_parameter('tactile_guard_script').value)
+        self.tactile_threshold = float(self.get_parameter('tactile_threshold').value)
+        self.tactile_ready_timeout_s = float(self.get_parameter('tactile_ready_timeout_s').value)
         self.capture_wait_timeout_s = float(self.get_parameter('capture_wait_timeout_s').value)
         self.target_pose_stale_s = float(self.get_parameter('target_pose_stale_s').value)
         self.traj_wait_timeout_s = float(self.get_parameter('traj_wait_timeout_s').value)
@@ -277,6 +285,104 @@ class AprilTagButtonPressNode(Node):
         self._return_sent = True
         self.get_logger().info('[apriltag_button_press_node] published /executor/return_to_standing')
 
+    def _press_with_tactile_guard(self, press_goal, pre_goal):
+        """Send press goal, monitor ID5 tactile, retreat early if threshold exceeded."""
+        if not os.path.exists(self.tactile_guard_script):
+            self.get_logger().error(
+                f'[apriltag_button_press_node] tactile guard script not found: {self.tactile_guard_script}')
+            return False
+
+        cmd = ['/usr/bin/python3', self.tactile_guard_script,
+               self.dex3_net_if, '--threshold', str(self.tactile_threshold)]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=os.environ.copy(),
+            )
+        except Exception as ex:
+            self.get_logger().error(f'[apriltag_button_press_node] failed to start tactile guard: {ex}')
+            return False
+
+        # Wait for READY (baseline captured)
+        ready = False
+        deadline = time.monotonic() + self.tactile_ready_timeout_s
+        while not self._shutdown and time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            self.get_logger().info(f'[TactileGuard] {line}')
+            if line == 'READY':
+                ready = True
+                break
+            if line.startswith('ERROR'):
+                break
+        if not ready:
+            self.get_logger().error('[apriltag_button_press_node] tactile guard did not become ready')
+            proc.terminate()
+            proc.wait(timeout=3)
+            return False
+
+        # Send press goal and monitor tactile in parallel
+        self._traj_event.clear()
+        self.goal_pub.publish(press_goal)
+        self.get_logger().info(
+            f'[apriltag_button_press_node] sent press-target goal (tactile-guarded): '
+            f'({press_goal.pose.position.x:.3f}, {press_goal.pose.position.y:.3f}, '
+            f'{press_goal.pose.position.z:.3f})')
+
+        traj_received = False
+        threshold_exceeded = False
+        traj_wait_deadline = time.monotonic() + self.traj_wait_timeout_s
+        traj_exec_deadline = None
+        while not self._shutdown:
+            # Check tactile stdout (non-blocking)
+            import select as _select
+            r, _, _ = _select.select([proc.stdout], [], [], 0.0)
+            if r:
+                line = proc.stdout.readline()
+                if line:
+                    line = line.strip()
+                    self.get_logger().info(f'[TactileGuard] {line}')
+                    if 'THRESHOLD_EXCEEDED' in line:
+                        threshold_exceeded = True
+                        break
+
+            # Check traj received
+            if not traj_received and self._traj_event.is_set():
+                traj_received = True
+                with self._lock:
+                    duration_s = self._last_traj_duration_s
+                traj_exec_deadline = time.monotonic() + duration_s + self.traj_completion_buffer_s
+
+            # Timeout waiting for trajectory from planner
+            if not traj_received and time.monotonic() >= traj_wait_deadline:
+                self.get_logger().error('[apriltag_button_press_node] timed out waiting for press trajectory')
+                proc.terminate()
+                proc.wait(timeout=3)
+                return False
+
+            # Trajectory execution complete
+            if traj_exec_deadline is not None and time.monotonic() >= traj_exec_deadline:
+                break
+
+            time.sleep(0.01)
+
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+        if threshold_exceeded:
+            self.get_logger().info(
+                '[apriltag_button_press_node] tactile threshold exceeded — retreating early')
+
+        return not self._shutdown
+
     def _run_sequence(self):
         _CACHE_TTL = 30.0  # 电梯面板位置不变，允许30s内缓存复用（覆盖手臂按压动作期间的相机断流）
         try:
@@ -322,8 +428,12 @@ class AprilTagButtonPressNode(Node):
                 return
             if not self._run_dex3('extend-middle-finger', self.pre_extend_pose, self.pre_extend_wait_s):
                 return
-            if not self._send_goal_and_wait('press-target', press):
-                return
+            if self.tactile_guard_enabled:
+                if not self._press_with_tactile_guard(press, pre):
+                    return
+            else:
+                if not self._send_goal_and_wait('press-target', press):
+                    return
             if not self._send_goal_and_wait('retreat-pre-contact', pre):
                 return
             if not self._run_dex3('close-hand', self.close_pose, self.close_wait_s):

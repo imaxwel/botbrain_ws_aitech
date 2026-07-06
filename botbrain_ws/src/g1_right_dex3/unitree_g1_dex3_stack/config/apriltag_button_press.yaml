@@ -81,6 +81,8 @@ apriltag_button_press_node:
 ik_fcl_ompl_planner:
   ros__parameters:
     tcp_offset_x: 0.22
+    tcp_offset_y: -0.025
+    tcp_offset_z: -0.006
     adaptive_orientation_enabled: false
     collision_detection_enabled: false
     velocity_scale: 0.01
@@ -90,3 +92,4 @@ ik_fcl_ompl_planner:
     ik_timeout: 0.1
     ik_random_seed_tries: 3
     fallback_total_timeout_s: 2.0
+    

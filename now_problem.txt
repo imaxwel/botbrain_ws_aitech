@@ -1,0 +1,11 @@
+#### 定位不准确，地图的距离错误
+
+1. 工程已经正确使用了挂载的机器人主机 SDK
+2. 到机器人 `sport` 服务的 RPC 链路是通的
+3. `GetFsmMode()` 可用
+4. `GetBalanceMode()` 返回 `LocoState not available`
+5. `GetFsmId()` 返回超时
+7. 问题更像是机器人端服务行为差异、固件版本差异，或者在当前运行状态下 `GetFsmId()` / `GetBalanceMode()` 不被完整支持
+
+#### 路径有效性检查和主动重规划机制怎么添加  （动态避障）
+

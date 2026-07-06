@@ -1,7 +1,7 @@
 camera_configuration:
   front: 
     type: "d435i"
-    serial_number: "test"
+    serial_number: "243722074823"
     parent_frame: "torso_link"
     child_frame: "front_camera_link"
     tf:
