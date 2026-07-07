@@ -297,6 +297,10 @@ class JTOPPublisher(LifecycleNode):
 
 
     def jetson_callback(self):
+        # Guard: lifecycle node may have been deactivated/cleaned up
+        # (publisher set to None) while this timer callback was queued.
+        if self.diag_pub is None or self.human_pub is None:
+            return
 
         self.arr.header.stamp = self.get_clock().now().to_msg()
         self.arr.status = [other_status(self.hardware, self.jetson, jtop.__version__)]
