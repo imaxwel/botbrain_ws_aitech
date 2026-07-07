@@ -72,6 +72,7 @@ class GridAccumulator(Node):
         self.skip_frames = args.skip_frames
         self.pre_transformed = args.pre_transformed  # cloud already in map frame
         self.min_obs_hits = args.min_obs_hits        # hits needed before marking OCCUPIED
+        self.map_z = args.map_z  # z-offset for grid display in 3D view
 
         if not self.pre_transformed:
             self.tf_buf = Buffer()
@@ -249,6 +250,7 @@ class GridAccumulator(Node):
         pose = Pose()
         pose.position.x = origin_x
         pose.position.y = origin_y
+        pose.position.z = self.map_z  # offset to align grid with floor in 3D view
         pose.orientation.w = 1.0
         msg.info.origin = pose
         msg.data = data
@@ -281,6 +283,8 @@ def main():
                     help="use body-frame cloud + TF (/cloud_registered_body_1 mode)")
     ap.add_argument("--skip-frames", type=int, default=20,
                     help="skip first N point cloud frames (fast_lio convergence warmup)")
+    ap.add_argument("--map-z", type=float, default=0.0,
+                    help="z-offset for 2D grid display in 3D view (set to sensor-to-floor distance, e.g., -1.27 for 1.27m sensor height)")
     args = ap.parse_args()
 
     rclpy.init()

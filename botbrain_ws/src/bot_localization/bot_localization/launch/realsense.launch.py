@@ -3,7 +3,8 @@
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import LifecycleNode, Node   # <-- importe Node também
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 import os
 import yaml
@@ -18,7 +19,7 @@ from lifecycle_msgs.msg import Transition
 def make_camera_params(serial: str | None, camera_name: str, tf_prefix: str, camera_side: str):
     name_prefix = f"{camera_name}_" if camera_name else ""
     params = {
-        "serial_no": serial,
+        "serial_no": ParameterValue("" if serial is None else str(serial), value_type=str),
         "pointcloud.enable": False,
         "enable_infra": False,
         "enable_infra1": False,

@@ -44,7 +44,7 @@ export const G1R1Profile: RobotProfile = {
     listener: 'listener',
     map: 'map',
     jointStates: 'joint_states',
-    camera: 'compressed_camera',
+    camera: 'g1_robot/compressed_camera',
     sportModeState: 'lf/sportmodestate',
     robotStatus: 'robot_status',
     thermal: 'viz/camcam/thermal/compressed_image',

@@ -4,10 +4,23 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
     workspace_dir = '/botbrain_ws'
+    # Include RealSense camera launch (front camera only)
+    realsense_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('bot_localization'),
+                'launch',
+                'realsense.launch.py'
+            )
+        )
+    )
     default_pcd_path  = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps', 'scans.pcd')
     default_grid_yaml = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps', 'accumulated.yaml')
 
@@ -131,6 +144,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        realsense_launch,
         pcd_arg,
         use_sim_time_arg,
         initialpose_z_fix,

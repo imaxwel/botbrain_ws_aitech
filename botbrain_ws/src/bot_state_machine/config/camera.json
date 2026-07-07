@@ -1,5 +1,5 @@
 {
-  "nodes": [    
+  "nodes": [
     {
       "name": "front_camera",
       "display_name": "Front Camera",
@@ -9,18 +9,10 @@
       "dependencies": []
     },
     {
-      "name": "back_camera",
-      "display_name": "Back Camera",
-      "classe": "camera",
-      "order": 2,
-      "description": "",
-      "dependencies": []
-    },
-      {
       "name": "realsense_compressed_node",
       "display_name": "Camera Compressed",
       "classe": "camera",
-      "order": 3,
+      "order": 2,
       "description": "Compresses the front camera stream for visualization",
       "dependencies": []
     }

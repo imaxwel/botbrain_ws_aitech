@@ -53,6 +53,8 @@ export const topicsMessages = {
 const namespacedTopicKeys = new Set<keyof typeof topicsMessages>([
   'battery',
   'diagnostics',
+  'camera',
+  'back',
 ]);
 
 /**
