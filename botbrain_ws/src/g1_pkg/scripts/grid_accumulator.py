@@ -71,12 +71,14 @@ class GridAccumulator(Node):
         self.grid_topic = args.grid_topic
         self.skip_frames = args.skip_frames
         self.pre_transformed = args.pre_transformed  # cloud already in map frame
+        self.min_obs_hits = args.min_obs_hits        # hits needed before marking OCCUPIED
 
         if not self.pre_transformed:
             self.tf_buf = Buffer()
             self.tf_listener = TransformListener(self.tf_buf, self)
 
         self.grid = None             # int8 numpy array, shape (h, w)
+        self.hit_count = None        # uint16 numpy array, counts obstacle hits per cell
         self.origin_x = 0.0
         self.origin_y = 0.0
         self.lock = Lock()
@@ -181,6 +183,7 @@ class GridAccumulator(Node):
             w = int(math.ceil((x_max - x_min + 2 * margin) / self.res))
             h = int(math.ceil((y_max - y_min + 2 * margin) / self.res))
             self.grid = np.full((h, w), UNKNOWN, dtype=np.int8)
+            self.hit_count = np.zeros((h, w), dtype=np.uint16)
         else:
             # Grow grid if needed (auto_resize)
             self._grow_to_include(x_min, y_min, x_max, y_max, margin=5.0)
@@ -199,8 +202,11 @@ class GridAccumulator(Node):
         # Only mark as FREE cells that are still UNKNOWN — don't undo OCCUPIED
         free_undecided = self.grid[free_idx] == UNKNOWN
         self.grid[free_idx[0][free_undecided], free_idx[1][free_undecided]] = FREE
-        # OCCUPIED wins everywhere
-        self.grid[iy[obs_mask], ix[obs_mask]] = OCCUPIED
+        # OCCUPIED: accumulate hit count, only mark after min_obs_hits threshold
+        obs_iy, obs_ix = iy[obs_mask], ix[obs_mask]
+        np.add.at(self.hit_count, (obs_iy, obs_ix), 1)
+        confirmed = self.hit_count[obs_iy, obs_ix] >= self.min_obs_hits
+        self.grid[obs_iy[confirmed], obs_ix[confirmed]] = OCCUPIED
 
     def _grow_to_include(self, x_min, y_min, x_max, y_max, margin):
         h, w = self.grid.shape
@@ -221,6 +227,9 @@ class GridAccumulator(Node):
         new_grid = np.full((new_h, new_w), UNKNOWN, dtype=np.int8)
         new_grid[pad_b:pad_b + h, pad_l:pad_l + w] = self.grid
         self.grid = new_grid
+        new_hit = np.zeros((new_h, new_w), dtype=np.uint16)
+        new_hit[pad_b:pad_b + h, pad_l:pad_l + w] = self.hit_count
+        self.hit_count = new_hit
         self.origin_x -= pad_l * self.res
         self.origin_y -= pad_b * self.res
 
@@ -255,6 +264,8 @@ def main():
     ap.add_argument("--obstacle-z", type=float, default=0.25)
     ap.add_argument("--obstacle-z-max", type=float, default=1.8,
                     help="upper bound for obstacle z (body frame); points above this are ignored (e.g. ceiling)")
+    ap.add_argument("--min-obs-hits", type=int, default=3,
+                    help="Minimum scan hits before a cell is marked OCCUPIED (default 3, increase to reduce moving-person false obstacles)")
     ap.add_argument("--rate", type=float, default=2.0)
     ap.add_argument("--body-frame", default="body")
     ap.add_argument("--map-frame", default="map")
