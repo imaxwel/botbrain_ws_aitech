@@ -16,7 +16,18 @@ def generate_launch_description():
 
     open3d_config = PathJoinSubstitution([FindPackageShare('open3d_loc'), 'config', 'loc_param_g1.yaml'])
 
-    # ICP 3D localization — no namespace, default topics match fast_lio output
+    IMU_HEIGHT = 1.247  # MID360 离地高度(m)，odom z=0 对应此高度
+
+    # Relay: /initialpose(z=0 from Foxglove/RViz 2D tool) → z corrected → /initialpose_corrected
+    initialpose_z_fix = Node(
+        package='g1_pkg',
+        executable='initialpose_z_fix.py',
+        name='initialpose_z_fix',
+        output='screen',
+        parameters=[{'ref_z': IMU_HEIGHT}],
+    )
+
+    # ICP 3D localization — subscribes to /initialpose_corrected (z already fixed by relay)
     global_localization = Node(
         package='open3d_loc',
         executable='global_localization_node',
@@ -29,21 +40,22 @@ def generate_launch_description():
                 'use_sim_time':             LaunchConfiguration('use_sim_time'),
                 'pcd_queue_maxsize':        10,
                 'voxelsize_coarse':         0.15,
-                'voxelsize_fine':           0.2,
-                'threshold_fitness':        0.5,
+                'voxelsize_fine':           0.2,    # 走廊环境大体素=大收敛盆地，防止跳局部最优
+                'threshold_fitness':        0.5,   # 0.7→0.5: 允许断流恢复时接受中等质量匹配；级联靠 dis_updatemap=5.0 防护
                 'threshold_fitness_init':   0.5,
-                'loc_frequence':            2.5,
+                'loc_frequence':            4.0,    # 2.5→4.0: 提高ICP修正频率，减少漂移累积
                 'save_scan':                False,
                 'maxpoints_source':         80000,
                 'maxpoints_target':         400000,
-                'initialpose':              [0.0, 0.0, 1.247, 0.0, 0.0, 0.0],
+                'initialpose':              [0.0, 0.0, IMU_HEIGHT, 0.0, 0.0, 0.0],
                 'filter_odom2map':          False,
-                'kalman_processVar2':       0.001,
-                'kalman_estimatedMeasVar2': 0.02,
+                'kalman_processVar2':       0.001,  # 0.003→0.001: 降低过程噪声，Kalman输出更稳定
+                'kalman_estimatedMeasVar2': 0.06,   # 0.02→0.06: 降低Kalman对ICP大跳变的信任，防止突然漂移
                 'confidence_loc_th':        0.7,
-                'dis_updatemap':            3.5,
+                'dis_updatemap':            5.0,    # 3.0→5.0: 降低submap更新频率，一旦漂移不会立即把错误位置固化进submap
             },
         ],
+        remappings=[('initialpose', 'initialpose_corrected')],
     )
 
     # Static TFs required by fast_lio + open3d_loc:
@@ -121,6 +133,7 @@ def generate_launch_description():
     return LaunchDescription([
         pcd_arg,
         use_sim_time_arg,
+        initialpose_z_fix,
         global_localization,
         static_tf_camera_init,
         static_tf_imu2base,

@@ -3,8 +3,8 @@
     feature_extract_enable: false
     point_filter_num: 3
     max_iteration: 3
-    filter_size_surf: 0.5
-    filter_size_map: 0.5
+    filter_size_surf: 0.3 # 改小：保留更多特征点，定位更精确
+    filter_size_map: 0.3
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
     map_file_path: "/botbrain_ws/src/g1_pkg/maps/ug_scans.pcd"
@@ -26,8 +26,8 @@
       scan_rate: 10
 
     mapping:
-      acc_cov: 0.1
-      gyr_cov: 0.1
+      acc_cov: 1.0    # 调高：减少IMU权重，适配双足机器人平衡动作噪声
+      gyr_cov: 0.5    # 调高：减少陀螺仪权重
       b_acc_cov: 0.0001
       b_gyr_cov: 0.0001
       fov_degree: 360.0
