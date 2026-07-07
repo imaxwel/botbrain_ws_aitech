@@ -2,17 +2,17 @@
   ros__parameters:
     feature_extract_enable: false
     point_filter_num: 3
-    max_iteration: 3
-    filter_size_surf: 0.3 # 改小：保留更多特征点，定位更精确
-    filter_size_map: 0.3
+    max_iteration: 5  # 从3增加到5：转弯时更多ICP迭代确保收敛，防止漂移
+    filter_size_surf: 0.2  # 从0.3减小到0.2：保留更多特征点，提升转弯时匹配精度
+    filter_size_map: 0.2   # 同步减小：地图端保留更多细节，提升回环匹配质量
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/ug_scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
       # lid_topic:  "/livox/lidar"
       lid_topic: "/livox/lidar"
-      imu_topic: "/livox/imu"  # 改为与bringup发布的话题一致
+      imu_topic: "/livox/imu_corrected"  # imu_flip.py翻转Z轴后的输出，与LiDAR坐标系一致
       time_sync_en: false # ONLY turn on when external time synchronization is really not possible
       time_offset_lidar_to_imu:
         0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
@@ -26,8 +26,8 @@
       scan_rate: 10
 
     mapping:
-      acc_cov: 1.0    # 调高：减少IMU权重，适配双足机器人平衡动作噪声
-      gyr_cov: 0.5    # 调高：减少陀螺仪权重
+      acc_cov: 1.0      # 调高：减少IMU权重，适配双足机器人平衡动作噪声
+      gyr_cov: 0.5      # 调高：减少陀螺仪权重
       b_acc_cov: 0.0001
       b_gyr_cov: 0.0001
       fov_degree: 360.0
@@ -49,4 +49,3 @@
       interval:
         -1 # how many LiDAR frames saved in each pcd file;
         # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
-

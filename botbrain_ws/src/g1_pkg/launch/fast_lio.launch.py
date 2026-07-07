@@ -48,11 +48,12 @@ def generate_launch_description():
                 '--resolution',     '0.05',
                 # Map-frame z thresholds (camera_init origin = IMU start position,
                 # floor ≈ -1.1 m, ceiling ≈ 3.0 m in typical indoor start).
-                '--ground-z-min',   '-1.5',   # below → step-down obstacle
-                '--ground-z',       '-0.8',   # floor band upper edge → FREE
-                '--obstacle-z',     '-0.8',   # above floor → OCCUPIED
-                '--obstacle-z-max', '0.3',    # ignore ceiling & above (2.5m room - 1.2m IMU ≈ 1.3m)
+                '--ground-z-min',   '-1.5',   # below → step-down / drop-off → OCCUPIED
+                '--ground-z',       '0.0',    # camera_init origin=IMU(≈1.1m高); z<0全部视为地面/FREE
+                '--obstacle-z',     '0.0',    # z>0以上才标记OCCUPIED; 传感器高度以上的墙体/家具
+                '--obstacle-z-max', '1.5',    # 地面以上约2.6m(1.5+1.1)，覆盖室内墙体全高
                 '--skip-frames',    '30',
+                '--min-obs-hits',   '3',   # 需命中3次才标记OCCUPIED，减少路人误识别
             ],
             output='screen',
         ))
