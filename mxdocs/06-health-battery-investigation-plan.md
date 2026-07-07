@@ -18,6 +18,39 @@
 
 另外，直接访问 `http://192.168.37.204/health` 会收到 `307 Temporary Redirect` 到 `/`。这是 Next.js middleware 的鉴权行为，不是电池数据缺失的根因，但会影响用 curl 或外部探针检查 `/health`。
 
+## 实施记录
+
+实施时间: 2026-07-07
+
+已按“统一使用 `/g1_robot` 前缀获取健康信息”的方向完成前端修正:
+
+- 新增 `frontend/src/utils/ros/namespace.ts`，默认 namespace 为 `g1_robot`，可通过 `NEXT_PUBLIC_ROS_NAMESPACE` 覆盖。
+- 电池 topic 已从 legacy `/battery` 切换为 `/g1_robot/battery`。
+- Jetson diagnostic stats 已从 `/diagnostic_stats` 切换为 `/g1_robot/diagnostic_stats`。
+- Health 页面相关状态 topic 已切换为:
+  - `/g1_robot/network_mode_status`
+  - `/g1_robot/state_machine/status`
+  - `/g1_robot/diagnostics`
+- Health 页面相关服务已切换为:
+  - `/g1_robot/state_machine/command`
+  - `/g1_robot/available_networks`
+  - `/g1_robot/saved_networks`
+  - `/g1_robot/check_4g`
+  - `/g1_robot/connect_wifi`
+  - `/g1_robot/forget_network`
+  - `/g1_robot/wifi_radio`
+  - `/g1_robot/update_network_status`
+  - `/g1_robot/jtop/reboot`
+- 已运行 `docker compose run --rm web_server_builder` 完成生产构建。
+- 已运行 `docker compose restart web_server_prod` 重启 80 端口生产服务。
+
+验证结果:
+
+- Next.js 生产构建成功，`/health` 页面完成静态生成。
+- `/g1_robot/battery`、`/g1_robot/diagnostic_stats`、`/g1_robot/network_mode_status`、`/g1_robot/state_machine/status` 均有 publisher。
+- 上述 Health/WiFi/状态机服务路径均存在，service type 与前端调用匹配。
+- 未登录访问 `http://192.168.37.204/health` 仍返回 307 到 `/`，这是现有鉴权逻辑的预期行为。
+
 ## 已验证现象
 
 ### HTTP 层

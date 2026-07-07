@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
 import * as ROSLIB from 'roslib';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 
 interface TriggerResponse {
   success: boolean;
@@ -22,7 +23,7 @@ export function useSystemReboot() {
     if (!serviceClientRef.current) {
       serviceClientRef.current = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/jtop/reboot',
+        name: getNamespacedRosTopic('jtop/reboot'),
         serviceType: 'std_srvs/srv/Trigger',
       });
     }

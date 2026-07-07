@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import * as ROSLIB from 'roslib';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
 import { WifiNetwork, parseNetworkList } from '@/types/WifiControl';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 
 export function useWifiNetworks() {
   const { connection } = useRobotConnection();
@@ -44,7 +45,7 @@ export function useWifiNetworks() {
       try {
         const service = new ROSLIB.Service({
           ros: connection.ros,
-          name: '/available_networks',
+          name: getNamespacedRosTopic('available_networks'),
           serviceType: 'bot_jetson_stats_interfaces/srv/GetAvailableNetworks'
         });
 

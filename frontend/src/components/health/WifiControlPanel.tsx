@@ -24,6 +24,7 @@ import { useWifiNetworks } from '@/hooks/ros/useWifiNetworks';
 import { useWifiControl } from '@/hooks/ros/useWifiControl';
 import { useWifiRadio } from '@/hooks/ros/useWifiRadio';
 import useNetworkModeStatus from '@/hooks/ros/useNetworkModeStatus';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 import { useNotifications } from '@/contexts/NotificationsContext';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
 import { WifiNetwork, WifiAuthType, signalToBars } from '@/types/WifiControl';
@@ -428,7 +429,7 @@ export function WifiControlPanel() {
     try {
       // For saved networks, the credentials are already stored on the robot
       // We only need to send the SSID - the robot will use the saved credentials
-      // This matches the ROS2 service call: ros2 service call /connect_wifi bot_jetson_stats_interfaces/srv/ConnectWifi "{ssid: 'networkName'}"
+      // This matches the ROS2 service call on the configured robot namespace.
 
       if (!connection.ros || !connection.online) {
         throw new Error('Not connected to robot');
@@ -436,7 +437,7 @@ export function WifiControlPanel() {
 
       const service = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/connect_wifi',
+        name: getNamespacedRosTopic('connect_wifi'),
         serviceType: 'bot_jetson_stats_interfaces/srv/ConnectWifi'
       });
 
@@ -508,7 +509,7 @@ export function WifiControlPanel() {
 
       const service = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/forget_network',
+        name: getNamespacedRosTopic('forget_network'),
         serviceType: 'bot_jetson_stats_interfaces/srv/ForgetNetwork'
       });
 

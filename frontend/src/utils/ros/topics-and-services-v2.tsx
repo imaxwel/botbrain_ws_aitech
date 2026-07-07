@@ -3,6 +3,7 @@ import * as ROSLIB from 'roslib';
 import { ServiceOptions } from '@/interfaces/ros/ServiceOptions';
 import { ServiceType } from '@/types/RobotActionTypes';
 import { RobotProfile } from '@/config/robot-profiles';
+import { getNamespacedRosTopic } from './namespace';
 
 // Legacy mappings for backward compatibility
 export const legacyTopicsMessages = {
@@ -70,6 +71,11 @@ export const TopicMsgType: Record<
   diagnostics: 'diagnosticStats',
 };
 
+const namespacedTopicKeys = new Set<keyof typeof legacyTopicsMessages>([
+  'battery',
+  'diagnostics',
+]);
+
 /**
  * Gets the ROS topic path based on robot profile or falls back to legacy
  * @param typeKey Topic key
@@ -87,11 +93,13 @@ export function getRosTopic(
   // Use robot profile if available, otherwise fall back to legacy
   if (robotProfile && robotProfile.topics) {
     topic = robotProfile.topics[typeKey] || legacyTopicsMessages[typeKey];
+  } else if (namespacedTopicKeys.has(typeKey)) {
+    return `${isDummy ? '/dummy' : ''}${getNamespacedRosTopic(legacyTopicsMessages[typeKey])}`;
   } else {
     topic = legacyTopicsMessages[typeKey];
   }
   
-  return `${isDummy ? '/dummy' : ''}/${topic}`;
+  return `${isDummy ? '/dummy' : ''}/${topic.replace(/^\/+/, '')}`;
 }
 
 /**

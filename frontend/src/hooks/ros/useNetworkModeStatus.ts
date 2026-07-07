@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
 import * as ROSLIB from 'roslib';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 
 export type NetworkMode = 'wifi' | '4g' | 'hotspot' | 'offline';
 
@@ -36,7 +37,7 @@ export default function useNetworkModeStatus(): NetworkModeStatus {
       // Create a custom topic for network mode status
       topicRef.current = new ROSLIB.Topic({
         ros: connection.ros,
-        name: '/network_mode_status',
+        name: getNamespacedRosTopic('network_mode_status'),
         messageType: 'std_msgs/String',
         compression: 'cbor',
         throttle_rate: 0,

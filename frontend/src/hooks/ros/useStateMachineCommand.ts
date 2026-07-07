@@ -7,6 +7,7 @@ import {
   type StateMachineServiceRequest,
   type StateMachineServiceResponse
 } from '@/types/StateMachine';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 
 export function useStateMachineCommand() {
   const { connection } = useRobotConnection();
@@ -23,7 +24,7 @@ export function useStateMachineCommand() {
     if (!serviceClientRef.current) {
       serviceClientRef.current = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/state_machine/command',
+        name: getNamespacedRosTopic('state_machine/command'),
         serviceType: 'bot_custom_interfaces/srv/StateMachine',
       });
     }

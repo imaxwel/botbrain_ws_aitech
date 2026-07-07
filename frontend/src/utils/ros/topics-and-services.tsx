@@ -2,6 +2,7 @@ import { getRosMsgType, getRosServiceType, rosTypes } from './messages';
 import * as ROSLIB from 'roslib';
 import { ServiceOptions } from '@/interfaces/ros/ServiceOptions';
 import { ServiceType } from '@/types/RobotActionTypes';
+import { getNamespacedRosTopic } from './namespace';
 
 export const servicesMessages: Record<ServiceType, string> = {
   prompt: 'rosa_prompt',
@@ -49,6 +50,11 @@ export const topicsMessages = {
   diagnostics: 'diagnostic_stats',
 };
 
+const namespacedTopicKeys = new Set<keyof typeof topicsMessages>([
+  'battery',
+  'diagnostics',
+]);
+
 /**
  * Estrutura de dados que contém o tipo de retorno das mensagens do ROS em lowerCase
  * de acordo com o nome do tópico desejado.
@@ -91,7 +97,11 @@ export function getRosTopic(
   isDummy = false
 ): string {
   const topic = topicsMessages[typeKey];
-  return `${isDummy ? '/dummy' : ''}/${topic}`;
+  const path = namespacedTopicKeys.has(typeKey)
+    ? getNamespacedRosTopic(topic)
+    : `/${topic}`;
+
+  return `${isDummy ? '/dummy' : ''}${path}`;
 }
 
 export function getRosService(typeKey: ServiceType, isDummy = false): string {

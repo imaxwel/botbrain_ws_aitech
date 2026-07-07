@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
 import * as ROSLIB from 'roslib';
 import type { DiagnosticArray, DiagnosticStatus } from '@/types/RosDiagnostics';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 
 // Cache entry for diagnostics with timestamp
 interface CachedDiagnostic {
@@ -32,7 +33,7 @@ export function useRosDiagnostics() {
 
     return new ROSLIB.Topic({
       ros: connection.ros,
-      name: '/diagnostics',
+      name: getNamespacedRosTopic('diagnostics'),
       messageType: 'diagnostic_msgs/DiagnosticArray',
     });
   }, [connection.ros, connection.online]);
@@ -151,7 +152,7 @@ export function useRosDiagnostics() {
         handleDiagnosticsMessage(message as DiagnosticArray);
       });
       setIsSubscribed(true);
-      console.log('Subscribed to /diagnostics topic');
+      console.log(`Subscribed to ${getNamespacedRosTopic('diagnostics')} topic`);
     } catch (error) {
       console.error('Failed to subscribe to diagnostics topic:', error);
       setIsSubscribed(false);
@@ -161,7 +162,7 @@ export function useRosDiagnostics() {
       try {
         diagnosticsTopic.unsubscribe();
         setIsSubscribed(false);
-        console.log('Unsubscribed from /diagnostics topic');
+        console.log(`Unsubscribed from ${getNamespacedRosTopic('diagnostics')} topic`);
       } catch (error) {
         console.error('Failed to unsubscribe from diagnostics topic:', error);
       }

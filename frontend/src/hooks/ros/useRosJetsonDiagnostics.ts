@@ -658,7 +658,7 @@ export function useRosJetsonDiagnostics() {
         }
       );
       
-        console.log('[Diagnostics] Successfully subscribed to /diagnostic_stats topic');
+        console.log('[Diagnostics] Successfully subscribed to namespaced diagnostic_stats topic');
         
       } catch (error) {
         console.error('[Diagnostics] Error subscribing to topic:', error);

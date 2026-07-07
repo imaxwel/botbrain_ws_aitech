@@ -38,7 +38,7 @@ export const G1R1Profile: RobotProfile = {
     velocity: 'cmd_vel_joy',
     velocityNipple: 'cmd_vel_nipple',
     temperature: 'imu_temp',
-    battery: 'battery',
+    battery: 'g1_robot/battery',
     laserScan: 'scan',
     odometry: 'odom',
     listener: 'listener',
@@ -51,7 +51,7 @@ export const G1R1Profile: RobotProfile = {
     rgb: 'viz/camcam/rgb/compressed_image',
     goalPose: 'goal_pose',
     cancelGoal: 'cancel_goal',
-    diagnostics: 'diagnostic_stats',
+    diagnostics: 'g1_robot/diagnostic_stats',
   },
 
   services: {

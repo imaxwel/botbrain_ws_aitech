@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import * as ROSLIB from 'roslib';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 import { WifiAuthType } from '@/types/WifiControl';
 
 interface ConnectOptions {
@@ -35,7 +36,7 @@ export function useWifiControl() {
       try {
         const service = new ROSLIB.Service({
           ros: connection.ros,
-          name: '/connect_wifi',
+          name: getNamespacedRosTopic('connect_wifi'),
           serviceType: 'bot_jetson_stats_interfaces/srv/ConnectWifi'
         });
 

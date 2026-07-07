@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
 import * as ROSLIB from 'roslib';
 import type { NodeStatus } from '@/types/StateMachine';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 
 export function useStateMachineStatus() {
   const { connection } = useRobotConnection();
@@ -19,7 +20,7 @@ export function useStateMachineStatus() {
     // Create topic subscriber
     const statusTopic = new ROSLIB.Topic({
       ros: connection.ros,
-      name: '/state_machine/status',
+      name: getNamespacedRosTopic('state_machine/status'),
       messageType: 'bot_custom_interfaces/msg/StatusArray',
     });
 

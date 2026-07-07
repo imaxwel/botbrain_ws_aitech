@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import * as ROSLIB from 'roslib';
 import { useRobotConnection } from '@/contexts/RobotConnectionContext';
+import { getNamespacedRosTopic } from '@/utils/ros/namespace';
 
 export function useWifiRadio() {
   const { connection } = useRobotConnection();
@@ -27,7 +28,7 @@ export function useWifiRadio() {
 
       const service = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/wifi_radio',
+        name: getNamespacedRosTopic('wifi_radio'),
         serviceType: 'std_srvs/srv/SetBool'
       });
 
@@ -98,7 +99,7 @@ export function useWifiRadio() {
 
       const service = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/saved_networks',
+        name: getNamespacedRosTopic('saved_networks'),
         serviceType: 'std_srvs/srv/Trigger'
       });
 
@@ -190,7 +191,7 @@ export function useWifiRadio() {
 
       const service = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/check_4g',
+        name: getNamespacedRosTopic('check_4g'),
         serviceType: 'std_srvs/srv/Trigger'
       });
 
@@ -261,7 +262,7 @@ export function useWifiRadio() {
 
       const service = new ROSLIB.Service({
         ros: connection.ros,
-        name: '/update_network_status',
+        name: getNamespacedRosTopic('update_network_status'),
         serviceType: 'std_srvs/srv/Trigger'
       });
 
