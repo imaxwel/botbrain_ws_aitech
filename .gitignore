@@ -86,3 +86,8 @@ botbrain_ws/src/joystick-bot/docs/
 botbrain_ws/src/install/
 install/
 mockg1/
+
+.codex
+botbrain_ws/detect_img/
+now_problem.txt
+report/
