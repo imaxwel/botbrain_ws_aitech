@@ -7,7 +7,7 @@
     filter_size_map: 0.2   # 同步减小：地图端保留更多细节，提升回环匹配质量
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/ug_scans.pcd"
 
     common:
       # lid_topic:  "/livox/lidar"
