@@ -14,7 +14,8 @@
 | 部署目录 | `/data/botbrain_ws/botbrain_project-main` | `/data/unitree/botbrain_ws` |
 | Git commit | `587433e` | `587433e` |
 | Git 状态 | 有 3 个本地改动 | 干净 |
-| D435i serial 证据 | `rs-enumerate-devices -s` 显示 `243722074823` | `localization` 日志显示 `419522072874` |
+| D435i serial 目标配置 | `243722074823` | 以本机 `/etc/botbrain/robot.env` 为准 |
+| D435i 运行时枚举 | 当前 USB/librealsense 枚举到 `243722074823`，与目标配置一致 | `localization` 日志曾显示 `419522072874` |
 | `/etc/botbrain/robot.env` | 不存在 | 不存在 |
 | `camera_config.yaml` | `serial_number: "419522072874"` | `serial_number: "419522072874"` |
 | `realsense.launch.py` | 只读 YAML serial，无 `BOTBRAIN_*` 环境变量覆盖 | 同左 |
@@ -25,7 +26,7 @@
 
 1. 两台机器已经是同一个提交 `587433e`，这对合并成同一套代码是好事。
 2. 当前 D435i serial 被硬编码在仓库内的 `botbrain_ws/src/g1_pkg/config/camera_config.yaml` 和运行产物 `botbrain_ws/install/.../camera_config.yaml`。
-3. `g1edu` 的真实 D435i serial 与仓库配置不一致，所以同一套代码直接部署到两台机器时必然有一台会错。
+3. `g1edu` 的 D435i 目标 serial 是 `243722074823`，与当前 USB/librealsense 枚举结果一致。
 4. 机器身份配置尚未从代码仓库中分离。
 5. 两台机器都使用 `robot_name: "g1_robot"`。如果它们在同一个 ROS domain 同时在线，会互相发现同名节点和 topic。
 
@@ -79,7 +80,7 @@ ROS_DOMAIN_ID=31
 ```bash
 # g1hk: /etc/botbrain/robot.env
 BOTBRAIN_ROBOT_ID=g1hk
-BOTBRAIN_FRONT_D435I_SERIAL=419522072874
+BOTBRAIN_FRONT_D435I_SERIAL=243722074823
 ROS_DOMAIN_ID=32
 ```
 
@@ -302,7 +303,7 @@ cat /etc/botbrain/robot.env
 rs-enumerate-devices -s
 ```
 
-如果 host 上 `rs-enumerate-devices` 与 `/dev/v4l/by-id` 不一致，以 librealsense 的 `rs-enumerate-devices -s` 和 `realsense2_camera_node` 启动日志为准。当前 `g1edu` 曾出现 `/dev/v4l/by-id` 显示旧 serial 的情况，不建议只看 udev symlink 下结论。
+如果 host 上 `rs-enumerate-devices`、`/dev/v4l/by-id` 与目标配置不一致，不能直接把目标配置改成枚举值。先核对实际接入的是哪台 D435i、USB 线/Hub 是否接错、是否存在旧 udev symlink 或设备 reset 后枚举混乱。当前 `g1edu` 的目标配置是 `243722074823`。
 
 ### g1hk
 
@@ -312,7 +313,7 @@ ssh g1hk
 sudo install -d -m 0755 /etc/botbrain
 sudo tee /etc/botbrain/robot.env >/dev/null <<'EOF'
 BOTBRAIN_ROBOT_ID=g1hk
-BOTBRAIN_FRONT_D435I_SERIAL=419522072874
+BOTBRAIN_FRONT_D435I_SERIAL=243722074823
 ROS_DOMAIN_ID=32
 EOF
 sudo chmod 0644 /etc/botbrain/robot.env
@@ -462,7 +463,7 @@ docker compose exec -T localization bash -lc '
 
 期望:
 
-- `BOTBRAIN_FRONT_D435I_SERIAL=419522072874`
+- `BOTBRAIN_FRONT_D435I_SERIAL=243722074823`
 - `/g1_robot/front_camera` 是 `active`
 - `/g1_robot/compressed_camera` 有帧
 - cockpit: `http://192.168.37.204/cockpit`

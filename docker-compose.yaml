@@ -1,3 +1,8 @@
+x-robot-env: &robot-env
+  env_file:
+    - path: ${BOTBRAIN_ROBOT_ENV_FILE:-/etc/botbrain/robot.env}
+      required: false
+
 services:
   base:
     image: botbotrobotics/botbrain:base
@@ -28,6 +33,7 @@ services:
       LD_LIBRARY_PATH: /opt/open3d/lib
 
   nav3d:
+    <<: *robot-env
     image: botbotrobotics/botbrain:nav3d
     stdin_open: true
     tty: true

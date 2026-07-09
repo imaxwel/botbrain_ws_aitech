@@ -9,8 +9,8 @@ from typing import List
 
 NUM_HAND_DOFS = 7
 DEFAULT_RATE_HZ = 50.0
-DEFAULT_HOLD_S = 1.0
-DEFAULT_RAMP_S = 1.0
+DEFAULT_HOLD_S = 2.0
+DEFAULT_RAMP_S = 0.5
 MAX_ABS_Q = 2
 DEFAULT_BASE_POSE = [0.0] * NUM_HAND_DOFS
 DEFAULT_LAST_POSE_FILE = os.path.expanduser("~/.cache/dex3_right_last_pose.json")

@@ -16,6 +16,10 @@ from launch_ros.events.lifecycle import ChangeState
 from launch.events import matches_action
 from lifecycle_msgs.msg import Transition
 
+def env_override(name: str, fallback: str = "") -> str:
+    value = os.environ.get(name, "").strip()
+    return value if value else (fallback or "")
+
 def make_camera_params(serial: str | None, camera_name: str, tf_prefix: str, camera_side: str):
     name_prefix = f"{camera_name}_" if camera_name else ""
     params = {
@@ -71,9 +75,15 @@ def generate_launch_description():
         _raw_cam = yaml.safe_load(f)["camera_configuration"]
 
     front_camera = (_raw_cam.get('front') or {}).get('type', '')
-    front_serial = (_raw_cam.get('front') or {}).get('serial_number', '')
+    front_serial = env_override(
+        "BOTBRAIN_FRONT_D435I_SERIAL",
+        (_raw_cam.get('front') or {}).get('serial_number', '')
+    )
     back_camera  = (_raw_cam.get('back')  or {}).get('type', '')
-    back_serial  = (_raw_cam.get('back') or {}).get('serial_number', '')
+    back_serial = env_override(
+        "BOTBRAIN_BACK_D435I_SERIAL",
+        (_raw_cam.get('back') or {}).get('serial_number', '')
+    )
 
     nodes = []
 

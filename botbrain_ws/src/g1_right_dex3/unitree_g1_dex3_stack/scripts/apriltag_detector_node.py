@@ -52,7 +52,7 @@ class AprilTagDetectorNode(Node):
 
         # ---------- declare parameters (11 from YAML + 1 launch-arg) ----------
         self.declare_parameter('tag_family', 'tag36h11')
-        self.declare_parameter('tag_size', 0.08)
+        self.declare_parameter('tag_size', 0.05)
         self.declare_parameter('target_tag_id', 0)
         self.declare_parameter('offset_xyz', [0.0, 0.0, 0.05])
         self.declare_parameter('decision_margin_min', 25.0)

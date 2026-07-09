@@ -60,7 +60,7 @@ class V4L2AprilTagTrigger(Node):
         self.declare_parameter('continuous_capture', False)
 
         self.declare_parameter('tag_family', 'tag36h11')
-        self.declare_parameter('tag_size', 0.08)
+        self.declare_parameter('tag_size', 0.05)
         self.declare_parameter('target_tag_id', 0)
         self.declare_parameter('offset_xyz', [0.0, 0.0, 0.0])
         self.declare_parameter('decision_margin_min', 25.0)

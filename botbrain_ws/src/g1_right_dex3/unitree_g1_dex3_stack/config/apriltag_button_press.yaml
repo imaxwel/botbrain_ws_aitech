@@ -71,8 +71,8 @@ apriltag_button_press_node:
     dex3_net_if: "enP8p1s0"
     pre_extend_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 0.0, 0.0]
     close_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 1.7, 1.8]
-    pre_extend_wait_s: 1.0
-    close_wait_s: 1.0
+    pre_extend_wait_s: 2.0
+    close_wait_s: 3.0
     capture_wait_timeout_s: 12.0
     target_pose_stale_s: 1.5
     traj_wait_timeout_s: 6.0
@@ -84,7 +84,7 @@ ik_fcl_ompl_planner:
   ros__parameters:
     tcp_offset_x: 0.22
     tcp_offset_y: -0.025
-    tcp_offset_z: -0.012
+    tcp_offset_z: -0.002
     adaptive_orientation_enabled: false
     collision_detection_enabled: false
     velocity_scale: 0.01
