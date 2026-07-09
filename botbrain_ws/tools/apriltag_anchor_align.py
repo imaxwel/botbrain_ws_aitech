@@ -59,6 +59,10 @@ class AprilTagAnchorAlign(Node):
         self.latest = None
         self.last_detection_time = 0.0
         self.active_motion_s = 0.0
+        self.step_count = 0
+        self.motion_until = 0.0
+        self.settle_until = 0.0
+        self.active_cmd = Twist()
         self.stable_count = 0
         self.done = False
         self.succeeded = False
@@ -147,6 +151,13 @@ class AprilTagAnchorAlign(Node):
             return
 
         now = time.monotonic()
+        if self.args.enable_motion and now < self.motion_until:
+            self.cmd_pub.publish(self.active_cmd)
+            return
+        if self.args.enable_motion and now < self.settle_until:
+            self.publish_stop()
+            return
+
         if self.latest is None or now - self.last_detection_time > self.args.detection_stale_s:
             self.stable_count = 0
             if self.args.enable_motion:
@@ -162,17 +173,7 @@ class AprilTagAnchorAlign(Node):
         x_error = float(pose_error[0])
         z_error = float(pose_error[2])
 
-        # If the tag is farther than the anchor, move forward. If it appears
-        # right of the recorded pixel, yaw right. Optional lateral control can
-        # reduce camera-frame x error but is disabled by default for caution.
-        cmd = Twist()
-        if abs(z_error) > self.args.z_deadband:
-            cmd.linear.x = clamp(self.args.kp_z * z_error, self.args.max_linear_x)
-        if self.args.enable_lateral:
-            if abs(x_error) > self.args.x_deadband:
-                cmd.linear.y = clamp(-self.args.kp_x * x_error, self.args.max_linear_y)
-        if abs(u_error) > self.args.pixel_deadband:
-            cmd.angular.z = clamp(-self.args.kp_u * u_error, self.args.max_angular_z)
+        cmd = self.compute_command(u_error, x_error, z_error)
 
         aligned = (
             abs(u_error) <= self.args.pixel_tolerance
@@ -187,7 +188,8 @@ class AprilTagAnchorAlign(Node):
         self.get_logger().info(
             "tag=%d margin=%.1f center=(%.1f,%.1f) "
             "pixel_err=(%.1f,%.1f) camera_xyz=(%.4f,%.4f,%.4f) "
-            "pose_err=(%.4f,%.4f,%.4f) cmd=(%.3f,%.3f,%.3f) stable=%d/%d"
+            "pose_err=(%.4f,%.4f,%.4f) cmd=(%.3f,%.3f,%.3f) "
+            "step=%d/%d active=%.1f/%.1f stable=%d/%d"
             % (
                 self.args.tag_id,
                 sample.margin,
@@ -204,6 +206,10 @@ class AprilTagAnchorAlign(Node):
                 cmd.linear.x,
                 cmd.linear.y,
                 cmd.angular.z,
+                self.step_count,
+                self.args.max_steps,
+                self.active_motion_s,
+                self.args.max_active_motion_s,
                 self.stable_count,
                 self.args.required_stable_count,
             )
@@ -217,8 +223,19 @@ class AprilTagAnchorAlign(Node):
             return
 
         if self.args.enable_motion:
-            self.active_motion_s += 1.0 / self.args.control_hz
-            if self.active_motion_s > self.args.max_active_motion_s:
+            if self.step_count >= self.args.max_steps:
+                self.publish_stop()
+                self.done = True
+                self.failure_reason = (
+                    "step limit reached before anchor alignment; "
+                    "check the latest logged error before rerunning"
+                )
+                self.get_logger().error(
+                    "stopped after %d movement steps without reaching anchor"
+                    % self.args.max_steps
+                )
+                return
+            if self.active_motion_s + self.args.move_burst_s > self.args.max_active_motion_s:
                 self.publish_stop()
                 self.done = True
                 self.failure_reason = (
@@ -230,7 +247,64 @@ class AprilTagAnchorAlign(Node):
                     % self.args.max_active_motion_s
                 )
                 return
+            self.step_count += 1
+            self.active_motion_s += self.args.move_burst_s
+            self.active_cmd = cmd
+            self.motion_until = now + self.args.move_burst_s
+            self.settle_until = self.motion_until + self.args.settle_s
             self.cmd_pub.publish(cmd)
+
+    def compute_command(self, u_error, x_error, z_error):
+        # Choose one dominant axis per burst so each move is easy to observe and
+        # can be stopped before compounding a wrong sign near obstacles.
+        candidates = []
+        if abs(u_error) > self.args.pixel_deadband and self.args.max_angular_z > 0.0:
+            candidates.append(("yaw", abs(u_error) / max(self.args.pixel_tolerance, 1e-6)))
+        if (
+            self.args.enable_lateral
+            and abs(x_error) > self.args.x_deadband
+            and self.args.max_linear_y > 0.0
+        ):
+            candidates.append(("lateral", abs(x_error) / max(self.args.x_tolerance, 1e-6)))
+        if abs(z_error) > self.args.z_deadband and self.args.max_linear_x > 0.0:
+            candidates.append(("forward", abs(z_error) / max(self.args.z_tolerance, 1e-6)))
+
+        cmd = Twist()
+        if not candidates:
+            return cmd
+
+        axis = max(candidates, key=lambda item: item[1])[0]
+        if axis == "yaw":
+            sign = -1.0 if not self.args.invert_yaw else 1.0
+            cmd.angular.z = self.limit_with_min(
+                sign * self.args.kp_u * u_error,
+                self.args.max_angular_z,
+                self.args.min_angular_z,
+            )
+        elif axis == "lateral":
+            sign = -1.0 if not self.args.invert_lateral else 1.0
+            cmd.linear.y = self.limit_with_min(
+                sign * self.args.kp_x * x_error,
+                self.args.max_linear_y,
+                self.args.min_linear_y,
+            )
+        elif axis == "forward":
+            sign = 1.0 if not self.args.invert_forward else -1.0
+            cmd.linear.x = self.limit_with_min(
+                sign * self.args.kp_z * z_error,
+                self.args.max_linear_x,
+                self.args.min_linear_x,
+            )
+        return cmd
+
+    @staticmethod
+    def limit_with_min(value, max_abs, min_abs):
+        if max_abs <= 0.0:
+            return 0.0
+        limited = clamp(value, max_abs)
+        if min_abs <= 0.0 or abs(limited) >= min_abs:
+            return limited
+        return math.copysign(min(min_abs, max_abs), value)
 
     def publish_stop(self):
         if self.args.enable_motion:
@@ -271,10 +345,19 @@ def build_arg_parser():
     parser.add_argument("--max-linear-x", type=float, default=0.01)
     parser.add_argument("--max-linear-y", type=float, default=0.008)
     parser.add_argument("--max-angular-z", type=float, default=0.06)
+    parser.add_argument("--min-linear-x", type=float, default=0.0)
+    parser.add_argument("--min-linear-y", type=float, default=0.0)
+    parser.add_argument("--min-angular-z", type=float, default=0.0)
     parser.add_argument("--max-active-motion-s", type=float, default=3.0)
+    parser.add_argument("--move-burst-s", type=float, default=0.6)
+    parser.add_argument("--settle-s", type=float, default=0.6)
+    parser.add_argument("--max-steps", type=int, default=8)
 
     parser.add_argument("--enable-motion", action="store_true")
     parser.add_argument("--enable-lateral", action="store_true")
+    parser.add_argument("--invert-yaw", action="store_true")
+    parser.add_argument("--invert-lateral", action="store_true")
+    parser.add_argument("--invert-forward", action="store_true")
     return parser
 
 
