@@ -1,13 +1,6 @@
 v4l2_apriltag_trigger:
   ros__parameters:
-    camera_id: "d435i_front"
-    expected_serial: "253243060636"
-    video_device: "auto"
-    expected_usb_interface_num: "03"
-    image_width: 640
-    image_height: 480
-    fps: 6.0
-    fourcc: "YUYV"
+    image_topic: "/g1_robot/front_camera/color/image_raw"
     sample_count: 4
     warmup_frames: 12
     warmup_min_s: 5.0
@@ -23,7 +16,7 @@ v4l2_apriltag_trigger:
 
     camera_matrix: [602.0224609375, 0.0, 330.956695556641, 0.0, 601.472839355469, 256.269927978516, 0.0, 0.0, 1.0]
     dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
-    camera_info_topic: "/camera/realsense2_camera/color/camera_info"
+    camera_info_topic: "/g1_robot/front_camera/depth/camera_info"
     use_live_camera_info: true
     camera_frame: "camera_color_optical_frame"
     output_frame: "torso_link"

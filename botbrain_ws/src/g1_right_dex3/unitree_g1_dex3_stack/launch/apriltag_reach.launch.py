@@ -42,10 +42,10 @@ def generate_launch_description():
         description='V4L2 triggered AprilTag parameter YAML file',
     )
 
-    v4l2_video_device_arg = DeclareLaunchArgument(
-        'v4l2_video_device',
-        default_value='auto',
-        description='Stable V4L2 RGB device path for the target D435i',
+    apriltag_image_topic_arg = DeclareLaunchArgument(
+        'apriltag_image_topic',
+        default_value='/g1_robot/front_camera/color/image_raw',
+        description='ROS2 image topic for AprilTag trigger (replaces V4L2 device)',
     )
 
     debug_image_dir_arg = DeclareLaunchArgument(
@@ -124,7 +124,7 @@ def generate_launch_description():
         parameters=[
             LaunchConfiguration('v4l2_config_file'),
             {
-                'video_device': LaunchConfiguration('v4l2_video_device'),
+                'image_topic': LaunchConfiguration('apriltag_image_topic'),
                 'debug_image_dir': LaunchConfiguration('debug_image_dir'),
                 'detect_only': LaunchConfiguration('detect_only'),
             },
@@ -168,7 +168,7 @@ def generate_launch_description():
         planning_timeout_arg,
         camera_only_arg,
         v4l2_config_file_arg,
-        v4l2_video_device_arg,
+        apriltag_image_topic_arg,
         debug_image_dir_arg,
         detect_only_arg,
         tf_topic_arg,

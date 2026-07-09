@@ -78,10 +78,10 @@ def generate_launch_description():
         default_value='torso_link',
         description='Output frame for button_detector_node',
     )
-    v4l2_video_device_arg = DeclareLaunchArgument(
-        'v4l2_video_device',
-        default_value='auto',
-        description='Stable V4L2 RGB device path for the target D435i',
+    apriltag_image_topic_arg = DeclareLaunchArgument(
+        'apriltag_image_topic',
+        default_value='/g1_robot/front_camera/color/image_raw',
+        description='ROS2 image topic for AprilTag trigger (replaces V4L2 device)',
     )
     debug_image_dir_arg = DeclareLaunchArgument(
         'debug_image_dir',
@@ -164,7 +164,7 @@ def generate_launch_description():
         parameters=[
             LaunchConfiguration('v4l2_config_file'),
             {
-                'video_device': LaunchConfiguration('v4l2_video_device'),
+                'image_topic': LaunchConfiguration('apriltag_image_topic'),
                 'debug_image_dir': LaunchConfiguration('debug_image_dir'),
                 'detect_only': True,
                 'trigger_key': '',
@@ -231,7 +231,7 @@ def generate_launch_description():
         target_floor_arg,
         det_threshold_arg,
         output_frame_arg,
-        v4l2_video_device_arg,
+        apriltag_image_topic_arg,
         debug_image_dir_arg,
         tf_topic_arg,
         tf_static_topic_arg,
