@@ -91,6 +91,14 @@ services:
           open3d_loc \
           --cmake-args -DOpen3D_DIR=/opt/open3d/lib/cmake/Open3D"]
 
+  zenoh:
+    image: g1_nav_final:latest
+    network_mode: host
+    ipc: host
+    container_name: g1_robot_zenoh
+    command: ["bash", "-lc", "source /opt/ros/humble/setup.bash && ZENOH_CONFIG_OVERRIDE='listen/endpoints=[\"tcp/0.0.0.0:7448\"]' ros2 run rmw_zenoh_cpp rmw_zenohd"]
+    restart: always
+
   state_machine:
     extends: base
     container_name: g1_robot_state_machine
