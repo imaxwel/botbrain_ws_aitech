@@ -10,22 +10,32 @@ v4l2_apriltag_trigger:
     fourcc: "YUYV"
     sample_count: 4
     warmup_frames: 12
-    warmup_min_s: 2.0
+    warmup_min_s: 5.0
     sample_interval_s: 0.05
     continuous_capture: false
 
     tag_family: "tag36h11"
-    tag_size: 0.08
+    tag_size: 0.05
     target_tag_id: 0
-    offset_xyz: [-0.10, -0.13, -0.04]
+    offset_xyz: [0.075, 0.22, 0.00]
     decision_margin_min: 25.0
-    detect_scale: 0.5
+    quad_decimate: 1.0
+    detect_scale: 1.0
 
     camera_matrix: [602.0224609375, 0.0, 330.956695556641, 0.0, 601.472839355469, 256.269927978516, 0.0, 0.0, 1.0]
     dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+    camera_info_topic: "/camera/realsense2_camera/color/camera_info"
+    use_live_camera_info: true
     camera_frame: "camera_color_optical_frame"
     output_frame: "torso_link"
-    tf_lookup_timeout_s: 0.2
+    tf_lookup_timeout_s: 0.5
+    tf_stable_required: true
+    tf_stable_wait_s: 3.0
+    tf_stable_sample_count: 5
+    tf_stable_sample_interval_s: 0.15
+    tf_stable_translation_tol_m: 0.003
+    tf_stable_rotation_tol_deg: 0.5
+    tf_stable_source_frame: "camera_color_optical_frame"
 
     goal_pose_topic: "/goal_pose"
     tag_pose_topic: "/apriltag/tag_pose"
@@ -35,7 +45,7 @@ v4l2_apriltag_trigger:
     trigger_key: ""
     trigger_topic: "/apriltag/capture_trigger"
     publish_intermediate_poses: false
-    detect_only: true
+    detect_only: false
     fixed_orientation_enabled: false
     fixed_rpy: [-0.0873, -0.0340, 0.0199]
 
@@ -43,10 +53,6 @@ v4l2_apriltag_trigger:
     debug_image_dir: "/botbrain_ws/detect_img"
     save_raw_images: false
     jpeg_quality: 90
-    baseline_compensation_enabled: true
-    baseline_x: 0.4680
-    baseline_y: -0.0700
-    baseline_z: 0.1322
 
 apriltag_button_press_node:
   ros__parameters:
@@ -60,25 +66,28 @@ apriltag_button_press_node:
     alt_rpy_y_threshold: -0.0954
     alt_rpy: [-0.0340, -0.1024, 0.5480]
     pre_contact_offset_x: 0.05
+    press_x_offset: -0.015 # 比tag位置浅1cm
     dex3_setpoint_script: "/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/example/control_dex3_right_setpoint.py"
     dex3_net_if: "enP8p1s0"
     pre_extend_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 0.0, 0.0]
     close_pose: [0.0, -1.05, -1.7, 1.7, 1.8, 1.7, 1.8]
-    pre_extend_wait_s: 2.5
-    close_wait_s: 2.5
-    capture_wait_timeout_s: 6.0
+    pre_extend_wait_s: 1.0
+    close_wait_s: 1.0
+    capture_wait_timeout_s: 12.0
     target_pose_stale_s: 1.5
-    traj_wait_timeout_s: 5.0
-    traj_completion_buffer_s: 0.8
+    traj_wait_timeout_s: 6.0
+    traj_completion_buffer_s: 1.2
     ramp_wait_s: 3.5
     dry_run: false
-
+  
 ik_fcl_ompl_planner:
   ros__parameters:
     tcp_offset_x: 0.22
+    tcp_offset_y: -0.025
+    tcp_offset_z: -0.012
     adaptive_orientation_enabled: false
     collision_detection_enabled: false
-    velocity_scale: 0.01
+    velocity_scale: 0.03
     fallback_enabled: true
     fallback_max_retraction: 0.05
     fallback_step: 0.005
