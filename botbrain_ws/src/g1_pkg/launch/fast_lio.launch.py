@@ -46,21 +46,29 @@ def generate_launch_description():
                 '--grid-topic',     '/accumulated_grid',
                 '--map-frame',      'camera_init',
                 '--resolution',     '0.05',
+                # ---- Scheme 3: wider ground band + higher confirmation ----
                 # Map-frame z thresholds (camera_init origin = IMU start position).
-                # Sensor height H ≈ 1.3 m → floor is at z ≈ -1.3 m in camera_init.
+                # Sensor height H ≈ 1.27 m → floor is at z ≈ -1.27 m in camera_init.
                 #
-                # z classification layout (H=1.3m example):
-                #   z > +1.0 → ignored (ceiling)
-                #   z -1.0 ~ +1.0 → OCCUPIED (walls: 0.3 m above floor to 2.3 m above floor)
-                #   z -1.7 ~ -1.0 → FREE (floor band, centre ≈ -1.3 m)
-                #   z < -1.7 → OCCUPIED (step-down / drop-off)
-                '--ground-z-min',   '-1.7',   # drops below -1.7 m → OCCUPIED
-                '--ground-z',       '-1.0',   # floor FREE band: -1.7 ~ -1.0 (0.3 m above floor)
-                '--obstacle-z',     '-1.0',   # walls/obstacles start 0.3 m above floor
-                '--obstacle-z-max', '1.0',    # ceiling cutoff: floor+2.3 m (safe for 2.5 m rooms)
+                # z classification layout (H=1.27m example):
+                #   z > +0.8 → ignored (ceiling, above floor+2.07m)
+                #   z -0.8 ~ +0.8 → OCCUPIED (from 0.47m above floor to 2.07m)
+                #   z -2.0 ~ -0.8 → FREE (floor band, ~1.2m wide for bipedal tilt margin)
+                #   z < -2.0 → OCCUPIED (step-down / drop-off)
+                '--ground-z-min',   '-2.0',   # wider lower bound (was -1.7)
+                '--ground-z',       '-0.8',   # wider upper bound (was -1.0), FREE band now 1.2m
+                '--obstacle-z',     '-0.8',   # match ground-z
+                '--obstacle-z-max', '0.8',    # lower ceiling cutoff (was 1.0)
                 '--skip-frames',    '30',
-                '--min-obs-hits',   '3',   # 需命中3次才标记OCCUPIED，减少路人误识别
-                '--map-z',          '-1.27',  # 传感器离地1.27m，地图显示在地面高度
+                '--min-obs-hits',   '8',      # raised from 3 → less false obstacles from noise/people
+                '--map-z',          '-1.27',  # sensor-to-floor height for 3D display
+                # ---- Ground-plane estimation (tilt-robust) ----
+                '--use-ground-plane',          # RANSAC plane fit → height-above-plane classification
+                '--ground-margin',   '0.10',   # 10cm above plane = FREE (wider for walking bounce)
+                '--obstacle-margin', '0.18',   # 18cm above plane = OCCUPIED start
+                '--max-obstacle-height', '2.5', # 2.5m above local floor = ceiling → ignored
+                '--plane-smooth',    '0.92',   # stronger temporal smoothing
+                # Note: --map-z is a fallback; grid z auto-aligns to estimated floor height
             ],
             output='screen',
         ))

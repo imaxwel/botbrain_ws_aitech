@@ -74,6 +74,19 @@ class GridAccumulator(Node):
         self.min_obs_hits = args.min_obs_hits        # hits needed before marking OCCUPIED
         self.map_z = args.map_z  # z-offset for grid display in 3D view
 
+        # Ground-plane estimation (RANSAC-style least-squares) — robust to
+        # tilted camera_init frames. When enabled, classification uses
+        # height-above-fitted-plane instead of absolute z thresholds.
+        # This is critical for bipedal robots where the torso/IMU may be
+        # slightly tilted at startup or during walking.
+        self.use_ground_plane = getattr(args, 'use_ground_plane', True)
+        self.ground_margin = getattr(args, 'ground_margin', 0.08)     # 8 cm above plane = FREE
+        self.obstacle_margin = getattr(args, 'obstacle_margin', 0.15) # 15 cm above plane = OCCUPIED start
+        self.max_obstacle_height = getattr(args, 'max_obstacle_height', 2.5) # 2.5m above local floor = ceiling
+        self.plane_coeffs = None  # [a, b, c] for z = a*x + b*y + c
+        self.plane_smooth = getattr(args, 'plane_smooth', 0.9)  # EMA smoothing factor
+        self.plane_initialized = False
+
         if not self.pre_transformed:
             self.tf_buf = Buffer()
             self.tf_listener = TransformListener(self.tf_buf, self)
@@ -107,8 +120,11 @@ class GridAccumulator(Node):
 
         self.get_logger().info(
             f"grid_accumulator: res={self.res}m, "
+            f"ground_plane={'ON' if self.use_ground_plane else 'OFF'}, "
             f"ground=[{self.ground_z_min},{self.ground_z}), "
             f"obs=[{self.obstacle_z},{self.obstacle_z_max}), "
+            f"margin_free={self.ground_margin}m margin_obs={self.obstacle_margin}m, "
+            f"min_obs_hits={self.min_obs_hits}, "
             f"sub={self.cloud_topic}, pub={self.grid_topic}")
 
     def log_stats(self):
@@ -116,10 +132,14 @@ class GridAccumulator(Node):
             self.get_logger().info(
                 f"frames={self.frames} (no grid yet; waiting for first cloud + TF)")
         else:
+            plane_info = ""
+            if self.use_ground_plane and self.plane_coeffs is not None:
+                _, _, c = self.plane_coeffs
+                plane_info = f" floor_z={c:.3f}m"
             self.get_logger().info(
                 f"frames={self.frames} ground={self.ground_pts} obs={self.obs_pts} "
                 f"grid={self.grid.shape[1]}x{self.grid.shape[0]} "
-                f"origin=({self.origin_x:.2f},{self.origin_y:.2f})")
+                f"origin=({self.origin_x:.2f},{self.origin_y:.2f}){plane_info}")
 
     def cloud_cb(self, msg: PointCloud2):
         self.frames += 1
@@ -163,13 +183,151 @@ class GridAccumulator(Node):
             ])
             pts_map = pts @ rot.T + np.array([t.x, t.y, t.z])
 
-        ground_mask = (z >= self.ground_z_min) & (z < self.ground_z)
-        obs_mask = (z < self.ground_z_min) | ((z > self.obstacle_z) & (z < self.obstacle_z_max))
+        if self.use_ground_plane:
+            # ---- plane-relative classification (tilt-robust) ----
+            coeffs = self._estimate_ground_plane(pts_map[:, 0], pts_map[:, 1], z)
+            if coeffs is not None:
+                ground_mask, obs_mask = self._classify_by_plane(
+                    pts_map[:, 0], pts_map[:, 1], z, coeffs)
+            else:
+                # fallback to fixed-z while waiting for plane convergence
+                ground_mask = (z >= self.ground_z_min) & (z < self.ground_z)
+                obs_mask = (z < self.ground_z_min) | ((z > self.obstacle_z) & (z < self.obstacle_z_max))
+        else:
+            # ---- fixed-z classification (legacy) ----
+            ground_mask = (z >= self.ground_z_min) & (z < self.ground_z)
+            obs_mask = (z < self.ground_z_min) | ((z > self.obstacle_z) & (z < self.obstacle_z_max))
 
         with self.lock:
             self._ingest(pts_map[:, 0], pts_map[:, 1], ground_mask, obs_mask)
             self.ground_pts += int(ground_mask.sum())
             self.obs_pts += int(obs_mask.sum())
+
+    def _estimate_ground_plane(self, xs, ys, zs):
+        """Fit a ground plane z = a*x + b*y + c via stratified sampling.
+
+        Divides the x-y space into a grid (~8×8 cells) and takes the
+        lowest few z values from EACH cell as floor candidates.  This
+        ensures floor samples are spatially distributed across the entire
+        mapped area — critical when the camera_init frame is tilted and
+        a global "lowest 30% z" would concentrate all samples on the
+        downhill side, biasing the plane fit.
+
+        Applies MAD-based outlier rejection within each cell, then a
+        least-squares plane fit across all candidate points.  Results
+        are EMA-smoothed across frames for stability.
+
+        Returns [a, b, c] coefficients, or None if insufficient points.
+        """
+        n = len(zs)
+        if n < 100:
+            return self.plane_coeffs  # keep last known plane
+
+        # ---- stratified sampling: grid cells × lowest-per-cell ----
+        x_min, x_max = float(xs.min()), float(xs.max())
+        y_min, y_max = float(ys.min()), float(ys.max())
+        span_x = x_max - x_min
+        span_y = y_max - y_min
+
+        # 8×8 grid = 64 cells; at least 1 m per cell to avoid tiny cells
+        cell_size = max(span_x / 8.0, span_y / 8.0, 1.0)
+        n_cells_x = max(1, int(np.ceil(span_x / cell_size)))
+        n_cells_y = max(1, int(np.ceil(span_y / cell_size)))
+
+        cell_ix = np.clip(
+            ((xs - x_min) / cell_size).astype(np.int32), 0, n_cells_x - 1)
+        cell_iy = np.clip(
+            ((ys - y_min) / cell_size).astype(np.int32), 0, n_cells_y - 1)
+
+        # Collect up to 8 lowest-z points per cell as floor candidates
+        PER_CELL = 8
+        cell_ground_idx = []
+        for cx in range(n_cells_x):
+            for cy in range(n_cells_y):
+                in_cell = np.where((cell_ix == cx) & (cell_iy == cy))[0]
+                n_cell = len(in_cell)
+                if n_cell < 4:
+                    continue
+                n_take = min(PER_CELL, n_cell // 2)
+                # local argpartition within this cell
+                z_cell = zs[in_cell]
+                kth = np.argpartition(z_cell, n_take)[:n_take]
+                cell_ground_idx.append(in_cell[kth])
+
+        if not cell_ground_idx:
+            return self.plane_coeffs  # not enough cells
+
+        ground_idx = np.concatenate(cell_ground_idx)
+        gx = xs[ground_idx]
+        gy = ys[ground_idx]
+        gz = zs[ground_idx]
+
+        # ---- MAD outlier rejection on the pooled candidates ----
+        med_z = np.median(gz)
+        mad_z = np.median(np.abs(gz - med_z))
+        if mad_z < 0.005:
+            mad_z = 0.005
+        inlier = np.abs(gz - med_z) < 3.0 * mad_z
+        gx, gy, gz = gx[inlier], gy[inlier], gz[inlier]
+
+        if len(gz) < 50:
+            return self.plane_coeffs
+
+        # ---- least-squares plane fit ----
+        try:
+            coeffs, _r, _rank, _s = np.linalg.lstsq(
+                np.column_stack([gx, gy, np.ones_like(gx)]), gz, rcond=None)
+            new_plane = np.asarray(coeffs, dtype=np.float64)
+        except np.linalg.LinAlgError:
+            return self.plane_coeffs
+
+        # ---- EMA smoothing ----
+        if self.plane_coeffs is None:
+            self.plane_coeffs = new_plane
+            self.plane_initialized = True
+        else:
+            alpha = 1.0 - self.plane_smooth
+            self.plane_coeffs = (self.plane_smooth * self.plane_coeffs +
+                                 alpha * new_plane)
+
+        # ---- log (first 5 + every 500 frames) ----
+        if self.frames <= self.skip_frames + 5 or self.frames % 500 == 0:
+            a, b, c = self.plane_coeffs
+            nz = 1.0 / np.sqrt(a*a + b*b + 1.0)
+            tilt_deg = np.degrees(np.arccos(nz))
+            # floor height range across the mapped area
+            z_min_floor = a * x_min + b * y_min + c
+            z_max_floor = a * x_max + b * y_max + c
+            self.get_logger().info(
+                f"ground plane: z={a:+.4f}*x{b:+.4f}*y{c:+.4f}  "
+                f"tilt={tilt_deg:.2f}°  cells={n_cells_x}×{n_cells_y}  "
+                f"floor_z_range=[{z_min_floor:.3f}, {z_max_floor:.3f}]m")
+
+        return self.plane_coeffs
+
+    def _classify_by_plane(self, xs, ys, zs, coeffs):
+        """Classify points by height-above-fitted-ground-plane.
+
+        - height ∈ [0, ground_margin)          → FREE  (floor surface)
+        - height ∈ [obstacle_margin, max_obs_h)→ OCCUPIED (walls, furniture)
+        - height < 0                            → OCCUPIED (drop-off / step-down)
+        - height ∈ [ground_margin, obstacle_margin) → UNKNOWN (transition zone)
+        - height ≥ max_obstacle_height          → IGNORED (ceiling)
+
+        max_obstacle_height is measured from the LOCAL ground plane at each
+        (x,y), so the ceiling cutoff stays correct even with tilted maps.
+        """
+        a, b, c = coeffs
+        z_plane = a * xs + b * ys + c   # expected z on the ground plane at each point
+        height = zs - z_plane           # height above LOCAL ground plane
+
+        # Per-point ceiling cutoff: points > max_obstacle_height above
+        # the local ground are ceiling/overhang → ignored.
+        ground_mask = (height >= -0.02) & (height < self.ground_margin)
+        obs_mask = ((height < -0.02) |
+                    ((height >= self.obstacle_margin) & (height < self.max_obstacle_height)))
+
+        return ground_mask, obs_mask
 
     def _ingest(self, xs, ys, ground_mask, obs_mask):
         # Determine bbox of new points
@@ -241,6 +399,13 @@ class GridAccumulator(Node):
             h, w = self.grid.shape
             data = self.grid.flatten().tolist()
             origin_x, origin_y = self.origin_x, self.origin_y
+            # Auto-align grid display z to estimated floor height when
+            # ground-plane estimation is active. Falls back to fixed --map-z.
+            if self.use_ground_plane and self.plane_coeffs is not None:
+                _, _, floor_z = self.plane_coeffs
+                display_z = float(floor_z)
+            else:
+                display_z = self.map_z
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.map_frame
@@ -250,7 +415,7 @@ class GridAccumulator(Node):
         pose = Pose()
         pose.position.x = origin_x
         pose.position.y = origin_y
-        pose.position.z = self.map_z  # offset to align grid with floor in 3D view
+        pose.position.z = display_z  # auto or fixed, aligns grid with floor in 3D view
         pose.orientation.w = 1.0
         msg.info.origin = pose
         msg.data = data
@@ -285,6 +450,18 @@ def main():
                     help="skip first N point cloud frames (fast_lio convergence warmup)")
     ap.add_argument("--map-z", type=float, default=0.0,
                     help="z-offset for 2D grid display in 3D view (set to sensor-to-floor distance, e.g., -1.27 for 1.27m sensor height)")
+    ap.add_argument("--use-ground-plane", action="store_true", default=True,
+                    help="Use RANSAC ground-plane estimation for tilt-robust classification (default: on)")
+    ap.add_argument("--no-ground-plane", dest="use_ground_plane", action="store_false",
+                    help="Disable ground-plane estimation; use fixed z thresholds instead")
+    ap.add_argument("--ground-margin", type=float, default=0.08,
+                    help="Height above ground plane considered FREE (m, default 0.08)")
+    ap.add_argument("--obstacle-margin", type=float, default=0.15,
+                    help="Height above ground plane where obstacles start (m, default 0.15)")
+    ap.add_argument("--plane-smooth", type=float, default=0.9,
+                    help="EMA smoothing factor for ground plane coefficients (0-1, default 0.9)")
+    ap.add_argument("--max-obstacle-height", type=float, default=2.5,
+                    help="Max height above local ground plane for obstacles (m, default 2.5); taller = ceiling → ignored")
     args = ap.parse_args()
 
     rclpy.init()
