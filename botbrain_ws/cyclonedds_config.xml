@@ -3,8 +3,9 @@
   <Domain>
     <General>
       <Interfaces>
-        <NetworkInterface name="lo" priority="100" multicast="true" />
+        <NetworkInterface name="lo" priority="0" multicast="true" />
         <NetworkInterface name="enP8p1s0" priority="10" multicast="true" />
+        <NetworkInterface name="wlx94ba06f26399" priority="50" multicast="true" />
       </Interfaces>
     </General>
   </Domain>
