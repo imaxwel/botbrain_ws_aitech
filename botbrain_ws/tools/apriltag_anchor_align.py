@@ -47,6 +47,7 @@ class DetectionSample:
     center: np.ndarray
     camera_xyz: np.ndarray
     margin: float
+    image_size: np.ndarray
 
 
 class AprilTagAnchorAlign(Node):
@@ -63,6 +64,7 @@ class AprilTagAnchorAlign(Node):
         self.motion_until = 0.0
         self.settle_until = 0.0
         self.active_cmd = Twist()
+        self.pending_validation = None
         self.stable_count = 0
         self.done = False
         self.succeeded = False
@@ -143,6 +145,7 @@ class AprilTagAnchorAlign(Node):
             center=center,
             camera_xyz=camera_xyz,
             margin=float(best.decision_margin),
+            image_size=np.asarray([gray.shape[1], gray.shape[0]], dtype=np.float64),
         )
         self.last_detection_time = time.monotonic()
 
@@ -162,18 +165,55 @@ class AprilTagAnchorAlign(Node):
             self.stable_count = 0
             if self.args.enable_motion:
                 self.publish_stop()
+                if self.pending_validation is not None and self.args.validate_step:
+                    self.done = True
+                    self.failure_reason = "lost AprilTag after movement step; stopped before retrying"
+                    self.get_logger().error(self.failure_reason)
+                    return
             self.get_logger().warn("waiting for accepted AprilTag detection")
             return
 
         sample = self.latest
+        edge_distance = self.edge_distance(sample)
+        if self.args.edge_margin_px > 0.0 and edge_distance < self.args.edge_margin_px:
+            self.stable_count = 0
+            if self.args.enable_motion:
+                self.publish_stop()
+                self.done = True
+                self.failure_reason = (
+                    "AprilTag too close to image edge "
+                    "(edge_distance=%.1fpx < %.1fpx); stopped before pushing it out of view"
+                    % (edge_distance, self.args.edge_margin_px)
+                )
+                self.get_logger().error(self.failure_reason)
+                return
+
         pixel_error = sample.center - self.args.baseline_center
         pose_error = sample.camera_xyz - self.args.baseline_camera_xyz
         u_error = float(pixel_error[0])
         v_error = float(pixel_error[1])
         x_error = float(pose_error[0])
         z_error = float(pose_error[2])
+        errors = {"yaw": abs(u_error), "lateral": abs(x_error), "forward": abs(z_error)}
 
-        cmd = self.compute_command(u_error, x_error, z_error)
+        if self.pending_validation is not None and self.args.validate_step:
+            axis, before_error = self.pending_validation
+            after_error = errors[axis]
+            allowed_worse = (
+                self.args.pixel_worsen_limit if axis == "yaw" else self.args.pose_worsen_limit
+            )
+            self.pending_validation = None
+            if after_error > before_error + allowed_worse:
+                self.publish_stop()
+                self.done = True
+                self.failure_reason = (
+                    "%s error worsened after movement step: %.4f -> %.4f; stopped before retrying"
+                    % (axis, before_error, after_error)
+                )
+                self.get_logger().error(self.failure_reason)
+                return
+
+        cmd, axis = self.compute_command(u_error, x_error, z_error)
 
         aligned = (
             abs(u_error) <= self.args.pixel_tolerance
@@ -189,7 +229,7 @@ class AprilTagAnchorAlign(Node):
             "tag=%d margin=%.1f center=(%.1f,%.1f) "
             "pixel_err=(%.1f,%.1f) camera_xyz=(%.4f,%.4f,%.4f) "
             "pose_err=(%.4f,%.4f,%.4f) cmd=(%.3f,%.3f,%.3f) "
-            "step=%d/%d active=%.1f/%.1f stable=%d/%d"
+            "axis=%s edge=%.1f step=%d/%d active=%.1f/%.1f stable=%d/%d"
             % (
                 self.args.tag_id,
                 sample.margin,
@@ -206,6 +246,8 @@ class AprilTagAnchorAlign(Node):
                 cmd.linear.x,
                 cmd.linear.y,
                 cmd.angular.z,
+                axis,
+                edge_distance,
                 self.step_count,
                 self.args.max_steps,
                 self.active_motion_s,
@@ -213,7 +255,7 @@ class AprilTagAnchorAlign(Node):
                 self.stable_count,
                 self.args.required_stable_count,
             )
-        )
+            )
 
         if self.stable_count >= self.args.required_stable_count:
             self.publish_stop()
@@ -223,6 +265,12 @@ class AprilTagAnchorAlign(Node):
             return
 
         if self.args.enable_motion:
+            if axis == "none":
+                self.publish_stop()
+                self.done = True
+                self.failure_reason = "no movement axis selected for the current error"
+                self.get_logger().error(self.failure_reason)
+                return
             if self.step_count >= self.args.max_steps:
                 self.publish_stop()
                 self.done = True
@@ -250,6 +298,7 @@ class AprilTagAnchorAlign(Node):
             self.step_count += 1
             self.active_motion_s += self.args.move_burst_s
             self.active_cmd = cmd
+            self.pending_validation = (axis, errors[axis])
             self.motion_until = now + self.args.move_burst_s
             self.settle_until = self.motion_until + self.args.settle_s
             self.cmd_pub.publish(cmd)
@@ -258,20 +307,30 @@ class AprilTagAnchorAlign(Node):
         # Choose one dominant axis per burst so each move is easy to observe and
         # can be stopped before compounding a wrong sign near obstacles.
         candidates = []
-        if abs(u_error) > self.args.pixel_deadband and self.args.max_angular_z > 0.0:
+        if (
+            self.args.axis in ("auto", "yaw")
+            and abs(u_error) > self.args.pixel_deadband
+            and self.args.max_angular_z > 0.0
+        ):
             candidates.append(("yaw", abs(u_error) / max(self.args.pixel_tolerance, 1e-6)))
         if (
+            self.args.axis in ("auto", "lateral")
+            and
             self.args.enable_lateral
             and abs(x_error) > self.args.x_deadband
             and self.args.max_linear_y > 0.0
         ):
             candidates.append(("lateral", abs(x_error) / max(self.args.x_tolerance, 1e-6)))
-        if abs(z_error) > self.args.z_deadband and self.args.max_linear_x > 0.0:
+        if (
+            self.args.axis in ("auto", "forward")
+            and abs(z_error) > self.args.z_deadband
+            and self.args.max_linear_x > 0.0
+        ):
             candidates.append(("forward", abs(z_error) / max(self.args.z_tolerance, 1e-6)))
 
         cmd = Twist()
         if not candidates:
-            return cmd
+            return cmd, "none"
 
         axis = max(candidates, key=lambda item: item[1])[0]
         if axis == "yaw":
@@ -295,7 +354,19 @@ class AprilTagAnchorAlign(Node):
                 self.args.max_linear_x,
                 self.args.min_linear_x,
             )
-        return cmd
+        return cmd, axis
+
+    @staticmethod
+    def edge_distance(sample):
+        width, height = sample.image_size
+        return float(
+            min(
+                sample.center[0],
+                width - sample.center[0],
+                sample.center[1],
+                height - sample.center[1],
+            )
+        )
 
     @staticmethod
     def limit_with_min(value, max_abs, min_abs):
@@ -352,9 +423,14 @@ def build_arg_parser():
     parser.add_argument("--move-burst-s", type=float, default=0.6)
     parser.add_argument("--settle-s", type=float, default=0.6)
     parser.add_argument("--max-steps", type=int, default=8)
+    parser.add_argument("--axis", choices=("auto", "yaw", "lateral", "forward"), default="auto")
+    parser.add_argument("--edge-margin-px", type=float, default=45.0)
+    parser.add_argument("--pixel-worsen-limit", type=float, default=20.0)
+    parser.add_argument("--pose-worsen-limit", type=float, default=0.03)
 
     parser.add_argument("--enable-motion", action="store_true")
     parser.add_argument("--enable-lateral", action="store_true")
+    parser.add_argument("--validate-step", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--invert-yaw", action="store_true")
     parser.add_argument("--invert-lateral", action="store_true")
     parser.add_argument("--invert-forward", action="store_true")
