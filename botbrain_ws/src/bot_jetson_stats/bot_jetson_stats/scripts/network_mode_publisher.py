@@ -19,11 +19,16 @@ class NetworkModePublisher(LifecycleNode):
         self.last_status = None
         self.timer = None
 
+    def _ensure_publisher(self):
+        if self.publisher_ is None:
+            self.publisher_ = self.create_lifecycle_publisher(String, 'network_mode_status', 10)
+
     # -------- Lifecycle Callbacks -------- #
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info("Configuring node...")
 
         self.last_status = None
+        self._ensure_publisher()
 
         return TransitionCallbackReturn.SUCCESS
 
@@ -31,6 +36,7 @@ class NetworkModePublisher(LifecycleNode):
         self.get_logger().info("Activating node...")
         try:
 
+            self._ensure_publisher()
             ret = super().on_activate(state)
             if ret != TransitionCallbackReturn.SUCCESS:
                 return ret
@@ -54,16 +60,28 @@ class NetworkModePublisher(LifecycleNode):
 
     def on_cleanup(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info("Cleaning up node...")
-        self.publisher_.destroy()
-        self.publisher_ = None
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+        if self.publisher_ is not None:
+            try:
+                self.destroy_publisher(self.publisher_)
+            except Exception:
+                pass
+            self.publisher_ = None
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info("Shutting down node...")
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
         return TransitionCallbackReturn.SUCCESS
 
     def publish_status(self):
         try:
+            if self.publisher_ is None:
+                return
             if os.path.exists(STATUS_FILE):
                 with open(STATUS_FILE, 'r') as f:
                     status = f.read().strip()

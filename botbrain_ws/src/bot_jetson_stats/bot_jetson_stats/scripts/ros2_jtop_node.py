@@ -59,10 +59,22 @@ class JTOPPublisher(LifecycleNode):
 
         self.arr = DiagnosticArray()
 
+    def _ensure_publishers(self):
+        if self.diag_pub is None:
+            self.diag_pub = self.create_lifecycle_publisher(
+                DiagnosticArray, 'diagnostics', 1
+            )
+        if self.human_pub is None:
+            self.human_pub = self.create_lifecycle_publisher(
+                String, 'diagnostic_stats', 1
+            )
+
 
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info("Configuring JTOPLifecycleNode...")
         try:
+
+            self._ensure_publishers()
 
             interval_param = self.get_parameter('interval')
             interval = float(interval_param.value)  # simple & robust
@@ -101,6 +113,10 @@ class JTOPPublisher(LifecycleNode):
         self.get_logger().info("Activating JTOPLifecycleNode...")
         try:
   
+            if self.jetson is None:
+                self.get_logger().error("Cannot activate JTOPLifecycleNode before configure succeeds.")
+                return TransitionCallbackReturn.ERROR
+            self._ensure_publishers()
             ret = super().on_activate(state)
             if ret != TransitionCallbackReturn.SUCCESS:
                 return ret
@@ -122,6 +138,10 @@ class JTOPPublisher(LifecycleNode):
 
     def on_cleanup(self, state: State) -> TransitionCallbackReturn:
         self.get_logger().info("Cleaning up JTOPLifecycleNode...")
+
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
 
         for srv in (self.fan_srv, self.nvpmodel_srv, self.jetson_clocks_srv, self.reboot_srv):
             if srv is not None:
@@ -299,7 +319,7 @@ class JTOPPublisher(LifecycleNode):
     def jetson_callback(self):
         # Guard: lifecycle node may have been deactivated/cleaned up
         # (publisher set to None) while this timer callback was queued.
-        if self.diag_pub is None or self.human_pub is None:
+        if self.jetson is None or self.diag_pub is None or self.human_pub is None:
             return
 
         self.arr.header.stamp = self.get_clock().now().to_msg()
