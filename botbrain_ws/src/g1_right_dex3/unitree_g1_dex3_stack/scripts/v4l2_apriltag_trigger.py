@@ -17,7 +17,7 @@ import numpy as np
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 
 from cv_bridge import CvBridge
@@ -238,10 +238,9 @@ class V4L2AprilTagTrigger(Node):
         self.target_pose_pub = self.create_publisher(PoseStamped, self.target_pose_topic, 10)
 
         # ---- subscriptions ----
-        # Use BEST_EFFORT to match the camera publisher's sensor_data QoS.
-        # A RELIABLE subscriber cannot match a BEST_EFFORT publisher in CycloneDDS.
+        # Use RELIABLE to match the camera publisher's QoS.
         _image_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
             durability=DurabilityPolicy.VOLATILE,

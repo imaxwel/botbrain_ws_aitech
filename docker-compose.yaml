@@ -102,7 +102,7 @@ services:
   state_machine:
     extends: base
     container_name: g1_robot_state_machine
-    command: ["bash", "-lc", "apt-get update -qq 2>/dev/null; apt-get install -y -qq ros-humble-rmw-zenoh-cpp 2>/dev/null; source install/setup.bash && ros2 launch bot_state_machine state_machine.launch.py"]
+    command: ["bash", "-lc", "source install/setup.bash && ros2 launch bot_state_machine state_machine.launch.py"]
     restart: always
   
   bringup:
@@ -115,7 +115,7 @@ services:
   foxglove:
     extends: base
     container_name: g1_robot_foxglove
-    command: ["bash", "-lc", "apt-get update -qq 2>/dev/null; apt-get install -y -qq ros-humble-rmw-zenoh-cpp 2>/dev/null; source install/setup.bash && ros2 run foxglove_bridge foxglove_bridge --ros-args --params-file src/bot_bringup/config/foxglove_bridge_params.yaml"]
+    command: ["bash", "-lc", "source install/setup.bash && ros2 run foxglove_bridge foxglove_bridge --ros-args --params-file src/bot_bringup/config/foxglove_bridge_params.yaml"]
     restart: always
 
 
@@ -134,7 +134,7 @@ services:
   navigation:
     extends: base
     container_name: g1_robot_navigation
-    command: ["bash", "-lc", "apt-get update -qq 2>/dev/null; apt-get install -y -qq ros-humble-rmw-zenoh-cpp 2>/dev/null; sleep 30 && source install/setup.bash && ros2 launch bot_navigation navigation.launch.py"]
+    command: ["bash", "-lc", "sleep 30 && source install/setup.bash && ros2 launch bot_navigation navigation.launch.py"]
     restart: always
 
   manipulation:
@@ -171,13 +171,13 @@ services:
   jetson_stats:
     extends: base
     container_name: g1_robot_jetson_stats
-    command: ["bash", "-lc", "apt-get update -qq 2>/dev/null; apt-get install -y -qq ros-humble-rmw-zenoh-cpp 2>/dev/null; source install/setup.bash && ros2 launch bot_jetson_stats stats.launch.py"]
+    command: ["bash", "-lc", "source install/setup.bash && ros2 launch bot_jetson_stats stats.launch.py"]
     restart: always
     
   rosa:
     extends: base
     container_name: g1_robot_rosa
-    command: ["bash", "-lc", "apt-get update -qq 2>/dev/null; apt-get install -y -qq ros-humble-rmw-zenoh-cpp 2>/dev/null; source install/setup.bash && ros2 launch bot_rosa rosa.launch.py"]
+    command: ["bash", "-lc", "source install/setup.bash && ros2 launch bot_rosa rosa.launch.py"]
     restart: always
 
   yolo_base:
@@ -215,7 +215,7 @@ services:
   yolo:
     extends: yolo_base
     container_name: g1_robot_yolo
-    command: ["bash", "-lc", "apt-get update -qq 2>/dev/null; apt-get install -y -qq ros-humble-rmw-zenoh-cpp 2>/dev/null; source install/setup.bash && ros2 launch bot_yolo yolo.launch.py"]
+    command: ["bash", "-lc", "source install/setup.bash && ros2 launch bot_yolo yolo.launch.py"]
     restart: always
 
   dev_yolo:
