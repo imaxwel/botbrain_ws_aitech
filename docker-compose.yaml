@@ -92,7 +92,7 @@ services:
           --cmake-args -DOpen3D_DIR=/opt/open3d/lib/cmake/Open3D"]
 
   zenoh:
-    image: g1_nav_final:latest
+    image: botbotrobotics/botbrain:nav3d
     network_mode: host
     ipc: host
     container_name: g1_robot_zenoh
