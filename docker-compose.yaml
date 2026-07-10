@@ -162,7 +162,7 @@ services:
       - /usr/local/include:/opt/robot_sdk/include:ro
       - /usr/local/lib:/opt/robot_sdk/lib:ro
     environment:
-      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       UNITREE_SDK2_ROOT: /opt/robot_sdk
     container_name: g1_robot_manipulation
     command: ["bash", "/botbrain_ws/src/g1_manipulation_pkg/scripts/start_manipulation.sh"]
@@ -198,8 +198,8 @@ services:
               capabilities: [gpu]
     environment:
       YOLO_CONFIG_DIR: /root/.cache/ultralytics
-      RMW_IMPLEMENTATION: rmw_zenoh_cpp
-      ZENOH_CONFIG_OVERRIDE: 'mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: "file:///botbrain_ws/cyclonedds_config.xml"
     volumes:
       - ./botbrain_ws/:/botbrain_ws
       - /dev:/dev
@@ -286,9 +286,9 @@ services:
       - /dev:/dev
       - /run:/run
     environment:
-      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       LD_LIBRARY_PATH: /usr/local/lib
-      ZENOH_CONFIG_OVERRIDE: 'mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'
+      CYCLONEDDS_URI: "file:///botbrain_ws/cyclonedds_config.xml"
       PYTHONPATH: /opt/unitree_dex3_tools:/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/build
     command: ["sleep", "infinity"]
     restart: unless-stopped

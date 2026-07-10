@@ -113,6 +113,7 @@ def generate_launch_description():
                 'image_topic': LaunchConfiguration('apriltag_image_topic'),
                 'debug_image_dir': LaunchConfiguration('debug_image_dir'),
                 'detect_only': LaunchConfiguration('detect_only'),
+                'trigger_topic': '/apriltag/capture_trigger',
             },
         ],
         remappings=tf_remappings,
