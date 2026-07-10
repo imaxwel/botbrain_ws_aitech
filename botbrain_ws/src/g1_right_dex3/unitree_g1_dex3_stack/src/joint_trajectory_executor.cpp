@@ -267,12 +267,15 @@ private:
       return;
     }
 
-    const double interp_duration = 3.0;
-    const int interp_steps = 750;
+    // 延长到5秒，降低 kp/kd 减少 shutdown 震颤
+    const double interp_duration = 5.0;
+    const int interp_steps = 500;
     auto sleep_ns = std::chrono::nanoseconds(static_cast<int64_t>((interp_duration / interp_steps) * 1e9));
     for (int step = 0; step <= interp_steps; ++step) {
       double t = static_cast<double>(step) / interp_steps;
-      double value = (1.0 - t) * 1.0 + t * 0.0;
+      // 使用 smoothstep 曲线，避免起止端加速度突变
+      double t_smooth = t * t * (3.0 - 2.0 * t);
+      double value = (1.0 - t_smooth) * 1.0 + t_smooth * 0.0;
       unitree_hg::msg::LowCmd final_cmd;
       final_cmd.motor_cmd[JointIndex::kNotUsedJoint].q = static_cast<float>(value);
       for (const auto& pair : joint_name_to_index) {
@@ -280,7 +283,7 @@ private:
         final_cmd.motor_cmd[idx].mode = 1;
         if (ramp_start_positions.size() > idx && initial_standing_pose_.size() > idx) {
           final_cmd.motor_cmd[idx].q = static_cast<float>(
-            (1.0 - t) * ramp_start_positions[idx] + t * initial_standing_pose_[idx]);
+            (1.0 - t_smooth) * ramp_start_positions[idx] + t_smooth * initial_standing_pose_[idx]);
         } else if (latest_joint_positions_.size() > idx) {
           final_cmd.motor_cmd[idx].q = latest_joint_positions_[idx];
         } else {
@@ -288,8 +291,9 @@ private:
         }
         final_cmd.motor_cmd[idx].dq = 0.f;
         bool is_wrist = (pair.first.find("wrist") != std::string::npos);
-        final_cmd.motor_cmd[idx].kp = is_wrist ? 40.0f : 100.0f;
-        final_cmd.motor_cmd[idx].kd = 5.0f;
+        // 低 kp + 高 kd：柔顺跟随，阻尼足够，不震颤
+        final_cmd.motor_cmd[idx].kp = is_wrist ? 20.0f : 40.0f;
+        final_cmd.motor_cmd[idx].kd = 8.0f;
         final_cmd.motor_cmd[idx].tau = 0.f;
       }
       if (gravity_enabled_) {

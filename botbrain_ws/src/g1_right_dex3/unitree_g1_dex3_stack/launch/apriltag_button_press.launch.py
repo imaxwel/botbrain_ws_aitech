@@ -78,6 +78,11 @@ def generate_launch_description():
         default_value='torso_link',
         description='Output frame for button_detector_node',
     )
+    v4l2_video_device_arg = DeclareLaunchArgument(
+        'v4l2_video_device',
+        default_value='',
+        description='V4L2 video device path (deprecated, use ROS2 topic)',
+    )
     apriltag_image_topic_arg = DeclareLaunchArgument(
         'apriltag_image_topic',
         default_value='/g1_robot/front_camera/color/image_raw',
@@ -231,6 +236,7 @@ def generate_launch_description():
         target_floor_arg,
         det_threshold_arg,
         output_frame_arg,
+        v4l2_video_device_arg,
         apriltag_image_topic_arg,
         debug_image_dir_arg,
         tf_topic_arg,

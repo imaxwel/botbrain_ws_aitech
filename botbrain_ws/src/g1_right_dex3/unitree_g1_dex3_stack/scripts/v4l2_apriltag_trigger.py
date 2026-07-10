@@ -17,7 +17,7 @@ import numpy as np
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.time import Time
 
 from cv_bridge import CvBridge
@@ -213,6 +213,8 @@ class V4L2AprilTagTrigger(Node):
         self._buffer_lock = threading.Lock()
         self._buffer_ready = False
         self._first_frame_time = 0.0
+        self._frame_count = 0
+        self._image_cb_logged_first = False
 
         self.camera_matrix_live = None
         self.camera_params_live = None
@@ -236,8 +238,16 @@ class V4L2AprilTagTrigger(Node):
         self.target_pose_pub = self.create_publisher(PoseStamped, self.target_pose_topic, 10)
 
         # ---- subscriptions ----
+        # Use BEST_EFFORT to match the camera publisher's sensor_data QoS.
+        # A RELIABLE subscriber cannot match a BEST_EFFORT publisher in CycloneDDS.
+        _image_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.image_sub = self.create_subscription(
-            Image, self.image_topic, self._image_cb, 10)
+            Image, self.image_topic, self._image_cb, _image_qos)
         if self.camera_info_topic:
             self.create_subscription(
                 CameraInfo,
@@ -253,9 +263,15 @@ class V4L2AprilTagTrigger(Node):
         self.fd = None
         self.old_settings = None
         if self.trigger_char:
-            self.fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK)
-            self.old_settings = termios.tcgetattr(self.fd)
-            tty.setcbreak(self.fd)
+            try:
+                self.fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK)
+                self.old_settings = termios.tcgetattr(self.fd)
+                tty.setcbreak(self.fd)
+            except OSError as e:
+                self.get_logger().warn(
+                    f'[v4l2_apriltag_trigger] cannot open /dev/tty ({e}); '
+                    f'keyboard trigger disabled, use trigger_topic instead')
+                self.fd = None
 
         if self.fd is not None:
             self.create_timer(0.1, self._tick)
@@ -288,7 +304,14 @@ class V4L2AprilTagTrigger(Node):
             return
 
         with self._buffer_lock:
+            self._frame_count += 1
             self.frame_buffer.append((cv_image, msg.header.stamp))
+            if not self._image_cb_logged_first:
+                self._image_cb_logged_first = True
+                self.get_logger().info(
+                    f'[v4l2_apriltag_trigger] first image received '
+                    f'({msg.width}x{msg.height}, encoding={msg.encoding}), '
+                    f'buffer={len(self.frame_buffer)}/{self.frame_buffer.maxlen}')
             if self._first_frame_time == 0.0:
                 self._first_frame_time = time.monotonic()
             if not self._buffer_ready:
@@ -299,6 +322,12 @@ class V4L2AprilTagTrigger(Node):
                     self.get_logger().info(
                         f'[v4l2_apriltag_trigger] image buffer warmed up '
                         f'({len(self.frame_buffer)} frames, {elapsed:.1f}s)')
+                elif self._frame_count % max(1, self.warmup_frames) == 0:
+                    # Periodic status while warming up
+                    self.get_logger().info(
+                        f'[v4l2_apriltag_trigger] warming up: '
+                        f'{len(self.frame_buffer)}/{self.warmup_frames} frames, '
+                        f'{elapsed:.1f}/{self.warmup_min_s:.1f}s')
 
     # ------------------------------------------------------------------
     #  camera info

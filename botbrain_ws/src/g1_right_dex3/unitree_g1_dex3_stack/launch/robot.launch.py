@@ -68,11 +68,9 @@ def generate_launch_description():
         description='TF static topic used by robot_state_publisher'
     )
     return LaunchDescription([
-        SetEnvironmentVariable('RMW_IMPLEMENTATION', 'rmw_cyclonedds_cpp'),
-        SetEnvironmentVariable('CYCLONEDDS_URI',
-            '<CycloneDDS><Domain><General><Interfaces>'
-            '<NetworkInterface name="enP8p1s0" priority="default" multicast="default" />'
-            '</Interfaces></General></Domain></CycloneDDS>'),
+        SetEnvironmentVariable('RMW_IMPLEMENTATION', 'rmw_zenoh_cpp'),
+        SetEnvironmentVariable('ZENOH_CONFIG_OVERRIDE',
+            'mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'),
         urdf_name_arg,
         urdf_path_arg,
         tf_topic_arg,
