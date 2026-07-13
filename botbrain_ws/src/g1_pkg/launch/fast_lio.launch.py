@@ -50,7 +50,7 @@ def generate_launch_description():
                 '--ground-z',       '-1.0',
                 '--obstacle-z',     '-1.0',
                 '--obstacle-z-max', '1.0',
-                '--skip-frames',    '30',    # FAST-LIO warmup
+                '--skip-frames',    '60',    # FAST-LIO warmup
                 '--min-obs-hits',   '3',     # 3 hits to confirm obstacle
                 '--map-z',          '-1.247', # fallback display height before plane fit
             ],

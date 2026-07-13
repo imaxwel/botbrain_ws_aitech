@@ -6,6 +6,7 @@ v4l2_apriltag_trigger:
     warmup_min_s: 1.5
     sample_interval_s: 0.05
     continuous_capture: false
+    image_source_file: "/run/latest_cam.bin"
 
     tag_family: "tag36h11"
     tag_size: 0.05

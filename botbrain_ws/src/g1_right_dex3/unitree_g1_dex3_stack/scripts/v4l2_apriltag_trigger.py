@@ -364,7 +364,7 @@ class V4L2AprilTagTrigger(Node):
                     self._file_stale_warned_at = now
                     self.get_logger().warn(
                         f'[v4l2_apriltag_trigger] camera file stale ({age:.0f}s) — '
-                        f'waiting for localization to restart...')
+                        f'waiting for g1_robot_camera to write frames...')
                 with self._buffer_lock:
                     if self._buffer_ready:
                         self._buffer_ready = False

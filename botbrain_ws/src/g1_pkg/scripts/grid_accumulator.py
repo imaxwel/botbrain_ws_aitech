@@ -60,6 +60,7 @@ class GridAccumulator(Node):
         self.skip_frames = args.skip_frames
         self.pre_transformed = args.pre_transformed  # cloud already in map frame
         self.min_obs_hits = args.min_obs_hits        # hits needed before marking OCCUPIED
+        self.min_floor_clear = getattr(args, 'min_floor_clear', 5)  # floor hits to un-occupy
         self.map_z = args.map_z  # z-offset for grid display in 3D view
 
         # Ground-plane estimation (RANSAC-style least-squares) — robust to
@@ -81,6 +82,7 @@ class GridAccumulator(Node):
 
         self.grid = None             # int8 numpy array, shape (h, w)
         self.hit_count = None        # uint16 numpy array, counts obstacle hits per cell
+        self.floor_count = None      # uint16 numpy array, counts floor hits per cell
         self.origin_x = 0.0
         self.origin_y = 0.0
         self.lock = Lock()
@@ -340,6 +342,7 @@ class GridAccumulator(Node):
             h = int(math.ceil((y_max - y_min + 2 * margin) / self.res))
             self.grid = np.full((h, w), UNKNOWN, dtype=np.int8)
             self.hit_count = np.zeros((h, w), dtype=np.uint16)
+            self.floor_count = np.zeros((h, w), dtype=np.uint16)
         else:
             # Grow grid if needed (auto_resize)
             self._grow_to_include(x_min, y_min, x_max, y_max, margin=5.0)
@@ -353,16 +356,28 @@ class GridAccumulator(Node):
         ground_mask = ground_mask[valid]
         obs_mask = obs_mask[valid]
 
-        # FREE first (so OCCUPIED can win on overlapping cells in same frame)
-        free_idx = (iy[ground_mask], ix[ground_mask])
-        # Only mark as FREE cells that are still UNKNOWN — don't undo OCCUPIED
-        free_undecided = self.grid[free_idx] == UNKNOWN
-        self.grid[free_idx[0][free_undecided], free_idx[1][free_undecided]] = FREE
-        # OCCUPIED: accumulate hit count, only mark after min_obs_hits threshold
+        # --- Floor hits ---
+        gnd_iy, gnd_ix = iy[ground_mask], ix[ground_mask]
+        np.add.at(self.floor_count, (gnd_iy, gnd_ix), 1)
+        # UNKNOWN → FREE immediately
+        is_unknown = self.grid[gnd_iy, gnd_ix] == UNKNOWN
+        self.grid[gnd_iy[is_unknown], gnd_ix[is_unknown]] = FREE
+        # OCCUPIED → FREE after min_floor_clear confirmed floor hits (corrects misclassified cells)
+        floor_override = ((self.grid[gnd_iy, gnd_ix] == OCCUPIED) &
+                          (self.floor_count[gnd_iy, gnd_ix] >= self.min_floor_clear))
+        if floor_override.any():
+            self.grid[gnd_iy[floor_override], gnd_ix[floor_override]] = FREE
+            # Reset counters so re-occupation requires fresh evidence
+            self.hit_count[gnd_iy[floor_override], gnd_ix[floor_override]] = 0
+            self.floor_count[gnd_iy[floor_override], gnd_ix[floor_override]] = 0
+
+        # --- Obstacle hits ---
         obs_iy, obs_ix = iy[obs_mask], ix[obs_mask]
         np.add.at(self.hit_count, (obs_iy, obs_ix), 1)
         confirmed = self.hit_count[obs_iy, obs_ix] >= self.min_obs_hits
         self.grid[obs_iy[confirmed], obs_ix[confirmed]] = OCCUPIED
+        # Reset floor_count for newly occupied cells so they need fresh floor evidence to clear
+        self.floor_count[obs_iy[confirmed], obs_ix[confirmed]] = 0
 
     def _grow_to_include(self, x_min, y_min, x_max, y_max, margin):
         h, w = self.grid.shape
@@ -386,6 +401,9 @@ class GridAccumulator(Node):
         new_hit = np.zeros((new_h, new_w), dtype=np.uint16)
         new_hit[pad_b:pad_b + h, pad_l:pad_l + w] = self.hit_count
         self.hit_count = new_hit
+        new_floor = np.zeros((new_h, new_w), dtype=np.uint16)
+        new_floor[pad_b:pad_b + h, pad_l:pad_l + w] = self.floor_count
+        self.floor_count = new_floor
         self.origin_x -= pad_l * self.res
         self.origin_y -= pad_b * self.res
 
@@ -459,6 +477,8 @@ def main():
                     help="EMA smoothing factor for ground plane coefficients (0-1, default 0.9)")
     ap.add_argument("--max-obstacle-height", type=float, default=2.5,
                     help="Max height above local ground plane for obstacles (m, default 2.5); taller = ceiling → ignored")
+    ap.add_argument("--min-floor-clear", type=int, default=5,
+                    help="Floor hits needed to clear a previously OCCUPIED cell (default 5)")
     args = ap.parse_args()
 
     rclpy.init()
