@@ -40,6 +40,7 @@ from tf2_ros.transform_listener import TransformListener
 
 from g1_pkg.grid_mapping_core import (
     classify_points,
+    expand_cell_ids,
     fit_ground_plane_ransac,
     plane_height,
     quaternion_to_matrix,
@@ -126,6 +127,7 @@ class GridAccumulator(Node):
         self.raytrace = args.raytrace
         self.raytrace_range = args.raytrace_range
         self.raytrace_bins = max(1, args.raytrace_bins)
+        self.obstacle_spread_radius = max(0.0, args.obstacle_spread_radius)
         self.free_update = args.free_update
         self.obstacle_update = args.obstacle_update
         self.log_odds_min = args.log_odds_min
@@ -226,6 +228,7 @@ class GridAccumulator(Node):
             f"obstacle=[{self.obstacle_margin:.2f},"
             f"{self.max_obstacle_height:.2f})m "
             f"occ_threshold={self.occupied_threshold:.2f} "
+            f"obs_spread={self.obstacle_spread_radius:.3f}m "
             f"self_filter={'on' if self.self_filter else 'off'} "
             f"raytrace={'on' if self.raytrace else 'off'}")
 
@@ -572,6 +575,13 @@ class GridAccumulator(Node):
             ix[ground_mask], iy[ground_mask], width)
         obstacle_cells = unique_cell_ids(
             ix[obstacle_mask], iy[obstacle_mask], width)
+        obstacle_cells = expand_cell_ids(
+            obstacle_cells,
+            width,
+            height,
+            self.obstacle_spread_radius,
+            self.res,
+        )
         free_cells = ground_cells
 
         if self.raytrace:
@@ -786,7 +796,7 @@ def main():
     parser.add_argument("--z-offset", type=float, default=0.0)
     parser.add_argument("--ground-z-min", type=float, default=-1.35)
     parser.add_argument("--ground-z", type=float, default=-1.15)
-    parser.add_argument("--obstacle-z", type=float, default=-1.10)
+    parser.add_argument("--obstacle-z", type=float, default=-1.14)
     parser.add_argument("--obstacle-z-max", type=float, default=0.35)
 
     parser.add_argument(
@@ -797,7 +807,7 @@ def main():
     parser.add_argument(
         "--below-ground-tolerance", type=float, default=0.10)
     parser.add_argument("--ground-margin", type=float, default=0.08)
-    parser.add_argument("--obstacle-margin", type=float, default=0.15)
+    parser.add_argument("--obstacle-margin", type=float, default=0.10)
     parser.add_argument(
         "--max-obstacle-height", type=float, default=1.60)
     parser.add_argument("--plane-smooth", type=float, default=0.90)
@@ -832,12 +842,14 @@ def main():
     parser.add_argument("--lidar-offset-y", type=float, default=-0.02329)
     parser.add_argument("--lidar-offset-z", type=float, default=0.04412)
 
+    parser.add_argument("--raytrace", dest="raytrace", action="store_true")
     parser.add_argument(
         "--no-raytrace", dest="raytrace", action="store_false")
-    parser.set_defaults(raytrace=True)
+    parser.set_defaults(raytrace=False)
     parser.add_argument("--raytrace-range", type=float, default=15.0)
     parser.add_argument("--raytrace-bins", type=int, default=360)
-    parser.add_argument("--min-obs-hits", type=int, default=3)
+    parser.add_argument("--obstacle-spread-radius", type=float, default=0.075)
+    parser.add_argument("--min-obs-hits", type=int, default=2)
     parser.add_argument("--free-update", type=float, default=0.40)
     parser.add_argument("--obstacle-update", type=float, default=0.85)
     parser.add_argument("--log-odds-min", type=float, default=-2.0)

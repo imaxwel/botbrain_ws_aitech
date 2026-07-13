@@ -151,7 +151,11 @@ public:
 
         // TCP offset override: allow runtime adjustment of the last fixed segment
         this->declare_parameter("tcp_offset_x", 0.175);
+        this->declare_parameter("tcp_offset_y", 0.0);
+        this->declare_parameter("tcp_offset_z", 0.0);
         double tcp_offset_x = this->get_parameter("tcp_offset_x").as_double();
+        double tcp_offset_y = this->get_parameter("tcp_offset_y").as_double();
+        double tcp_offset_z = this->get_parameter("tcp_offset_z").as_double();
         {
             unsigned int n_seg = kdl_chain_right.getNrOfSegments();
             if (n_seg > 0 && kdl_chain_right.getSegment(n_seg - 1).getJoint().getType() == KDL::Joint::None) {
@@ -162,10 +166,11 @@ public:
                 new_chain.addSegment(KDL::Segment(
                     kdl_chain_right.getSegment(n_seg - 1).getName(),
                     KDL::Joint(KDL::Joint::None),
-                    KDL::Frame(KDL::Vector(tcp_offset_x, 0.0, 0.0))
+                    KDL::Frame(KDL::Vector(tcp_offset_x, tcp_offset_y, tcp_offset_z))
                 ));
                 kdl_chain_right = new_chain;
-                RCLCPP_INFO(this->get_logger(), "TCP offset overridden to %.4f m", tcp_offset_x);
+                RCLCPP_INFO(this->get_logger(), "TCP offset overridden to (%.4f, %.4f, %.4f) m",
+                    tcp_offset_x, tcp_offset_y, tcp_offset_z);
             }
         }
 

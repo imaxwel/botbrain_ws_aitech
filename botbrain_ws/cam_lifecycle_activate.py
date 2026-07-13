@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-import os, subprocess, time
+import os, signal, subprocess, time
 
 NODE = '/g1_robot/front_camera'
 SETUP = '/botbrain_ws/install/setup.bash'
 FRAME_FILE = '/run/latest_cam.bin'
-STALE_TIMEOUT_S = 60.0
+STALE_TIMEOUT_S = 45.0
+NOT_FOUND_RESTART_COUNT = 3
 
 def ros2(*args, timeout=10):
     cmd = f'source {SETUP} && ros2 ' + ' '.join(args)
@@ -59,15 +60,23 @@ def do_configure_activate():
 log('starting — waiting for ROS nodes...')
 time.sleep(8)
 
+_not_found_count = 0
+
 while True:
     try:
         state = get_state()
 
         if state is None:
-            log('node not found, waiting...')
+            _not_found_count += 1
+            log(f'node not found ({_not_found_count}/{NOT_FOUND_RESTART_COUNT}), waiting...')
+            if _not_found_count >= NOT_FOUND_RESTART_COUNT:
+                log('realsense node gone — restarting container (kill PID 1)...')
+                os.kill(1, signal.SIGTERM)
+                time.sleep(30)
             time.sleep(3)
             continue
 
+        _not_found_count = 0
         log(f'state: {state}')
 
         if state == 'active':

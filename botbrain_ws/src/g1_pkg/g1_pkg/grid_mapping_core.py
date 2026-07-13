@@ -193,7 +193,7 @@ def classify_points(
         *,
         below_ground_tolerance=0.10,
         ground_margin=0.08,
-        obstacle_margin=0.15,
+        obstacle_margin=0.10,
         max_obstacle_height=1.60):
     """Classify floor and navigation-height obstacle points.
 
@@ -220,6 +220,32 @@ def unique_cell_ids(ix, iy, width):
     return np.unique(
         np.asarray(iy, dtype=np.int64) * int(width) +
         np.asarray(ix, dtype=np.int64))
+
+
+def expand_cell_ids(cell_ids, width, height, radius, resolution):
+    """Expand occupied evidence to a small metric neighborhood."""
+    cell_ids = np.unique(np.asarray(cell_ids, dtype=np.int64))
+    if len(cell_ids) == 0 or radius <= 0.0:
+        return cell_ids
+
+    radius_cells = int(math.ceil(radius / resolution))
+    offsets = []
+    for dy in range(-radius_cells, radius_cells + 1):
+        for dx in range(-radius_cells, radius_cells + 1):
+            if math.hypot(dx * resolution, dy * resolution) <= radius + 1e-9:
+                offsets.append((dx, dy))
+    offsets = np.asarray(offsets, dtype=np.int64)
+
+    base_x = cell_ids % int(width)
+    base_y = cell_ids // int(width)
+    expanded_x = base_x[:, None] + offsets[None, :, 0]
+    expanded_y = base_y[:, None] + offsets[None, :, 1]
+    valid = (
+        (expanded_x >= 0) & (expanded_x < int(width)) &
+        (expanded_y >= 0) & (expanded_y < int(height))
+    )
+    return np.unique(
+        expanded_y[valid] * int(width) + expanded_x[valid])
 
 
 def select_ray_endpoint_indices(

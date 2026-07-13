@@ -77,7 +77,7 @@ ik_fcl_ompl_planner:
   ros__parameters:
     tcp_offset_x: 0.22
     tcp_offset_y: -0.025
-    tcp_offset_z: -0.002
+    tcp_offset_z: -0.02
     adaptive_orientation_enabled: false
     collision_detection_enabled: false
     velocity_scale: 0.01

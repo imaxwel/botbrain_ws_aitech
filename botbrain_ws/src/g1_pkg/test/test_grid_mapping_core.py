@@ -4,6 +4,7 @@ import numpy as np
 
 from g1_pkg.grid_mapping_core import (
     classify_points,
+    expand_cell_ids,
     fit_ground_plane_ransac,
     quaternion_to_matrix,
     raytrace_cell_ids,
@@ -67,7 +68,7 @@ def test_classification_ignores_below_floor_and_ceiling():
         [1.0, 0.0, -0.75],  # 0.497 m obstacle
         [2.0, 0.0, -1.50],  # below floor: ignored
         [3.0, 0.0, 0.50],   # 1.747 m high: ignored
-        [4.0, 0.0, -1.13],  # transition band: ignored
+        [4.0, 0.0, -1.157],  # transition band: ignored
     ])
     ground, obstacle, _heights = classify_points(
         points, np.array([0.0, 0.0, -1.247]))
@@ -147,3 +148,28 @@ def test_nearest_obstacle_wins_ray_bin_over_ground():
     )
     np.testing.assert_array_equal(indices, [1])
     np.testing.assert_array_equal(include_endpoint, [False])
+
+
+def test_obstacle_spread_is_metric_and_clipped_at_grid_edge():
+    center = expand_cell_ids(
+        [4], width=3, height=3, radius=0.075, resolution=0.05)
+    corner = expand_cell_ids(
+        [0], width=3, height=3, radius=0.075, resolution=0.05)
+    np.testing.assert_array_equal(center, np.arange(9))
+    np.testing.assert_array_equal(corner, [0, 1, 3, 4])
+
+
+def test_spread_confirms_obstacle_that_jitters_by_one_cell():
+    grid = np.full((5, 5), -1, dtype=np.int8)
+    log_odds = np.zeros((5, 5), dtype=np.float32)
+    observed = np.zeros((5, 5), dtype=bool)
+    first = expand_cell_ids(
+        [12], width=5, height=5, radius=0.075, resolution=0.05)
+    second = expand_cell_ids(
+        [13], width=5, height=5, radius=0.075, resolution=0.05)
+    update_log_odds_grid(
+        grid, log_odds, observed, [], first, occupied_threshold=1.275)
+    update_log_odds_grid(
+        grid, log_odds, observed, [], second, occupied_threshold=1.275)
+    assert grid[2, 2] == 100
+    assert grid[2, 3] == 100
