@@ -3,7 +3,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable, UnsetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -37,6 +37,11 @@ def generate_launch_description():
         'apriltag_image_topic',
         default_value='/g1_robot/front_camera/color/image_raw',
         description='ROS2 image topic for AprilTag trigger (replaces V4L2 device)',
+    )
+    image_source_file_arg = DeclareLaunchArgument(
+        'image_source_file',
+        default_value='/run/latest_cam.bin',
+        description='Path to frame file written by cam_frame_writer; empty string = use image_topic',
     )
     debug_image_dir_arg = DeclareLaunchArgument(
         'debug_image_dir',
@@ -111,6 +116,7 @@ def generate_launch_description():
             LaunchConfiguration('config_file'),
             {
                 'image_topic': LaunchConfiguration('apriltag_image_topic'),
+                'image_source_file': LaunchConfiguration('image_source_file'),
                 'debug_image_dir': LaunchConfiguration('debug_image_dir'),
                 'detect_only': LaunchConfiguration('detect_only'),
                 'trigger_topic': '/apriltag/capture_trigger',
@@ -120,10 +126,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Unset ZENOH_CONFIG_OVERRIDE injected by docker-compose (old format causes parse errors).
+        UnsetEnvironmentVariable('ZENOH_CONFIG_OVERRIDE'),
         urdf_name_arg,
         urdf_path_arg,
         config_file_arg,
         apriltag_image_topic_arg,
+        image_source_file_arg,
         debug_image_dir_arg,
         detect_only_arg,
         tf_topic_arg,

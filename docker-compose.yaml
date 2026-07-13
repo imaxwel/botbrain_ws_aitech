@@ -226,6 +226,7 @@ services:
 
   web_server:
     image: node:22-bullseye
+    network_mode: host
     working_dir: /app
     volumes:
       - ./frontend:/app
@@ -262,6 +263,8 @@ services:
     image: unitree-dex3:humble
     container_name: g1_robot_builder_dex3
     network_mode: host
+    environment:
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
     volumes:
       - ./botbrain_ws/:/botbrain_ws
     command: ["bash", "-lc", "
@@ -286,9 +289,15 @@ services:
       - /dev:/dev
       - /run:/run
     environment:
-      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+      ZENOH_CONFIG_OVERRIDE: 'mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'
       LD_LIBRARY_PATH: /usr/local/lib
-      CYCLONEDDS_URI: "file:///botbrain_ws/cyclonedds_config.xml"
       PYTHONPATH: /opt/unitree_dex3_tools:/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/build
-    command: ["sleep", "infinity"]
+    command: ["bash", "-c", "bash /botbrain_ws/setup_zenoh.sh && sleep infinity"]
     restart: unless-stopped
+
+  cam_bridge_sender:
+    extends: base
+    container_name: g1_robot_cam_bridge_sender
+    command: ["bash", "-lc", "source install/setup.bash && python3 /botbrain_ws/cam_bridge_sender.py"]
+    restart: "no"

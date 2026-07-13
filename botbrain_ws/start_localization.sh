@@ -59,4 +59,5 @@ export LD_LIBRARY_PATH=/opt/open3d/lib:$LD_LIBRARY_PATH
   done
 ) &
 
+python3 /botbrain_ws/cam_frame_writer.py &>/tmp/cam_frame_writer.log &
 exec ros2 launch g1_pkg localization_3d.launch.py

@@ -1,5 +1,11 @@
 #!/usr/bin/python3
 
+# Ensure /botbrain_ws is in sys.path before any imports, so pupil_apriltags
+# is findable in containers that have it copied there (e.g. g1_robot_rosa).
+import sys as _sys
+if '/botbrain_ws' not in _sys.path:
+    _sys.path.insert(0, '/botbrain_ws')
+
 import glob
 import math
 import os
@@ -7,6 +13,7 @@ import select
 import subprocess
 import threading
 import termios
+import struct
 import time
 import tty
 from collections import deque
@@ -20,7 +27,6 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 
-from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Empty
@@ -31,6 +37,11 @@ import tf2_ros
 
 from pupil_apriltags import Detector
 from scipy.spatial.transform import Rotation as R
+
+try:
+    from cv_bridge import CvBridge
+except ImportError:
+    CvBridge = None
 
 
 def _as_bool(value):
@@ -52,6 +63,7 @@ class V4L2AprilTagTrigger(Node):
         self.declare_parameter('warmup_min_s', 2.0)
         self.declare_parameter('sample_interval_s', 0.05)
         self.declare_parameter('continuous_capture', False)
+        self.declare_parameter('image_source_file', '')
 
         # ---- AprilTag detection ----
         self.declare_parameter('tag_family', 'tag36h11')
@@ -115,6 +127,7 @@ class V4L2AprilTagTrigger(Node):
             self.get_parameter('sample_interval_s').value)
         self.continuous_capture = _as_bool(
             self.get_parameter('continuous_capture').value)
+        self.image_source_file = str(self.get_parameter('image_source_file').value)
 
         # ---- AprilTag detection ----
         self.tag_family = str(self.get_parameter('tag_family').value)
@@ -208,7 +221,7 @@ class V4L2AprilTagTrigger(Node):
         self._trigger_busy = False
 
         # ---- ROS2 image buffer (replaces V4L2 stream) ----
-        self.bridge = CvBridge()
+        self.bridge = CvBridge() if CvBridge is not None else None
         self.frame_buffer = deque(maxlen=max(60, self.warmup_frames * 2))
         self._buffer_lock = threading.Lock()
         self._buffer_ready = False
@@ -238,15 +251,23 @@ class V4L2AprilTagTrigger(Node):
         self.target_pose_pub = self.create_publisher(PoseStamped, self.target_pose_topic, 10)
 
         # ---- subscriptions ----
-        # Use RELIABLE to match the camera publisher's QoS.
-        _image_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-            durability=DurabilityPolicy.VOLATILE,
-        )
-        self.image_sub = self.create_subscription(
-            Image, self.image_topic, self._image_cb, _image_qos)
+        self.image_sub = None
+        if self.image_source_file:
+            # File-based mode: poll file written by cam_frame_writer running in bringup container
+            self.create_timer(0.15, self._file_poll_cb)
+            self.get_logger().info(
+                f'[v4l2_apriltag_trigger] image source: file {self.image_source_file}')
+        else:
+            # ROS2 topic mode
+            # Use BEST_EFFORT to match the camera publisher's QoS (sensor_data profile).
+            _image_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+                durability=DurabilityPolicy.VOLATILE,
+            )
+            self.image_sub = self.create_subscription(
+                Image, self.image_topic, self._image_cb, _image_qos)
         if self.camera_info_topic:
             self.create_subscription(
                 CameraInfo,
@@ -327,6 +348,59 @@ class V4L2AprilTagTrigger(Node):
                         f'[v4l2_apriltag_trigger] warming up: '
                         f'{len(self.frame_buffer)}/{self.warmup_frames} frames, '
                         f'{elapsed:.1f}/{self.warmup_min_s:.1f}s')
+
+    # ------------------------------------------------------------------
+    #  file-based frame polling (cam_frame_writer writes /run/latest_cam.bin)
+    # ------------------------------------------------------------------
+    def _file_poll_cb(self):
+        path = self.image_source_file
+        try:
+            age = time.time() - os.path.getmtime(path)
+            if age > 2.0:
+                return
+            with open(path, 'rb') as f:
+                data = f.read()
+        except OSError:
+            return
+        _HDR = '>III32sIII'
+        _HDR_SIZE = struct.calcsize(_HDR)
+        if len(data) < _HDR_SIZE:
+            return
+        height, width, step, enc_b, sec, nsec, dlen = struct.unpack(_HDR, data[:_HDR_SIZE])
+        if len(data) < _HDR_SIZE + dlen or height == 0 or width == 0:
+            return
+        raw = data[_HDR_SIZE:_HDR_SIZE + dlen]
+        enc = enc_b.rstrip(b'\x00').decode('utf-8', errors='replace')
+        try:
+            arr = np.frombuffer(raw, dtype=np.uint8)
+            channels = dlen // (height * width)
+            frame = arr.reshape(height, width, channels)
+            if enc in ('rgb8', 'rgb'):
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            elif enc in ('mono8', '8UC1'):
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        except Exception as e:
+            self.get_logger().warn(f'[v4l2_apriltag_trigger] file frame decode failed: {e}')
+            return
+        stamp = Time(seconds=sec, nanoseconds=nsec).to_msg()
+        with self._buffer_lock:
+            self._frame_count += 1
+            self.frame_buffer.append((frame, stamp))
+            if not self._image_cb_logged_first:
+                self._image_cb_logged_first = True
+                self.get_logger().info(
+                    f'[v4l2_apriltag_trigger] first frame from file '
+                    f'{width}x{height} enc={enc}')
+            if self._first_frame_time == 0.0:
+                self._first_frame_time = time.monotonic()
+            if not self._buffer_ready:
+                elapsed = time.monotonic() - self._first_frame_time
+                if (len(self.frame_buffer) >= self.warmup_frames
+                        and elapsed >= self.warmup_min_s):
+                    self._buffer_ready = True
+                    self.get_logger().info(
+                        f'[v4l2_apriltag_trigger] buffer ready from file '
+                        f'({len(self.frame_buffer)} frames, {elapsed:.1f}s)')
 
     # ------------------------------------------------------------------
     #  camera info
@@ -886,6 +960,23 @@ class V4L2AprilTagTrigger(Node):
 
 
 def main(args=None):
+    # Fix Zenoh config before rclpy/Zenoh initializes.
+    # docker-compose injects ZENOH_CONFIG_OVERRIDE in an old format that newer Zenoh cannot parse,
+    # causing nodes to fall back to peer mode and fail to connect to the router on port 7448.
+    import os as _os
+    import sys as _sys
+    import tempfile as _tempfile
+    _os.environ.pop('ZENOH_CONFIG_OVERRIDE', None)
+    _zenoh_cfg = '{\n  mode: "client",\n  connect: { endpoints: ["tcp/127.0.0.1:7448"] }\n}\n'
+    _cfg_file = _tempfile.NamedTemporaryFile(
+        mode='w', suffix='.json5', prefix='zenoh_rmw_', delete=False)
+    _cfg_file.write(_zenoh_cfg)
+    _cfg_file.flush()
+    _cfg_file.close()
+    _os.environ['ZENOH_CONFIG'] = _cfg_file.name
+    # Ensure pupil_apriltags is findable when running in containers that have it under /botbrain_ws
+    if '/botbrain_ws' not in _sys.path:
+        _sys.path.insert(0, '/botbrain_ws')
     rclpy.init(args=args)
     node = V4L2AprilTagTrigger()
     try:

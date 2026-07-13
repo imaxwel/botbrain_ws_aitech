@@ -48,6 +48,12 @@ def generate_launch_description():
         description='ROS2 image topic for AprilTag trigger (replaces V4L2 device)',
     )
 
+    image_source_file_arg = DeclareLaunchArgument(
+        'image_source_file',
+        default_value='/run/latest_cam.bin',
+        description='Path to frame file written by cam_frame_writer; empty string = use image_topic',
+    )
+
     debug_image_dir_arg = DeclareLaunchArgument(
         'debug_image_dir',
         default_value='/botbrain_ws/detect_img',
@@ -125,6 +131,7 @@ def generate_launch_description():
             LaunchConfiguration('v4l2_config_file'),
             {
                 'image_topic': LaunchConfiguration('apriltag_image_topic'),
+                'image_source_file': LaunchConfiguration('image_source_file'),
                 'debug_image_dir': LaunchConfiguration('debug_image_dir'),
                 'detect_only': LaunchConfiguration('detect_only'),
             },
@@ -169,6 +176,7 @@ def generate_launch_description():
         camera_only_arg,
         v4l2_config_file_arg,
         apriltag_image_topic_arg,
+        image_source_file_arg,
         debug_image_dir_arg,
         detect_only_arg,
         tf_topic_arg,

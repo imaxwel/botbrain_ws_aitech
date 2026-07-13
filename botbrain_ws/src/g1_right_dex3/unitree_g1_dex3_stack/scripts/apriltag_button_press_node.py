@@ -136,10 +136,16 @@ class AprilTagButtonPressNode(Node):
         self.fd = None
         self.old_settings = None
         if self.trigger_char:
-            self.fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK)
-            self.old_settings = termios.tcgetattr(self.fd)
-            tty.setcbreak(self.fd)
-            self.create_timer(0.05, self._tick)
+            try:
+                self.fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK)
+                self.old_settings = termios.tcgetattr(self.fd)
+                tty.setcbreak(self.fd)
+                self.create_timer(0.05, self._tick)
+            except OSError as e:
+                self.get_logger().warn(
+                    f'[apriltag_button_press] cannot open /dev/tty ({e}); '
+                    f'keyboard trigger disabled, use trigger_topic instead')
+                self.fd = None
         self.create_timer(0.1, self._shutdown_tick)
 
         self.get_logger().info(

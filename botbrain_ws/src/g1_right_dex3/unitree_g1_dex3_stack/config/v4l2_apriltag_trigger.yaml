@@ -2,8 +2,8 @@ v4l2_apriltag_trigger:
   ros__parameters:
     image_topic: "/g1_robot/front_camera/color/image_raw"
     sample_count: 4
-    warmup_frames: 12
-    warmup_min_s: 5.0
+    warmup_frames: 5
+    warmup_min_s: 1.5
     sample_interval_s: 0.05
     continuous_capture: false
 
