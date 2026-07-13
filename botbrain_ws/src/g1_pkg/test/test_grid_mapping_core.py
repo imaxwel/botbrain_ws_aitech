@@ -92,7 +92,7 @@ def test_log_odds_requires_three_distinct_updates_and_can_clear():
     assert grid[0, 2] == 100
 
     # A bounded false obstacle is eventually cleared by repeated free scans.
-    for _ in range(8):
+    for _ in range(11):
         update_log_odds_grid(
             grid, log_odds, observed, [2], [], occupied_threshold=2.0)
     assert grid[0, 2] == 0
@@ -152,11 +152,11 @@ def test_nearest_obstacle_wins_ray_bin_over_ground():
 
 def test_obstacle_spread_is_metric_and_clipped_at_grid_edge():
     center = expand_cell_ids(
-        [4], width=3, height=3, radius=0.075, resolution=0.05)
+        [4], width=3, height=3, radius=0.05, resolution=0.05)
     corner = expand_cell_ids(
-        [0], width=3, height=3, radius=0.075, resolution=0.05)
-    np.testing.assert_array_equal(center, np.arange(9))
-    np.testing.assert_array_equal(corner, [0, 1, 3, 4])
+        [0], width=3, height=3, radius=0.05, resolution=0.05)
+    np.testing.assert_array_equal(center, [1, 3, 4, 5, 7])
+    np.testing.assert_array_equal(corner, [0, 1, 3])
 
 
 def test_spread_confirms_obstacle_that_jitters_by_one_cell():
@@ -164,12 +164,35 @@ def test_spread_confirms_obstacle_that_jitters_by_one_cell():
     log_odds = np.zeros((5, 5), dtype=np.float32)
     observed = np.zeros((5, 5), dtype=bool)
     first = expand_cell_ids(
-        [12], width=5, height=5, radius=0.075, resolution=0.05)
+        [12], width=5, height=5, radius=0.05, resolution=0.05)
     second = expand_cell_ids(
-        [13], width=5, height=5, radius=0.075, resolution=0.05)
+        [13], width=5, height=5, radius=0.05, resolution=0.05)
     update_log_odds_grid(
-        grid, log_odds, observed, [], first, occupied_threshold=1.275)
+        grid, log_odds, observed, [], first, occupied_threshold=2.125)
     update_log_odds_grid(
-        grid, log_odds, observed, [], second, occupied_threshold=1.275)
+        grid, log_odds, observed, [], second, occupied_threshold=2.125)
+    update_log_odds_grid(
+        grid, log_odds, observed, [], first, occupied_threshold=2.125)
     assert grid[2, 2] == 100
     assert grid[2, 3] == 100
+
+
+def test_repeated_ground_support_clears_transient_person_footprint():
+    grid = np.full((7, 7), -1, dtype=np.int8)
+    log_odds = np.zeros((7, 7), dtype=np.float32)
+    observed = np.zeros((7, 7), dtype=bool)
+    person = expand_cell_ids(
+        [24], width=7, height=7, radius=0.05, resolution=0.05)
+    for _ in range(3):
+        update_log_odds_grid(
+            grid, log_odds, observed, [], person,
+            occupied_threshold=2.125)
+    assert grid[3, 3] == 100
+
+    floor = expand_cell_ids(
+        [24], width=7, height=7, radius=0.05, resolution=0.05)
+    for _ in range(11):
+        update_log_odds_grid(
+            grid, log_odds, observed, floor, [],
+            free_update=0.30, occupied_threshold=2.125)
+    assert np.all(grid.ravel()[person] == 0)

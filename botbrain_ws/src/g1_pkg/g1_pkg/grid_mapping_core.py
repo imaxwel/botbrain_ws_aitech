@@ -349,7 +349,7 @@ def update_log_odds_grid(
         free_cells,
         obstacle_cells,
         *,
-        free_update=0.40,
+        free_update=0.30,
         obstacle_update=0.85,
         minimum=-2.0,
         maximum=3.5,

@@ -77,10 +77,15 @@ def generate_launch_description():
                 # for saved-map editing. Ray clearing remains available as an
                 # opt-in diagnostic but otherwise over-whitens the map.
                 '--no-raytrace',
-                # A 7.5 cm support radius gives each sparse obstacle return a
-                # 3x3 footprint at 5 cm resolution and tolerates scan jitter.
-                '--obstacle-spread-radius', '0.075',
-                '--min-obs-hits',   '2',     # distinct accepted scan frames
+                # One-cell metric support keeps sparse walls connected without
+                # turning each return into the previous full 3x3 black block.
+                '--obstacle-spread-radius', '0.05',
+                # Ground support uses a weaker update. After a person leaves,
+                # repeated floor returns clear the transient footprint while
+                # continuously observed walls and furniture remain occupied.
+                '--free-spread-radius',     '0.05',
+                '--free-update',            '0.30',
+                '--min-obs-hits',   '3',     # distinct accepted scan frames
                 '--debug-clouds',            # ground/obstacle/self diagnostics
                 '--map-z',          '-1.247', # fallback display height before plane fit
             ],
