@@ -7,19 +7,21 @@
     filter_size_map: 0.5   # 匹配参考
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/test_hongkong.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
-      # lid_topic:  "/livox/lidar"
       lid_topic: "/livox/lidar"
-      imu_topic: "/livox/imu"  # 匹配 g1_3d_nav_ros2 参考：直接用原始IMU，不需要imu_flip
+      # MID360 is mounted roll-180. The driver applies the configured
+      # extrinsic to LiDAR points, while imu_flip.py applies the same
+      # R_x(pi) transform to the raw IMU Y/Z axes.
+      imu_topic: "/livox/imu_corrected"
       time_sync_en: false # ONLY turn on when external time synchronization is really not possible
       time_offset_lidar_to_imu:
         0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
         # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
 
     preprocess:
-      lidar_type: 1 # 4 for standard PointCloud2 (matches livox driver xfer_format=0)
+      lidar_type: 1 # 1 for Livox serials LiDAR
       scan_line: 4
       blind: 0.5
       timestamp_unit: 3
@@ -32,8 +34,10 @@
       b_gyr_cov: 0.0001
       fov_degree: 360.0
       det_range: 100.0
-      extrinsic_est_en: false  # Match ROS1 mid360_g1.yaml; keep G1 MID360 fixed extrinsic
-      extrinsic_T: [-0.011, -0.02329, 1.247]  # 匹配 g1_3d_nav_ros2：声明LiDAR在IMU上方1.247m → body原点=地面高度
+      extrinsic_est_en: false  # MID360 LiDAR-to-built-in-IMU extrinsic is fixed
+      # LiDAR pose in the MID360 built-in IMU frame (centimetre scale).
+      # 1.247 m is the robot sensor height above the floor, NOT this extrinsic.
+      extrinsic_T: [-0.011, -0.02329, 0.04412]
       extrinsic_R: [1., 0., 0., 0., 1., 0., 0., 0., 1.]
 
     publish:
@@ -45,7 +49,7 @@
       scan_bodyframe_pub_en: true # true: output the point cloud scans in IMU-body-frame
 
     pcd_save:
-      pcd_save_en: true  # 使用 maps/scans.pcd 现成地图: 禁止退出时覆盖, 同时关闭实时 grid_accumulator
+      pcd_save_en: true  # 建图时设为 true；定位/导航时设为 false，避免退出时覆盖地图
       interval:
         -1 # how many LiDAR frames saved in each pcd file;
         # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.

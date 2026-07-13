@@ -7,7 +7,7 @@ from launch_ros.actions import Node
 xfer_format   = 1    # 1-CustomMsg (per-point timestamps, required for humanoid motion compensation)
 multi_topic   = 0
 data_src      = 0
-publish_freq  = 20.0
+publish_freq  = 10.0
 output_type   = 0
 frame_id      = 'mid360_link'
 lvx_file_path = '/home/livox/livox_test.lvx'
@@ -19,8 +19,9 @@ user_config_path = os.path.join(cur_config_path, 'MID360_config.json')
 
 def generate_launch_description():
     # Accept prefix/namespace args (passed by robot_interface.launch.py) but do not use them.
-    # Lidar publishes CustomMsg on /livox/lidar and IMU on /livox/imu — no namespace.
-    # fast_lio mid360.yaml subscribes to these topics directly.
+    # LiDAR publishes CustomMsg on /livox/lidar and raw-axis IMU on /livox/imu.
+    # fast_lio.launch.py relays the upside-down IMU through imu_flip.py and
+    # FAST-LIO subscribes to /livox/imu_corrected.
     prefix_arg    = DeclareLaunchArgument('prefix',    default_value='')
     namespace_arg = DeclareLaunchArgument('namespace', default_value='')
 

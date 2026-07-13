@@ -1,30 +1,18 @@
 #!/usr/bin/env python3
-"""ROS2 port of deepglint's ground_cloud_accumulator (ROS1) — produces a
-2D OccupancyGrid by classifying body-frame point cloud points into ground
-(FREE) and obstacle (OCCUPIED) by their z, transforming to map frame, and
-accumulating into a fixed-resolution grid that grows on demand.
+"""Build a 2D OccupancyGrid from FAST-LIO registered point clouds.
 
-Subscribes:  /cloud_registered_body_1  (sensor_msgs/PointCloud2, body frame)
-Publishes:   /accumulated_grid         (nav_msgs/OccupancyGrid, map frame)
+Preferred input: /cloud_registered_1 (PointCloud2, camera_init/world frame).
+Legacy input: /cloud_registered_body_1 (PointCloud2, body frame plus TF).
+Publishes: /accumulated_grid (OccupancyGrid, camera_init/map frame).
 
-The companion to fast_lio mapping. fast_lio dumps the 3D PCD via the
-/map_save service; map_saver_cli on the OccupancyGrid topic dumps the 2D
-PGM + yaml. Together they form the ROS2-native equivalent of the ROS1
-fast_lio + ground_cloud_accumulator mapping pipeline.
+The preferred world-frame mode avoids applying a second, time-sensitive
+body-to-map transform and keeps ground-plane fitting in one coordinate frame.
+Body-frame mode remains available for legacy callers with
+``--no-pre-transformed``.
 
-Usage (inside 3d_nav_ros2 container, requires launch.sh up so /tf and
-/cloud_registered_body_1 flow):
-    python3 /g1_3d_nav_ros2/tools/mapping/grid_accumulator.py \\
-        --resolution 0.05 --ground-z 0.15 --obstacle-z 0.25 \\
-        --rate 2.0
-
-To save the produced grid to disk (separate window, after enough mapping
-data has been accumulated):
-    ros2 run nav2_map_server map_saver_cli \\
-        -t /accumulated_grid -f /tmp/accumulated_grid
-
-Defaults match the ROS1 ground_cloud_accumulator parameters used in the
-2026-05-21 mapping run (the one that produced /g1_3d_nav_ros2/maps/accumulated_grid.*).
+FAST-LIO saves the 3D PCD through /map_save (or on shutdown). This node
+accumulates the separate 2D OccupancyGrid that nav2_map_server saves as
+PGM plus YAML.
 """
 import argparse
 import math
@@ -156,10 +144,9 @@ class GridAccumulator(Node):
             pts = raw.reshape(-1, 3).astype(np.float64)
 
         if self.pre_transformed:
-            # /cloud_registered: points already in map frame — no TF needed.
-            # Classify by absolute z in map frame.
+            # /cloud_registered_1: points already in map frame — no TF needed.
             pts_map = pts
-            z = pts[:, 2]
+            fixed_z = pts[:, 2]
         else:
             # /cloud_registered_body_1: body frame — TF to map required.
             try:
@@ -169,10 +156,10 @@ class GridAccumulator(Node):
                     rclpy.duration.Duration(seconds=0.1))
             except Exception:
                 return
-            z = pts[:, 2]
+            fixed_z = pts[:, 2]
             if self.invert_z:
-                z = -z
-            z = z + self.z_offset
+                fixed_z = -fixed_z
+            fixed_z = fixed_z + self.z_offset
             q = tf.transform.rotation
             t = tf.transform.translation
             xx, yy, zz, ww = q.x, q.y, q.z, q.w
@@ -185,18 +172,28 @@ class GridAccumulator(Node):
 
         if self.use_ground_plane:
             # ---- plane-relative classification (tilt-robust) ----
-            coeffs = self._estimate_ground_plane(pts_map[:, 0], pts_map[:, 1], z)
+            # Plane x/y/z must all be in the same map frame. The previous
+            # body-cloud path mixed map-frame x/y with body-frame z.
+            plane_z = pts_map[:, 2]
+            coeffs = self._estimate_ground_plane(
+                pts_map[:, 0], pts_map[:, 1], plane_z)
             if coeffs is not None:
                 ground_mask, obs_mask = self._classify_by_plane(
-                    pts_map[:, 0], pts_map[:, 1], z, coeffs)
+                    pts_map[:, 0], pts_map[:, 1], plane_z, coeffs)
             else:
-                # fallback to fixed-z while waiting for plane convergence
-                ground_mask = (z >= self.ground_z_min) & (z < self.ground_z)
-                obs_mask = (z < self.ground_z_min) | ((z > self.obstacle_z) & (z < self.obstacle_z_max))
+                # Fallback to map-frame fixed-z while the plane converges.
+                ground_mask = ((plane_z >= self.ground_z_min) &
+                               (plane_z < self.ground_z))
+                obs_mask = ((plane_z < self.ground_z_min) |
+                            ((plane_z > self.obstacle_z) &
+                             (plane_z < self.obstacle_z_max)))
         else:
             # ---- fixed-z classification (legacy) ----
-            ground_mask = (z >= self.ground_z_min) & (z < self.ground_z)
-            obs_mask = (z < self.ground_z_min) | ((z > self.obstacle_z) & (z < self.obstacle_z_max))
+            ground_mask = ((fixed_z >= self.ground_z_min) &
+                           (fixed_z < self.ground_z))
+            obs_mask = ((fixed_z < self.ground_z_min) |
+                        ((fixed_z > self.obstacle_z) &
+                         (fixed_z < self.obstacle_z_max)))
 
         with self.lock:
             self._ingest(pts_map[:, 0], pts_map[:, 1], ground_mask, obs_mask)
@@ -430,20 +427,20 @@ def main():
                     help="lower bound for ground z; points below this are step-downs/drops and marked OCCUPIED")
     ap.add_argument("--obstacle-z", type=float, default=0.25)
     ap.add_argument("--obstacle-z-max", type=float, default=1.8,
-                    help="upper bound for obstacle z (body frame); points above this are ignored (e.g. ceiling)")
+                    help="upper obstacle-z bound in the fixed-z classification frame; higher points are ignored")
     ap.add_argument("--min-obs-hits", type=int, default=3,
                     help="Minimum scan hits before a cell is marked OCCUPIED (default 3, increase to reduce moving-person false obstacles)")
     ap.add_argument("--rate", type=float, default=2.0)
     ap.add_argument("--body-frame", default="body")
     ap.add_argument("--map-frame", default="map")
-    ap.add_argument("--cloud-topic", default="/cloud_registered")
+    ap.add_argument("--cloud-topic", default="/cloud_registered_1")
     ap.add_argument("--grid-topic", default="/accumulated_grid")
     ap.add_argument("--invert-z", action="store_true",
                     help="(body-frame mode only) invert z before classification")
     ap.add_argument("--z-offset", type=float, default=0.0,
                     help="(body-frame mode only) shift z after invert")
     ap.add_argument("--pre-transformed", action="store_true", default=True,
-                    help="cloud is already in map frame (/cloud_registered); skip TF lookup")
+                    help="cloud is already in map frame (/cloud_registered_1); skip TF lookup")
     ap.add_argument("--no-pre-transformed", dest="pre_transformed", action="store_false",
                     help="use body-frame cloud + TF (/cloud_registered_body_1 mode)")
     ap.add_argument("--skip-frames", type=int, default=20,

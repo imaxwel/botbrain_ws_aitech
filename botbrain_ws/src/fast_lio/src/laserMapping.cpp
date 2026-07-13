@@ -1089,6 +1089,7 @@ private:
             t3 = omp_get_wtime();
             map_incremental();
             t5 = omp_get_wtime();
+            frame_num++;
             if (pcd_save_en && frame_num % 100 == 0)
                 printf("[MAP] frame=%d feats_down=%d pcl_wait_save=%lu\n", frame_num, feats_down_size, pcl_wait_save->size());
 
@@ -1106,7 +1107,6 @@ private:
             /*** Debug variables ***/
             if (runtime_pos_log)
             {
-                frame_num++;
                 kdtree_size_end = ikdtree.size();
                 aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num + (t5 - t0) / frame_num;
                 aver_time_icp = aver_time_icp * (frame_num - 1) / frame_num + (t_update_end - t_update_start) / frame_num;

@@ -21,6 +21,9 @@
       - "/cloud_.*"
       - "/livox/.*"
       - "/accumulated_grid"
+      - "/Odometry_loc"
+      - "/path_1"
+      - "/Laser_map_1"
       # open3d_loc 定位输出（无命名空间）
       - "/localization_3d"
       - "/localization_3d_confidence"
