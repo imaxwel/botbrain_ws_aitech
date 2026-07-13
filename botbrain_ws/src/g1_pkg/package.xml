@@ -12,10 +12,14 @@
   <depend>rclcpp</depend>
   <depend>rclpy</depend>
   <depend>rclcpp_lifecycle</depend>
-  <depend>std_msgs</depend>  std_srvs
+  <depend>std_msgs</depend>
   <depend>geometry_msgs</depend> 
   <depend>std_srvs</depend> 
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2_ros</depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <build_depend>bot_custom_interfaces</build_depend>
 
   <test_depend>ament_lint_auto</test_depend>

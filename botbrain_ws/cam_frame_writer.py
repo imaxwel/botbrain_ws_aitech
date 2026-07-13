@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, struct, tempfile, time, threading
+import os, sys, struct, tempfile, time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -43,14 +43,12 @@ class CamFrameWriter(Node):
             self.get_logger().warn(f'[cam_frame_writer] write failed: {e}')
 
     def _watchdog(self):
-        # First 30s grace period after startup
         if self._count == 0 and time.monotonic() - self._last_frame_time < 30.0:
             return
         elapsed = time.monotonic() - self._last_frame_time
         if elapsed > WATCHDOG_TIMEOUT_S:
             self.get_logger().warn(
                 f'[cam_frame_writer] no frame for {elapsed:.0f}s — restarting process')
-            # Flush log before restart
             sys.stdout.flush()
             sys.stderr.flush()
             os.execv(sys.executable, [sys.executable] + sys.argv)

@@ -39,19 +39,42 @@ def generate_launch_description():
                 # LiDAR-to-IMU extrinsic.
                 '--pre-transformed',
                 '--cloud-topic',    '/cloud_registered_1',
+                '--odom-topic',     '/Odometry_loc',
                 '--grid-topic',     '/accumulated_grid',
                 '--map-frame',      'camera_init',
+                '--body-frame',     'body',
                 '--resolution',     '0.05',
-                # camera_init starts near the MID360 built-in IMU. With the
-                # standing sensor about 1.247 m above the floor, map-frame
-                # floor points are near z=-1.247 m. These are fallbacks while
-                # the world-frame ground-plane estimator is converging.
-                '--ground-z-min',   '-1.7',
-                '--ground-z',       '-1.0',
-                '--obstacle-z',     '-1.0',
-                '--obstacle-z-max', '1.0',
+                # Fixed-z values are used only with --no-ground-plane. In the
+                # normal path, a constrained plane is initialized around the
+                # known body-to-floor height and must pass quality gates.
+                '--ground-z-min',   '-1.35',
+                '--ground-z',       '-1.15',
+                '--obstacle-z',     '-1.10',
+                '--obstacle-z-max', '0.35',
                 '--skip-frames',    '60',    # FAST-LIO warmup
-                '--min-obs-hits',   '3',     # 3 hits to confirm obstacle
+                '--sensor-height',  '1.247',
+                '--below-ground-tolerance', '0.10',
+                '--ground-margin',          '0.08',
+                '--obstacle-margin',        '0.15',
+                # Navigation only needs the lower wall/furniture band. Keeping
+                # this below normal ceiling height prevents a ceiling plane
+                # from being projected into a solid black floor region.
+                '--max-obstacle-height',    '1.60',
+                '--plane-init-frames',      '3',
+                '--plane-max-tilt-deg',     '5.0',
+                '--plane-max-expected-error', '0.18',
+                '--plane-max-median-residual', '0.035',
+                '--max-point-range',        '30.0',
+                # Conservative G1 envelope in the FAST-LIO body/IMU frame.
+                '--self-x-min',     '-0.40',
+                '--self-x-max',     '0.40',
+                '--self-y-abs',     '0.40',
+                '--self-z-min',     '-1.35',
+                '--self-z-max',     '0.15',
+                '--raytrace-range', '15.0',
+                '--raytrace-bins',  '360',
+                '--min-obs-hits',   '3',     # distinct accepted scan frames
+                '--debug-clouds',            # ground/obstacle/self diagnostics
                 '--map-z',          '-1.247', # fallback display height before plane fit
             ],
             output='screen',
