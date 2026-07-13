@@ -73,7 +73,8 @@ def generate_launch_description():
             {
                 'path_map': map_file,
                 # G1: tuned ICP and localization parameters
-                'pcd_queue_maxsize': 10,
+                'pcd_queue_maxsize': 1,
+                'registered_cloud_world_frame': 'camera_init',
                 # G1: voxelsize_coarse must be >= 0.15 for 8M-point PCD (0.01 causes empty voxels)
                 'voxelsize_coarse': 0.15,
                 # G1: voxelsize_fine=0.2 -> MultiScaleIcp scales {0.2,0.4,0.6}
@@ -81,7 +82,24 @@ def generate_launch_description():
                 'voxelsize_fine': 0.2,
                 'threshold_fitness': 0.5,
                 'threshold_fitness_init': 0.5,
-                'loc_frequence': 2.5,
+                'loc_frequence': 4.0,  # Hz: one ICP attempt about every 250 ms
+                'max_icp_translation_step': 1.0,
+                'max_icp_rotation_step_deg': 15.0,
+                'immediate_icp_translation_step': 0.10,
+                'immediate_icp_rotation_step_deg': 2.0,
+                'large_correction_confirmations': 2,
+                'icp_candidate_consistency_translation': 0.20,
+                'icp_candidate_consistency_rotation_deg': 4.0,
+                'icp_candidate_max_age_sec': 1.0,
+                # Pair world cloud N only with Odometry_loc N; FAST-LIO publishes
+                # odometry first, so an ICP timer can otherwise mix N and N+1.
+                'max_scan_odom_time_skew_sec': 0.03,
+                'max_icp_inlier_rmse': 0.30,
+                'min_initialization_fitness': 0.50,
+                'max_initialization_translation_step': 2.0,
+                'max_initialization_rotation_step_deg': 45.0,
+                'min_icp_source_points': 100,
+                'min_icp_target_points': 1000,
                 'save_scan': False,
                 'hidden_removal': False,
                 'maxpoints_source': 80000,

@@ -228,6 +228,7 @@ class V4L2AprilTagTrigger(Node):
         self._first_frame_time = 0.0
         self._frame_count = 0
         self._image_cb_logged_first = False
+        self._file_stale_warned_at = 0.0  # last time we logged a stale-file warning
 
         self.camera_matrix_live = None
         self.camera_params_live = None
@@ -357,6 +358,18 @@ class V4L2AprilTagTrigger(Node):
         try:
             age = time.time() - os.path.getmtime(path)
             if age > 2.0:
+                # Camera offline (localization restarting) — reset buffer and warn periodically
+                now = time.monotonic()
+                if now - self._file_stale_warned_at > 10.0:
+                    self._file_stale_warned_at = now
+                    self.get_logger().warn(
+                        f'[v4l2_apriltag_trigger] camera file stale ({age:.0f}s) — '
+                        f'waiting for localization to restart...')
+                with self._buffer_lock:
+                    if self._buffer_ready:
+                        self._buffer_ready = False
+                        self._first_frame_time = 0.0
+                        self.frame_buffer.clear()
                 return
             with open(path, 'rb') as f:
                 data = f.read()

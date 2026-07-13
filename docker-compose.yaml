@@ -125,6 +125,12 @@ services:
     command: ["bash", "-lc", "sleep 25 && source install/setup.bash && ros2 launch g1_pkg fast_lio.launch.py"]
     restart: always
 
+  camera:
+    extends: nav3d
+    container_name: g1_robot_camera
+    command: ["bash", "-lc", "source install/setup.bash && python3 /botbrain_ws/cam_frame_writer.py &>/tmp/cam_frame_writer.log & ros2 launch bot_localization realsense.launch.py"]
+    restart: always
+
   localization:
     extends: nav3d
     container_name: g1_robot_localization

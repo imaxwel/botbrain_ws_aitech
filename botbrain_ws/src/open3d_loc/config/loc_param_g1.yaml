@@ -9,6 +9,42 @@ global_localization_node:
     # G1: initial pose seed for ICP -- x, y, z (m), roll, pitch, yaw (degrees)
     initialpose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
+    # ICP update rate and coherent world-frame scan window.
+    loc_frequence: 4.0
+    # Use only the newest world-frame scan. Historical FAST-LIO clouds can be
+    # mutually inconsistent after a sharp turn and must not be fused into one ICP source.
+    pcd_queue_maxsize: 1
+    # /cloud_registered_1 must already be in this FAST-LIO world frame.
+    registered_cloud_world_frame: camera_init
+    voxelsize_coarse: 0.15
+    voxelsize_fine: 0.20
+    threshold_fitness: 0.50
+    threshold_fitness_init: 0.50
+    min_icp_source_points: 100
+    min_icp_target_points: 1000
+
+    # Normal localization guard. Small corrections are accepted immediately;
+    # medium corrections require two consistent, distinct incoming scan windows.
+    max_icp_translation_step: 1.0
+    max_icp_rotation_step_deg: 15.0
+    immediate_icp_translation_step: 0.10
+    immediate_icp_rotation_step_deg: 2.0
+    large_correction_confirmations: 2
+    icp_candidate_consistency_translation: 0.20
+    icp_candidate_consistency_rotation_deg: 4.0
+    # A candidate from an old/paused scan stream cannot confirm a later turn.
+    icp_candidate_max_age_sec: 1.0
+    # /Odometry_loc is published before /cloud_registered_1; require the two
+    # accepted FAST-LIO products to carry the same scan time before ICP.
+    max_scan_odom_time_skew_sec: 0.03
+    max_icp_inlier_rmse: 0.30
+
+    # Initialization uses the same high-quality floor as threshold_fitness_init;
+    # low-quality ICP must never walk map->odom away one iteration at a time.
+    min_initialization_fitness: 0.50
+    max_initialization_translation_step: 2.0
+    max_initialization_rotation_step_deg: 45.0
+
     # G1: Kalman filter -- MUST use slash (kf_baselink2map/x).
     # C++ declares "kf_baselink2map/x", ROS2 nesting -> "kf_baselink2map.x" (mismatch).
     # kf_baselink2map/x: [0.001, 0.002]

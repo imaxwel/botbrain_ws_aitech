@@ -39,6 +39,8 @@
 #include <fstream>
 #include <csignal>
 #include <chrono>
+#include <algorithm>
+#include <limits>
 #include <unistd.h>
 #include <Python.h>
 #include <so3_math.h>
@@ -75,6 +77,16 @@ double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_pl
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
+bool imu_flip_yz = false;
+bool lidar_update_guard_enable = true;
+int imu_queue_depth = 2000, lidar_queue_depth = 100;
+int guard_min_effective_points = 100, consecutive_guard_rejections = 0;
+int guard_recovery_min_rejections = 5;
+double guard_min_effective_ratio = 0.10, guard_max_residual = 0.15;
+double guard_max_translation_correction = 0.25, guard_max_rotation_correction_deg = 5.0;
+double guard_recovery_min_effective_ratio = 0.15, guard_recovery_max_residual = 0.10;
+double guard_recovery_max_translation_correction = 0.75, guard_recovery_max_rotation_correction_deg = 15.0;
+double last_timing_log_time = -1.0;
 /**************************/
 
 float res_last[100000] = {0.0};
@@ -141,6 +153,24 @@ nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
 geometry_msgs::msg::Quaternion geoQuat;
 geometry_msgs::msg::PoseStamped msg_body_pose;
+
+bool IsFiniteState(const state_ikfom &state)
+{
+    return state.pos.allFinite() && state.vel.allFinite() &&
+           state.bg.allFinite() && state.ba.allFinite() &&
+           state.offset_T_L_I.allFinite() && state.rot.coeffs().allFinite() &&
+           state.offset_R_L_I.coeffs().allFinite() && state.grav.vec.allFinite();
+}
+
+void RefreshStateOutputs()
+{
+    euler_cur = SO3ToEuler(state_point.rot);
+    pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+    geoQuat.x = state_point.rot.coeffs()[0];
+    geoQuat.y = state_point.rot.coeffs()[1];
+    geoQuat.z = state_point.rot.coeffs()[2];
+    geoQuat.w = state_point.rot.coeffs()[3];
+}
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
@@ -301,6 +331,8 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg)
     {
         std::cerr << "lidar loop back, clear buffer" << std::endl;
         lidar_buffer.clear();
+        time_buffer.clear();
+        lidar_pushed = false;
     }
     if (is_first_lidar)
     {
@@ -330,6 +362,8 @@ void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::UniquePtr msg)
     {
         std::cerr << "lidar loop back, clear buffer" << std::endl;
         lidar_buffer.clear();
+        time_buffer.clear();
+        lidar_pushed = false;
     }
     if (is_first_lidar)
     {
@@ -365,6 +399,16 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::msg::Imu::SharedPtr msg(new sensor_msgs::msg::Imu(*msg_in));
 
+    // MID360 is mounted with a 180-degree roll. Apply the matching R_x(pi)
+    // transform inside FAST-LIO to avoid a Python relay and an extra DDS hop.
+    if (imu_flip_yz)
+    {
+        msg->angular_velocity.y *= -1.0;
+        msg->angular_velocity.z *= -1.0;
+        msg->linear_acceleration.y *= -1.0;
+        msg->linear_acceleration.z *= -1.0;
+    }
+
     msg->header.stamp = get_ros_time(get_time_sec(msg_in->header.stamp) - time_diff_lidar_to_imu);
     if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
     {
@@ -378,7 +422,7 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
 
     if (timestamp < last_timestamp_imu)
     {
-        std::cerr << "lidar loop back, clear buffer" << std::endl;
+        std::cerr << "IMU timestamp loop back, clear buffer" << std::endl;
         imu_buffer.clear();
     }
 
@@ -768,6 +812,9 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
     if (effct_feat_num < 1)
     {
+        // Never leave the previous frame's residual visible to the guard/logs.
+        // A stale small value can make an empty correspondence set look healthy.
+        res_mean_last = std::numeric_limits<double>::infinity();
         ekfom_data.valid = false;
         std::cerr << "No Effective Points!" << std::endl;
         // ROS_WARN("No Effective Points! \n");
@@ -832,6 +879,9 @@ public:
         this->declare_parameter<string>("common.imu_topic", "/livox/imu");
         this->declare_parameter<bool>("common.time_sync_en", false);
         this->declare_parameter<double>("common.time_offset_lidar_to_imu", 0.0);
+        this->declare_parameter<bool>("common.imu_flip_yz", false);
+        this->declare_parameter<int>("common.imu_queue_depth", 2000);
+        this->declare_parameter<int>("common.lidar_queue_depth", 100);
         this->declare_parameter<double>("filter_size_corner", 0.5);
         this->declare_parameter<double>("filter_size_surf", 0.5);
         this->declare_parameter<double>("filter_size_map", 0.5);
@@ -842,6 +892,17 @@ public:
         this->declare_parameter<double>("mapping.acc_cov", 0.1);
         this->declare_parameter<double>("mapping.b_gyr_cov", 0.0001);
         this->declare_parameter<double>("mapping.b_acc_cov", 0.0001);
+        this->declare_parameter<bool>("mapping.guard_enable", true);
+        this->declare_parameter<int>("mapping.guard_min_effective_points", 100);
+        this->declare_parameter<double>("mapping.guard_min_effective_ratio", 0.10);
+        this->declare_parameter<double>("mapping.guard_max_residual", 0.15);
+        this->declare_parameter<double>("mapping.guard_max_translation_correction", 0.25);
+        this->declare_parameter<double>("mapping.guard_max_rotation_correction_deg", 5.0);
+        this->declare_parameter<int>("mapping.guard_recovery_min_rejections", 5);
+        this->declare_parameter<double>("mapping.guard_recovery_min_effective_ratio", 0.15);
+        this->declare_parameter<double>("mapping.guard_recovery_max_residual", 0.10);
+        this->declare_parameter<double>("mapping.guard_recovery_max_translation_correction", 0.75);
+        this->declare_parameter<double>("mapping.guard_recovery_max_rotation_correction_deg", 15.0);
         this->declare_parameter<double>("preprocess.blind", 0.01);
         this->declare_parameter<int>("preprocess.lidar_type", AVIA);
         this->declare_parameter<int>("preprocess.scan_line", 16);
@@ -868,6 +929,9 @@ public:
         this->get_parameter_or<string>("common.imu_topic", imu_topic, "/livox/imu");
         this->get_parameter_or<bool>("common.time_sync_en", time_sync_en, false);
         this->get_parameter_or<double>("common.time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
+        this->get_parameter_or<bool>("common.imu_flip_yz", imu_flip_yz, false);
+        this->get_parameter_or<int>("common.imu_queue_depth", imu_queue_depth, 2000);
+        this->get_parameter_or<int>("common.lidar_queue_depth", lidar_queue_depth, 100);
         this->get_parameter_or<double>("filter_size_corner", filter_size_corner_min, 0.5);
         this->get_parameter_or<double>("filter_size_surf", filter_size_surf_min, 0.5);
         this->get_parameter_or<double>("filter_size_map", filter_size_map_min, 0.5);
@@ -878,6 +942,17 @@ public:
         this->get_parameter_or<double>("mapping.acc_cov", acc_cov, 0.1);
         this->get_parameter_or<double>("mapping.b_gyr_cov", b_gyr_cov, 0.0001);
         this->get_parameter_or<double>("mapping.b_acc_cov", b_acc_cov, 0.0001);
+        this->get_parameter_or<bool>("mapping.guard_enable", lidar_update_guard_enable, true);
+        this->get_parameter_or<int>("mapping.guard_min_effective_points", guard_min_effective_points, 100);
+        this->get_parameter_or<double>("mapping.guard_min_effective_ratio", guard_min_effective_ratio, 0.10);
+        this->get_parameter_or<double>("mapping.guard_max_residual", guard_max_residual, 0.15);
+        this->get_parameter_or<double>("mapping.guard_max_translation_correction", guard_max_translation_correction, 0.25);
+        this->get_parameter_or<double>("mapping.guard_max_rotation_correction_deg", guard_max_rotation_correction_deg, 5.0);
+        this->get_parameter_or<int>("mapping.guard_recovery_min_rejections", guard_recovery_min_rejections, 5);
+        this->get_parameter_or<double>("mapping.guard_recovery_min_effective_ratio", guard_recovery_min_effective_ratio, 0.15);
+        this->get_parameter_or<double>("mapping.guard_recovery_max_residual", guard_recovery_max_residual, 0.10);
+        this->get_parameter_or<double>("mapping.guard_recovery_max_translation_correction", guard_recovery_max_translation_correction, 0.75);
+        this->get_parameter_or<double>("mapping.guard_recovery_max_rotation_correction_deg", guard_recovery_max_rotation_correction_deg, 15.0);
         this->get_parameter_or<double>("preprocess.blind", p_pre->blind, 0.01);
         this->get_parameter_or<int>("preprocess.lidar_type", p_pre->lidar_type, AVIA);
         this->get_parameter_or<int>("preprocess.scan_line", p_pre->N_SCANS, 16);
@@ -892,7 +967,28 @@ public:
         this->get_parameter_or<vector<double>>("mapping.extrinsic_T", extrinT, vector<double>());
         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
 
+        imu_queue_depth = std::max(10, imu_queue_depth);
+        lidar_queue_depth = std::max(5, lidar_queue_depth);
+        guard_min_effective_points = std::max(1, guard_min_effective_points);
+        guard_min_effective_ratio = std::max(0.0, std::min(1.0, guard_min_effective_ratio));
+        guard_recovery_min_rejections = std::max(1, guard_recovery_min_rejections);
+        guard_recovery_min_effective_ratio = std::max(
+            guard_min_effective_ratio,
+            std::min(1.0, guard_recovery_min_effective_ratio));
+        // Recovery must demand equal-or-better geometric fit than the normal
+        // guard. Only the allowed correction magnitude is relaxed.
+        guard_recovery_max_residual = std::max(
+            0.0, std::min(guard_max_residual, guard_recovery_max_residual));
+        guard_recovery_max_translation_correction = std::max(
+            guard_max_translation_correction, guard_recovery_max_translation_correction);
+        guard_recovery_max_rotation_correction_deg = std::max(
+            guard_max_rotation_correction_deg, guard_recovery_max_rotation_correction_deg);
+
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
+        RCLCPP_INFO(this->get_logger(),
+                    "FAST-LIO input: imu=%s flip_yz=%s imu_q=%d lidar_q=%d guard=%s",
+                    imu_topic.c_str(), imu_flip_yz ? "true" : "false", imu_queue_depth,
+                    lidar_queue_depth, lidar_update_guard_enable ? "true" : "false");
 
         path.header.stamp = this->get_clock()->now();
         path.header.frame_id = "camera_init";
@@ -942,14 +1038,16 @@ public:
         /*** ROS subscribe initialization ***/
         if (p_pre->lidar_type == AVIA)
         {
-            sub_pcl_livox_ = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, 20, livox_pcl_cbk);
+            auto lidar_qos = rclcpp::QoS(rclcpp::KeepLast(lidar_queue_depth)).reliable();
+            sub_pcl_livox_ = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, lidar_qos, livox_pcl_cbk);
             // sub_pcl_livox_ = this->create_subscription<livox_interfaces::msg::CustomMsg>(lid_topic, 20, livox_pcl_cbk);
         }
         else
         {
             sub_pcl_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
         }
-        sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 10, imu_cbk);
+        auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(imu_queue_depth)).reliable();
+        sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, imu_qos, imu_cbk);
         pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_1", 20);
         pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_body_1", 20);
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_effected_1", 20);
@@ -982,6 +1080,64 @@ private:
     {
         if (sync_packages(Measures))
         {
+            // Compute timing health on every scan, not only when printing the
+            // throttled diagnostic. A finite ICP result after an IMU dropout can
+            // still be geometrically plausible in a corridor, yet its deskew and
+            // prediction are untrustworthy and must not be written into the map.
+            double imu_first_time = std::numeric_limits<double>::quiet_NaN();
+            double imu_last_time = std::numeric_limits<double>::quiet_NaN();
+            double max_imu_gap = 0.0;
+            if (!Measures.imu.empty())
+            {
+                imu_first_time = get_time_sec(Measures.imu.front()->header.stamp);
+                imu_last_time = imu_first_time;
+                double previous_imu_time = imu_first_time;
+                const ImuProcess::PropagationCheckpoint timing_checkpoint =
+                    p_imu->GetPropagationCheckpoint();
+                if (timing_checkpoint.last_lidar_end_time >= 0.0 &&
+                    timing_checkpoint.last_imu != nullptr)
+                {
+                    const double previous_frame_imu_time =
+                        get_time_sec(timing_checkpoint.last_imu->header.stamp);
+                    max_imu_gap = std::max(
+                        max_imu_gap, imu_first_time - previous_frame_imu_time);
+                }
+                for (const auto &imu : Measures.imu)
+                {
+                    const double current_imu_time = get_time_sec(imu->header.stamp);
+                    max_imu_gap = std::max(max_imu_gap, current_imu_time - previous_imu_time);
+                    previous_imu_time = current_imu_time;
+                    imu_last_time = current_imu_time;
+                }
+            }
+
+            const double scan_duration = Measures.lidar_end_time - Measures.lidar_beg_time;
+            const double lidar_end_minus_last_imu = Measures.lidar_end_time - imu_last_time;
+            const bool timing_ok =
+                Measures.imu.size() >= 5 &&
+                max_imu_gap <= 0.02 &&
+                scan_duration >= 0.05 && scan_duration <= 0.15 &&
+                std::isfinite(lidar_end_minus_last_imu) &&
+                lidar_end_minus_last_imu >= -1e-3 &&
+                lidar_end_minus_last_imu <= 0.03;
+
+            if (last_timing_log_time < 0.0 ||
+                Measures.lidar_end_time - last_timing_log_time >= 2.0)
+            {
+                RCLCPP_INFO(this->get_logger(),
+                            "[FAST_LIO_TIMING] ok=%s scan=%.4fs imu_count=%zu imu_first=%.6f imu_last=%.6f max_gap=%.4fs end_minus_last_imu=%.4fs imu_buffer=%zu lidar_buffer=%zu",
+                            timing_ok ? "true" : "false", scan_duration,
+                            Measures.imu.size(), imu_first_time, imu_last_time,
+                            max_imu_gap, lidar_end_minus_last_imu,
+                            imu_buffer.size(), lidar_buffer.size());
+                if (!timing_ok)
+                {
+                    RCLCPP_WARN(this->get_logger(),
+                                "[FAST_LIO_TIMING] abnormal timing: this scan may propagate state but cannot update/write the map");
+                }
+                last_timing_log_time = Measures.lidar_end_time;
+            }
+
             if (flg_first_scan)
             {
                 first_lidar_time = Measures.lidar_beg_time;
@@ -999,8 +1155,34 @@ private:
             svd_time = 0;
             t0 = omp_get_wtime();
 
+            // Keep a known-finite state before IMU propagation. If malformed timing or
+            // sensor data makes propagation non-finite, restore this snapshot instead
+            // of leaving the EKF permanently poisoned for every following frame.
+            state_ikfom state_before_imu = kf.get_x();
+            auto covariance_before_imu = kf.get_P();
+            if (!IsFiniteState(state_before_imu) || !covariance_before_imu.allFinite())
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "[FAST_LIO_GUARD] EKF was already non-finite before IMU propagation; scan and map insertion skipped");
+                return;
+            }
+            const ImuProcess::PropagationCheckpoint imu_checkpoint =
+                p_imu->GetPropagationCheckpoint();
             p_imu->Process(Measures, kf, feats_undistort);
             state_point = kf.get_x();
+            auto covariance_after_imu = kf.get_P();
+            if (!IsFiniteState(state_point) || !covariance_after_imu.allFinite())
+            {
+                kf.change_x(state_before_imu);
+                kf.change_P(covariance_before_imu);
+                p_imu->RestorePropagationCheckpoint(imu_checkpoint);
+                feats_undistort->clear();
+                state_point = state_before_imu;
+                RefreshStateOutputs();
+                RCLCPP_ERROR(this->get_logger(),
+                             "[FAST_LIO_GUARD] non-finite IMU propagation rolled back; scan and map insertion skipped");
+                return;
+            }
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
 
             if (feats_undistort->empty() || (feats_undistort == NULL))
@@ -1021,9 +1203,11 @@ private:
             /*** initialize the map kdtree ***/
             if (ikdtree.Root_Node == nullptr)
             {
-                RCLCPP_INFO(this->get_logger(), "Initialize the map kdtree");
-                if (feats_down_size > 5)
+                if (timing_ok && feats_down_size >= guard_min_effective_points)
                 {
+                    RCLCPP_INFO(this->get_logger(),
+                                "Initialize the map kdtree with %d points",
+                                feats_down_size);
                     ikdtree.set_downsample_param(filter_size_map_min);
                     feats_down_world->resize(feats_down_size);
                     for (int i = 0; i < feats_down_size; i++)
@@ -1031,6 +1215,14 @@ private:
                         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
                     }
                     ikdtree.Build(feats_down_world->points);
+                }
+                else
+                {
+                    RCLCPP_WARN_THROTTLE(
+                        this->get_logger(), *this->get_clock(), 2000,
+                        "Waiting to initialize map kdtree: timing=%s downsampled=%d/%d",
+                        timing_ok ? "true" : "false", feats_down_size,
+                        guard_min_effective_points);
                 }
                 return;
             }
@@ -1071,14 +1263,129 @@ private:
             /*** iterated state estimation ***/
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
+            state_ikfom predicted_state = kf.get_x();
+            auto predicted_cov = kf.get_P();
+            if (!IsFiniteState(predicted_state) || !predicted_cov.allFinite())
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "[FAST_LIO_GUARD] IMU-predicted state/covariance is non-finite; skipping LiDAR update and map insertion");
+                return;
+            }
+
             kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
-            state_point = kf.get_x();
-            euler_cur = SO3ToEuler(state_point.rot);
-            pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-            geoQuat.x = state_point.rot.coeffs()[0];
-            geoQuat.y = state_point.rot.coeffs()[1];
-            geoQuat.z = state_point.rot.coeffs()[2];
-            geoQuat.w = state_point.rot.coeffs()[3];
+            state_ikfom updated_state = kf.get_x();
+            auto updated_cov = kf.get_P();
+
+            const double effective_ratio = static_cast<double>(effct_feat_num) /
+                                           std::max(1, feats_down_size);
+            double translation_correction = std::numeric_limits<double>::infinity();
+            double rotation_correction_deg = std::numeric_limits<double>::infinity();
+            if (IsFiniteState(updated_state))
+            {
+                translation_correction = (updated_state.pos - predicted_state.pos).norm();
+                const M3D rotation_delta = predicted_state.rot.toRotationMatrix().transpose() *
+                                           updated_state.rot.toRotationMatrix();
+                rotation_correction_deg = Log(rotation_delta).norm() * 180.0 / PI_M;
+            }
+
+            const bool finite_update = IsFiniteState(updated_state) && updated_cov.allFinite() &&
+                                       std::isfinite(res_mean_last) &&
+                                       std::isfinite(translation_correction) &&
+                                       std::isfinite(rotation_correction_deg);
+            const bool enough_effective_points = effct_feat_num >= guard_min_effective_points;
+            const bool enough_effective_ratio = effective_ratio >= guard_min_effective_ratio;
+            const bool residual_ok = res_mean_last <= guard_max_residual;
+            const bool correction_ok =
+                translation_correction <= guard_max_translation_correction &&
+                rotation_correction_deg <= guard_max_rotation_correction_deg;
+            const bool quality_ok = timing_ok && enough_effective_points &&
+                                    enough_effective_ratio && residual_ok && correction_ok;
+
+            // A strict correction gate prevents one bad scan from poisoning the map,
+            // but a pure rollback loop can lock out all later good corrections once
+            // IMU-only prediction has drifted past the strict threshold. After several
+            // consecutive rejections, permit one bounded, higher-confidence LiDAR
+            // correction as a state-only recovery. That recovery frame is never added
+            // to the ikd-tree/PCD; the following normal frame must pass the strict gate
+            // before map writing resumes.
+            const bool recovery_geometry_ok =
+                enough_effective_points &&
+                effective_ratio >= guard_recovery_min_effective_ratio &&
+                res_mean_last <= guard_recovery_max_residual;
+            const bool recovery_correction_ok =
+                translation_correction <= guard_recovery_max_translation_correction &&
+                rotation_correction_deg <= guard_recovery_max_rotation_correction_deg;
+            const bool recovery_ready =
+                consecutive_guard_rejections + 1 >= guard_recovery_min_rejections;
+            const bool recovery_update =
+                lidar_update_guard_enable && timing_ok && finite_update && !quality_ok &&
+                recovery_ready && recovery_geometry_ok && recovery_correction_ok;
+            const bool reject_update = !finite_update ||
+                                       (lidar_update_guard_enable && !quality_ok && !recovery_update);
+
+            if (reject_update)
+            {
+                kf.change_x(predicted_state);
+                kf.change_P(predicted_cov);
+                state_point = predicted_state;
+                RefreshStateOutputs();
+                consecutive_guard_rejections++;
+                RCLCPP_WARN(this->get_logger(),
+                            "[FAST_LIO_GUARD] rejected=%d timing=%s finite=%s effective=%d/%d(%.3f) residual=%.4f correction=%.3fm/%.2fdeg limits=%d/%.3f/%.3f/%.3f/%.1f",
+                            consecutive_guard_rejections, timing_ok ? "true" : "false",
+                            finite_update ? "true" : "false",
+                            effct_feat_num, feats_down_size, effective_ratio, res_mean_last,
+                            translation_correction, rotation_correction_deg,
+                            guard_min_effective_points, guard_min_effective_ratio,
+                            guard_max_residual, guard_max_translation_correction,
+                            guard_max_rotation_correction_deg);
+
+                // Keep odometry continuity, but do not publish a world-frame scan
+                // whose pose was not LiDAR-confirmed. Otherwise Open3D (and a
+                // Foxglove decay trail) can consume/display a rejected turn and
+                // turn one guarded FAST-LIO failure into a second localization jump.
+                // The body-frame diagnostic cloud is still safe because it carries
+                // no untrusted world pose. Map insertion and PCD saving are skipped.
+                publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+                if (path_en)
+                    publish_path(pubPath_);
+                if (scan_pub_en && scan_body_pub_en)
+                    publish_frame_body(pubLaserCloudFull_body_);
+                return;
+            }
+
+            if (recovery_update)
+            {
+                const int recovery_candidate_index = consecutive_guard_rejections + 1;
+                state_point = updated_state;
+                RefreshStateOutputs();
+                consecutive_guard_rejections = 0;
+                RCLCPP_WARN(this->get_logger(),
+                            "[FAST_LIO_GUARD] state-only recovery on guarded candidate %d: effective=%d/%d(%.3f) residual=%.4f correction=%.3fm/%.2fdeg; map insertion intentionally skipped",
+                            recovery_candidate_index, effct_feat_num, feats_down_size,
+                            effective_ratio, res_mean_last, translation_correction,
+                            rotation_correction_deg);
+                // A recovery candidate may repair the state, but it is deliberately
+                // state-only. Hold the world cloud until the next strict accepted
+                // LiDAR update confirms the recovered pose for downstream Open3D.
+                publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+                if (path_en)
+                    publish_path(pubPath_);
+                if (scan_pub_en && scan_body_pub_en)
+                    publish_frame_body(pubLaserCloudFull_body_);
+                return;
+            }
+
+            state_point = updated_state;
+            RefreshStateOutputs();
+            if (consecutive_guard_rejections > 0)
+            {
+                RCLCPP_INFO(this->get_logger(),
+                            "[FAST_LIO_GUARD] recovered after %d rejected frame(s): effective=%d/%d residual=%.4f correction=%.3fm/%.2fdeg",
+                            consecutive_guard_rejections, effct_feat_num, feats_down_size,
+                            res_mean_last, translation_correction, rotation_correction_deg);
+                consecutive_guard_rejections = 0;
+            }
 
             double t_update_end = omp_get_wtime();
 

@@ -15,16 +15,10 @@ def generate_launch_description():
         mid360 = yaml.safe_load(f)
     pcd_save_en = mid360.get('/**', {}).get('ros__parameters', {}).get('pcd_save', {}).get('pcd_save_en', False)
 
-    # MID360 is physically mounted roll-180. The Livox point cloud is rotated
-    # by MID360_config.json, but the IMU vectors remain in the raw sensor axes.
-    # Apply the same R_x(pi) transform (Y/Z sign flip) before FAST-LIO uses it.
+    # FAST-LIO subscribes directly to /livox/imu and applies the upside-down
+    # MID360 Y/Z sign correction in C++. Do not also launch imu_flip.py, or the
+    # IMU will be transformed twice.
     actions = [
-        Node(
-            package='g1_pkg',
-            executable='imu_flip.py',
-            name='imu_flip',
-            output='screen',
-        ),
         Node(
             package='fast_lio',
             executable='fastlio_mapping',

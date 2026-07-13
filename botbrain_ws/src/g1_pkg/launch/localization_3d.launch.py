@@ -4,23 +4,10 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
     workspace_dir = '/botbrain_ws'
-    # Include RealSense camera launch (front camera only)
-    realsense_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory('bot_localization'),
-                'launch',
-                'realsense.launch.py'
-            )
-        )
-    )
     default_pcd_path  = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps', 'scans.pcd')
     default_grid_yaml = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps', 'accumulated.yaml')
 
@@ -51,12 +38,30 @@ def generate_launch_description():
             {
                 'path_map':                 LaunchConfiguration('map_file'),
                 'use_sim_time':             LaunchConfiguration('use_sim_time'),
-                'pcd_queue_maxsize':        10,
+                'pcd_queue_maxsize':        1,
+                'registered_cloud_world_frame': 'camera_init',
                 'voxelsize_coarse':         0.15,
                 'voxelsize_fine':           0.2,    # 走廊环境大体素=大收敛盆地，防止跳局部最优
                 'threshold_fitness':        0.5,   # 0.7→0.5: 允许断流恢复时接受中等质量匹配；级联靠 dis_updatemap=5.0 防护
                 'threshold_fitness_init':   0.5,
-                'loc_frequence':            4.0,    # 2.5→4.0: 提高ICP修正频率，减少漂移累积
+                'loc_frequence':            4.0,    # 真实 4 Hz，即约每 250 ms 尝试一次 ICP
+                'max_icp_translation_step':  1.0,
+                'max_icp_rotation_step_deg': 15.0,
+                'immediate_icp_translation_step': 0.10,
+                'immediate_icp_rotation_step_deg': 2.0,
+                'large_correction_confirmations':  2,
+                'icp_candidate_consistency_translation': 0.20,
+                'icp_candidate_consistency_rotation_deg': 4.0,
+                'icp_candidate_max_age_sec': 1.0,
+                # Pair world cloud N only with Odometry_loc N; FAST-LIO publishes
+                # odometry first, so an ICP timer can otherwise mix N and N+1.
+                'max_scan_odom_time_skew_sec': 0.03,
+                'max_icp_inlier_rmse':         0.30,
+                'min_initialization_fitness':  0.50,
+                'max_initialization_translation_step': 2.0,
+                'max_initialization_rotation_step_deg': 45.0,
+                'min_icp_source_points':     100,
+                'min_icp_target_points':     1000,
                 'save_scan':                False,
                 'maxpoints_source':         80000,
                 'maxpoints_target':         400000,
@@ -144,7 +149,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        realsense_launch,
         pcd_arg,
         use_sim_time_arg,
         initialpose_z_fix,

@@ -320,8 +320,8 @@ class GridAccumulator(Node):
 
         # Per-point ceiling cutoff: points > max_obstacle_height above
         # the local ground are ceiling/overhang → ignored.
-        ground_mask = (height >= -0.02) & (height < self.ground_margin)
-        obs_mask = ((height < -0.02) |
+        ground_mask = (height >= -0.10) & (height < self.ground_margin)
+        obs_mask = ((height < -0.10) |
                     ((height >= self.obstacle_margin) & (height < self.max_obstacle_height)))
 
         return ground_mask, obs_mask
