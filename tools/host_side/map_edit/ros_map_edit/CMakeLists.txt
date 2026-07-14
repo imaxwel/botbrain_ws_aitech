@@ -236,8 +236,12 @@ install(DIRECTORY maps/
 ## Testing ##
 #############
 
-## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_ros_map_edit.cpp)
+## Add standalone compile-time utility tests
+if(CATKIN_ENABLE_TESTING)
+  add_executable(map_grid_utils_test test/map_grid_utils_test.cpp)
+  target_include_directories(map_grid_utils_test PRIVATE include)
+  add_test(NAME map_grid_utils_test COMMAND map_grid_utils_test)
+endif()
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)

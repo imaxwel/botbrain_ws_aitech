@@ -37,9 +37,13 @@
 #include <math.h>
 #include <thread>
 #include <fstream>
-#include <csignal>
+#include <cerrno>
 #include <chrono>
 #include <algorithm>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <exception>
 #include <limits>
 #include <unistd.h>
 #include <Python.h>
@@ -77,6 +81,7 @@ double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_pl
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
+std::size_t last_saved_point_count = std::numeric_limits<std::size_t>::max();
 bool imu_flip_yz = false;
 bool lidar_update_guard_enable = true;
 int imu_queue_depth = 2000, lidar_queue_depth = 100;
@@ -108,7 +113,7 @@ double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_en
 int effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
 int iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
 bool point_selected_surf[100000] = {0};
-bool lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
+bool lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 bool scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool is_first_lidar = true;
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
@@ -174,14 +179,6 @@ void RefreshStateOutputs()
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
-
-void SigHandle(int sig)
-{
-    flg_exit = true;
-    std::cout << "catch sig %d" << sig << std::endl;
-    sig_buffer.notify_all();
-    rclcpp::shutdown();
-}
 
 inline void dump_lio_state_to_log(FILE *fp)
 {
@@ -670,10 +667,54 @@ void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub
     // pubLaserCloudMap->publish(laserCloudMap);
 }
 
-void save_to_pcd()
+bool save_to_pcd(std::string &message)
 {
-    pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(map_file_path, *pcl_wait_pub);
+    const string save_path = map_file_path.empty()
+                                 ? string(ROOT_DIR) + "PCD/scans.pcd"
+                                 : map_file_path;
+    const std::size_t point_count = pcl_wait_save->size();
+    if (point_count == 0)
+    {
+        message = "PCD save skipped: pcl_wait_save is empty";
+        cerr << "[FAST_LIO_PCD] WARNING: " << message << endl;
+        return false;
+    }
+
+    const string temporary_path = save_path + ".tmp";
+    cout << "[FAST_LIO_PCD] saving " << point_count << " points to " << save_path << endl;
+    try
+    {
+        pcl::PCDWriter pcd_writer;
+        const int result = pcd_writer.writeBinary(temporary_path, *pcl_wait_save);
+        if (result != 0)
+        {
+            std::remove(temporary_path.c_str());
+            message = "PCL writeBinary failed with code " + to_string(result);
+            cerr << "[FAST_LIO_PCD] ERROR: " << message << endl;
+            return false;
+        }
+        if (std::rename(temporary_path.c_str(), save_path.c_str()) != 0)
+        {
+            const int rename_error = errno;
+            std::remove(temporary_path.c_str());
+            message = "failed to replace " + save_path + ": " +
+                      std::strerror(rename_error);
+            cerr << "[FAST_LIO_PCD] ERROR: " << message << endl;
+            return false;
+        }
+    }
+    catch (const std::exception &error)
+    {
+        std::remove(temporary_path.c_str());
+        message = string("PCD write threw an exception: ") + error.what();
+        cerr << "[FAST_LIO_PCD] ERROR: " << message << endl;
+        return false;
+    }
+
+    message = "saved " + to_string(point_count) + " points to " + save_path;
+    last_saved_point_count = point_count;
+    cout << "[FAST_LIO_PCD] " << message << endl;
+    return true;
 }
 
 template <typename T>
@@ -989,6 +1030,10 @@ public:
                     "FAST-LIO input: imu=%s flip_yz=%s imu_q=%d lidar_q=%d guard=%s",
                     imu_topic.c_str(), imu_flip_yz ? "true" : "false", imu_queue_depth,
                     lidar_queue_depth, lidar_update_guard_enable ? "true" : "false");
+        RCLCPP_INFO(this->get_logger(),
+                    "[FAST_LIO_PCD] enabled=%s path=%s interval=%d",
+                    pcd_save_en ? "true" : "false", map_file_path.c_str(),
+                    pcd_save_interval);
 
         path.header.stamp = this->get_clock()->now();
         path.header.frame_id = "camera_init";
@@ -1215,6 +1260,10 @@ private:
                         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
                     }
                     ikdtree.Build(feats_down_world->points);
+                    if (pcd_save_en)
+                    {
+                        *pcl_wait_save += *feats_down_world;
+                    }
                 }
                 else
                 {
@@ -1450,12 +1499,16 @@ private:
 
     void map_save_callback(std_srvs::srv::Trigger::Request::ConstSharedPtr req, std_srvs::srv::Trigger::Response::SharedPtr res)
     {
-        RCLCPP_INFO(this->get_logger(), "Saving map to %s...", map_file_path.c_str());
+        (void)req;
         if (pcd_save_en)
         {
-            save_to_pcd();
-            res->success = true;
-            res->message = "Map saved.";
+            res->success = save_to_pcd(res->message);
+            if (res->success)
+            {
+                RCLCPP_INFO(this->get_logger(), "%s", res->message.c_str());
+            }
+            else
+                RCLCPP_ERROR(this->get_logger(), "%s", res->message.c_str());
         }
         else
         {
@@ -1495,9 +1548,6 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
 
-    signal(SIGINT, SigHandle);
-    signal(SIGTERM, SigHandle);
-
     rclcpp::spin(std::make_shared<LaserMappingNode>());
 
     if (rclcpp::ok())
@@ -1505,18 +1555,14 @@ int main(int argc, char **argv)
     /**************** save map ****************/
     /* 1. make sure you have enough memories
     /* 2. pcd save will largely influence the real-time performences **/
-    if (pcd_save_en)
+    if (pcd_save_en && pcl_wait_save->size() != last_saved_point_count)
     {
-        ikdtree.stop_thread();
-        if (pcl_wait_save->size() > 0)
-        {
-            pcl::PCDWriter pcd_writer;
-            string save_path = map_file_path.empty() ? string(ROOT_DIR) + "PCD/scans.pcd" : map_file_path;
-            cout << "saving " << pcl_wait_save->size() << " points to " << save_path << endl;
-            pcd_writer.writeBinary(save_path, *pcl_wait_save);
-        }
-        else
-            cerr << "WARNING: pcl_wait_save is empty" << endl;
+        string save_message;
+        save_to_pcd(save_message);
+    }
+    else if (pcd_save_en)
+    {
+        cout << "[FAST_LIO_PCD] latest map already saved; exit save skipped" << endl;
     }
 
     if (runtime_pos_log)

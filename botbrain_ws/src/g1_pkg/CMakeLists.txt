@@ -173,6 +173,7 @@ install(PROGRAMS
   scripts/grid_accumulator.py
   scripts/imu_flip.py
   scripts/initialpose_z_fix.py
+  scripts/shift_pcd_z.py
   DESTINATION lib/${PROJECT_NAME}
 )
 ament_python_install_package(${PROJECT_NAME}) # Only needed in case rosidl_generate_interfaces is not called

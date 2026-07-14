@@ -18,7 +18,7 @@ MapEraserTool::MapEraserTool()
   , map_received_(false)
   , mouse_pressed_(false)
   , brush_size_(1.0)
-  , brush_mode_(ERASE_TO_FREE)
+  , brush_mode_(MapBrushMode::FREE)
 {
   // 注册到工具管理器
   ToolManager::getInstance().registerMapEraserTool(this);
@@ -65,7 +65,7 @@ int MapEraserTool::processMouseEvent(rviz::ViewportMouseEvent& event)
   if (event.leftDown())
   {
     mouse_pressed_ = true;
-    brush_mode_ = ERASE_TO_FREE; // 左键画黑色
+    brush_mode_ = brushModeForMouseButton(true);
     Ogre::Vector3 intersection;
     Ogre::Plane ground_plane(Ogre::Vector3::UNIT_Z, 0.0f);
     
@@ -84,7 +84,7 @@ int MapEraserTool::processMouseEvent(rviz::ViewportMouseEvent& event)
   else if (event.rightDown())
   {
     mouse_pressed_ = true;
-    brush_mode_ = ERASE_TO_OCCUPIED; // 右键画白色
+    brush_mode_ = brushModeForMouseButton(false);
     Ogre::Vector3 intersection;
     Ogre::Plane ground_plane(Ogre::Vector3::UNIT_Z, 0.0f);
     
@@ -187,21 +187,7 @@ void MapEraserTool::eraseAtPoint(const geometry_msgs::Point& point)
     brush_size = 1;
   }
   
-  // Determine the value to paint
-  int8_t paint_value;
-  switch (brush_mode_)
-  {
-    case ERASE_TO_FREE:
-      paint_value = 0;   // Free space
-      break;
-    case ERASE_TO_OCCUPIED:
-      paint_value = 100; // Occupied space
-      break;
-    case ERASE_TO_UNKNOWN:
-    default:
-      paint_value = -1;  // Unknown space
-      break;
-  }
+  const int8_t paint_value = occupancyValue(brush_mode_);
   
   // 计算正方形画笔的范围
   // 对于奇数大小：以点击位置为中心
@@ -296,4 +282,4 @@ nav_msgs::OccupancyGrid MapEraserTool::getCurrentMap() const
 } // end namespace ros_map_edit
 
 #include <pluginlib/class_list_macros.h>
-PLUGINLIB_EXPORT_CLASS(ros_map_edit::MapEraserTool, rviz::Tool) 
+PLUGINLIB_EXPORT_CLASS(ros_map_edit::MapEraserTool, rviz::Tool)

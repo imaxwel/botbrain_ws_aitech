@@ -25,6 +25,10 @@ def generate_launch_description():
             name='fast_lio',
             output='screen',
             parameters=[pkg_config, {'use_sim_time': False}],
+            # A large PCD can take well over the launch default of 5 seconds to
+            # flush. Keep Docker's grace period longer than these two timeouts.
+            sigterm_timeout='150',
+            sigkill_timeout='20',
         ),
     ]
 

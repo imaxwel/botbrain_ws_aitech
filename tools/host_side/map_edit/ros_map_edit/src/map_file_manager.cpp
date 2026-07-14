@@ -1,4 +1,5 @@
 #include "ros_map_edit/map_file_manager.h"
+#include "ros_map_edit/map_grid_utils.h"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -487,6 +488,19 @@ bool MapFileManager::loadPGMWithParams(const std::string& filename, nav_msgs::Oc
     last_error_ = "Only 8-bit PGM files (maxval 255) are supported";
     return false;
   }
+
+  if (!hasPositiveDimensions(width, height)) {
+    last_error_ = "PGM width and height must be positive";
+    return false;
+  }
+
+  const std::size_t image_width = static_cast<std::size_t>(width);
+  const std::size_t image_height = static_cast<std::size_t>(height);
+  if (!pixelCountFits(image_width, image_height)) {
+    last_error_ = "PGM dimensions exceed the supported pixel count";
+    return false;
+  }
+  const std::size_t pixel_count = image_width * image_height;
   
   file.ignore(1); // 跳过最后一个换行符
   
@@ -502,11 +516,12 @@ bool MapFileManager::loadPGMWithParams(const std::string& filename, nav_msgs::Oc
     map.info.origin.orientation.w = 1.0;
   }
   
-  map.data.resize(width * height);
+  map.data.resize(pixel_count);
   
   // 读取图像数据
-  std::vector<uint8_t> image_data(width * height);
-  file.read(reinterpret_cast<char*>(image_data.data()), width * height);
+  std::vector<uint8_t> image_data(pixel_count);
+  file.read(reinterpret_cast<char*>(image_data.data()),
+            static_cast<std::streamsize>(pixel_count));
   
   if (!file) {
     last_error_ = "Failed to read image data from PGM file";
@@ -515,9 +530,10 @@ bool MapFileManager::loadPGMWithParams(const std::string& filename, nav_msgs::Oc
   
   // 根据ROS map_server的标准转换PGM数据到占用栅格
   // 参考ROS wiki: http://wiki.ros.org/map_server#Value_Interpretation
-  for (int i = 0; i < width * height; ++i)
+  for (std::size_t i = 0; i < pixel_count; ++i)
   {
     uint8_t pixel = image_data[i];
+    const std::size_t map_index = pgmPixelToMapIndex(i, image_width, image_height);
     
     // 转换 px值到概率 (根据negate标志)
     double p;
@@ -529,11 +545,11 @@ bool MapFileManager::loadPGMWithParams(const std::string& filename, nav_msgs::Oc
     
     // 根据阈值转换为占用栅格值
     if (p > occupied_thresh) {
-      map.data[i] = 100;  // 占用
+      map.data[map_index] = 100;  // 占用
     } else if (p < free_thresh) {
-      map.data[i] = 0;    // 自由
+      map.data[map_index] = 0;    // 自由
     } else {
-      map.data[i] = -1;   // 未知
+      map.data[map_index] = -1;   // 未知
     }
   }
   
@@ -788,4 +804,4 @@ bool MapFileManager::saveYAML(const std::string& filename, const nav_msgs::Occup
   }
 }
 
-} // end namespace ros_map_edit 
+} // end namespace ros_map_edit

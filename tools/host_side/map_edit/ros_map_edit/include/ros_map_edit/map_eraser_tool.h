@@ -1,6 +1,8 @@
 #ifndef MAP_ERASER_TOOL_H
 #define MAP_ERASER_TOOL_H
 
+#include "ros_map_edit/map_grid_utils.h"
+
 #include <rviz/tool.h>
 #include <rviz/properties/float_property.h>
 #include <rviz/properties/enum_property.h>
@@ -47,13 +49,6 @@ private:
 
   rviz::FloatProperty* brush_size_property_;
   
-  enum BrushMode
-  {
-    ERASE_TO_FREE,    // 擦除为自由空间 (白色)
-    ERASE_TO_OCCUPIED, // 擦除为占用空间 (黑色)
-    ERASE_TO_UNKNOWN   // 擦除为未知空间 (灰色)
-  };
-  
   nav_msgs::OccupancyGrid current_map_;
   ros::Subscriber map_sub_;
   ros::Publisher map_pub_;
@@ -64,9 +59,9 @@ private:
   bool map_received_;
   bool mouse_pressed_;
   double brush_size_;
-  BrushMode brush_mode_;
+  MapBrushMode brush_mode_;
 };
 
 } // end namespace ros_map_edit
 
-#endif // MAP_ERASER_TOOL_H 
+#endif // MAP_ERASER_TOOL_H

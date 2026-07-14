@@ -122,19 +122,15 @@ services:
   fast_lio:
     extends: nav3d
     container_name: g1_robot_fast_lio
-    command: ["bash", "-lc", "sleep 25 && source install/setup.bash && ros2 launch g1_pkg fast_lio.launch.py"]
-    restart: always
-
-  camera:
-    extends: nav3d
-    container_name: g1_robot_camera
-    command: ["bash", "-lc", "source install/setup.bash && python3 /botbrain_ws/cam_frame_writer.py &>/tmp/cam_frame_writer.log & python3 /botbrain_ws/cam_lifecycle_activate.py &>/tmp/cam_lifecycle.log & ros2 launch bot_localization realsense.launch.py"]
+    command: ["bash", "-lc", "sleep 25 && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch --noninteractive g1_pkg fast_lio.launch.py"]
+    stop_signal: SIGINT
+    stop_grace_period: 180s
     restart: always
 
   localization:
     extends: nav3d
     container_name: g1_robot_localization
-    command: ["bash", "-lc", "/botbrain_ws/start_localization.sh"]
+    command: ["bash", "-lc", "sleep 30 && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_pkg localization_3d.launch.py"]
     restart: always
 
   navigation:
@@ -232,7 +228,6 @@ services:
 
   web_server:
     image: node:22-bullseye
-    network_mode: host
     working_dir: /app
     volumes:
       - ./frontend:/app
@@ -269,8 +264,6 @@ services:
     image: unitree-dex3:humble
     container_name: g1_robot_builder_dex3
     network_mode: host
-    environment:
-      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
     volumes:
       - ./botbrain_ws/:/botbrain_ws
     command: ["bash", "-lc", "
@@ -295,15 +288,9 @@ services:
       - /dev:/dev
       - /run:/run
     environment:
-      RMW_IMPLEMENTATION: rmw_zenoh_cpp
-      ZENOH_CONFIG_OVERRIDE: 'mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       LD_LIBRARY_PATH: /usr/local/lib
+      CYCLONEDDS_URI: "file:///botbrain_ws/cyclonedds_config.xml"
       PYTHONPATH: /opt/unitree_dex3_tools:/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/build
-    command: ["bash", "-c", "bash /botbrain_ws/setup_zenoh.sh && sleep infinity"]
+    command: ["sleep", "infinity"]
     restart: unless-stopped
-
-  cam_bridge_sender:
-    extends: base
-    container_name: g1_robot_cam_bridge_sender
-    command: ["bash", "-lc", "source install/setup.bash && python3 /botbrain_ws/cam_bridge_sender.py"]
-    restart: "no"

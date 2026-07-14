@@ -38,10 +38,10 @@ find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Boost REQUIRED COMPONENTS filesystem system)
 
-# Set Open3D path - modify this to your installation path
-set(Open3D_DIR "/root/3d_nav_g1/deps/open3d141/lib/cmake/Open3D")
-
-# set(Open3D_DIR "/root/3d_nav_g1/deps/open3d141/lib/cmake/Open3D")
+# Use the Open3D installation mounted by docker-compose by default. A caller can
+# still select another installation with -DOpen3D_DIR=... at configure time.
+set(Open3D_DIR "/opt/open3d/lib/cmake/Open3D" CACHE PATH
+        "Directory containing Open3DConfig.cmake")
 find_package(Open3D REQUIRED)
 
 # Fix Open3D libraries - remove problematic .so files

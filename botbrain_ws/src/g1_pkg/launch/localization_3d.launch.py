@@ -11,7 +11,8 @@ def generate_launch_description():
     default_pcd_path  = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps', 'scans.pcd')
     default_grid_yaml = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps', 'accumulated.yaml')
 
-    pcd_arg          = DeclareLaunchArgument('map_file',     default_value=default_pcd_path)
+    pcd_arg          = DeclareLaunchArgument('map_file', default_value=default_pcd_path)
+    grid_map_arg     = DeclareLaunchArgument('grid_map_file', default_value=default_grid_yaml)
     use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value='false')
 
     open3d_config = PathJoinSubstitution([FindPackageShare('open3d_loc'), 'config', 'loc_param_g1.yaml'])
@@ -104,7 +105,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time':  LaunchConfiguration('use_sim_time'),
-            'yaml_filename': default_grid_yaml,
+            'yaml_filename': LaunchConfiguration('grid_map_file'),
             'topic_name':    'map',
             'frame_id':      'map',
         }],
@@ -150,6 +151,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         pcd_arg,
+        grid_map_arg,
         use_sim_time_arg,
         initialpose_z_fix,
         global_localization,
