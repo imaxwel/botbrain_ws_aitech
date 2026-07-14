@@ -6,7 +6,7 @@
     
     # 性能配置
     num_threads: 0  # 0 = 自动检测 CPU 核心数
-    send_buffer_limit: 200000000  # 10 MB
+    send_buffer_limit: 200000000  # 200 MB
     max_qos_depth: 100  # 增加 QoS 深度以支持更多 TF 历史
     
     # 话题白名单 - 只订阅 g1_robot 命名空间的话题
@@ -23,7 +23,6 @@
       - "/accumulated_grid"
       - "/Odometry_loc"
       - "/path_1"
-      - "/Laser_map_1"
       # open3d_loc 定位输出（无命名空间）
       - "/localization_3d"
       - "/localization_3d_confidence"
@@ -78,4 +77,3 @@
     asset_uri_allowlist:
       - "^package://.*"
       - "^file://.*"
-

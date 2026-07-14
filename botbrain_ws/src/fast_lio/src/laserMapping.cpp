@@ -1031,9 +1031,9 @@ public:
                     imu_topic.c_str(), imu_flip_yz ? "true" : "false", imu_queue_depth,
                     lidar_queue_depth, lidar_update_guard_enable ? "true" : "false");
         RCLCPP_INFO(this->get_logger(),
-                    "[FAST_LIO_PCD] enabled=%s path=%s interval=%d",
+                    "[FAST_LIO_PCD] enabled=%s path=%s interval=%d laser_map=%s",
                     pcd_save_en ? "true" : "false", map_file_path.c_str(),
-                    pcd_save_interval);
+                    pcd_save_interval, map_pub_en ? "true" : "false");
 
         path.header.stamp = this->get_clock()->now();
         path.header.frame_id = "camera_init";

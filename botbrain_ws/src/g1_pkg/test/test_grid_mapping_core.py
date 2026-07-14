@@ -114,6 +114,30 @@ def test_obstacle_wins_when_cell_is_also_reported_free():
     assert grid[0, 1] == 100
 
 
+def test_prevalidated_log_odds_fast_path_matches_default_path():
+    default_grid = np.full((2, 3), -1, dtype=np.int8)
+    default_log_odds = np.zeros((2, 3), dtype=np.float32)
+    default_observed = np.zeros((2, 3), dtype=bool)
+    fast_grid = default_grid.copy()
+    fast_log_odds = default_log_odds.copy()
+    fast_observed = default_observed.copy()
+
+    update_log_odds_grid(
+        default_grid, default_log_odds, default_observed, [0, 1], [4, 5])
+    update_log_odds_grid(
+        fast_grid,
+        fast_log_odds,
+        fast_observed,
+        np.array([0, 1], dtype=np.int64),
+        np.array([4, 5], dtype=np.int64),
+        assume_unique_disjoint=True,
+    )
+
+    np.testing.assert_array_equal(fast_grid, default_grid)
+    np.testing.assert_array_equal(fast_log_odds, default_log_odds)
+    np.testing.assert_array_equal(fast_observed, default_observed)
+
+
 def test_raytrace_excludes_obstacle_endpoint_and_includes_ground_endpoint():
     obstacle_ray = raytrace_cell_ids(
         0, 0, [3], [0], [False], width=5, height=1)

@@ -222,9 +222,12 @@ def unique_cell_ids(ix, iy, width):
         np.asarray(ix, dtype=np.int64))
 
 
-def expand_cell_ids(cell_ids, width, height, radius, resolution):
+def expand_cell_ids(
+        cell_ids, width, height, radius, resolution, *, assume_unique=False):
     """Expand occupied evidence to a small metric neighborhood."""
-    cell_ids = np.unique(np.asarray(cell_ids, dtype=np.int64))
+    cell_ids = np.asarray(cell_ids, dtype=np.int64)
+    if not assume_unique:
+        cell_ids = np.unique(cell_ids)
     if len(cell_ids) == 0 or radius <= 0.0:
         return cell_ids
 
@@ -357,14 +360,20 @@ def update_log_odds_grid(
         occupied_threshold=2.0,
         free_value=0,
         occupied_value=100,
-        unknown_value=-1):
+        unknown_value=-1,
+        assume_unique_disjoint=False):
     """Apply one scan of unique free/occupied evidence to an occupancy grid."""
-    free_cells = np.unique(np.asarray(free_cells, dtype=np.int64))
-    obstacle_cells = np.unique(np.asarray(obstacle_cells, dtype=np.int64))
-    if len(obstacle_cells):
-        free_cells = np.setdiff1d(
-            free_cells, obstacle_cells, assume_unique=True)
-    affected = np.union1d(free_cells, obstacle_cells)
+    free_cells = np.asarray(free_cells, dtype=np.int64)
+    obstacle_cells = np.asarray(obstacle_cells, dtype=np.int64)
+    if assume_unique_disjoint:
+        affected = np.concatenate((free_cells, obstacle_cells))
+    else:
+        free_cells = np.unique(free_cells)
+        obstacle_cells = np.unique(obstacle_cells)
+        if len(obstacle_cells):
+            free_cells = np.setdiff1d(
+                free_cells, obstacle_cells, assume_unique=True)
+        affected = np.union1d(free_cells, obstacle_cells)
     if len(affected) == 0:
         return affected
 

@@ -30,6 +30,10 @@ def test_mapping_runbook_documents_safe_save_and_editor_semantics():
     assert "ros2 param get /fast_lio map_file_path" in source
     assert "test -s \"$maps/floor1_scans.pcd\"" in source
     assert "test \"$maps/floor1_scans.pcd\" -nt \"$marker\"" in source
+    assert "建图时 localization/navigation 必须停止" in source
+    assert "关闭 `/Laser_map_1`" in source
+    assert "ros2 topic info -v /cloud_registered_1" in source
+    assert "sleep 1\nros2 topic info /accumulated_grid" in source
     assert "左键**画黑" in source
     assert "右键**画白" in source
     assert "当前不会影响 Nav2" in source

@@ -581,6 +581,7 @@ class GridAccumulator(Node):
             height,
             self.free_spread_radius,
             self.res,
+            assume_unique=True,
         )
         obstacle_cells = unique_cell_ids(
             ix[obstacle_mask], iy[obstacle_mask], width)
@@ -590,6 +591,7 @@ class GridAccumulator(Node):
             height,
             self.obstacle_spread_radius,
             self.res,
+            assume_unique=True,
         )
         free_cells = ground_cells
 
@@ -640,6 +642,9 @@ class GridAccumulator(Node):
             free_value=FREE,
             occupied_value=OCCUPIED,
             unknown_value=UNKNOWN,
+            # unique_cell_ids/expand_cell_ids return unique ids, and the
+            # obstacle-wins setdiff above makes the two arrays disjoint.
+            assume_unique_disjoint=True,
         )
         return int(len(free_cells)), int(len(obstacle_cells))
 

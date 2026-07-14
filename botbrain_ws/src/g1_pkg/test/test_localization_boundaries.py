@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
@@ -43,10 +45,13 @@ def test_localization_service_starts_the_installed_launch_file_directly():
 
 def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
     source = _read("docker-compose.yaml")
+    compose = yaml.safe_load(source)
 
     assert "exec ros2 launch --noninteractive g1_pkg fast_lio.launch.py" in source
     assert "stop_signal: SIGINT" in source
     assert "stop_grace_period: 180s" in source
+    assert compose["services"]["localization"]["profiles"] == ["navigation"]
+    assert compose["services"]["navigation"]["profiles"] == ["navigation"]
 
 
 def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
@@ -54,6 +59,31 @@ def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
 
     assert "sigterm_timeout='150'" in source
     assert "sigkill_timeout='20'" in source
+    assert "'--rate',           '2.0'" in source
+    assert "'--debug-clouds'" not in source
+
+
+def test_mapping_disables_unbounded_laser_map_publication():
+    config = yaml.safe_load(
+        _read("botbrain_ws/src/fast_lio/config/mid360.yaml"))
+    foxglove = yaml.safe_load(_read(
+        "botbrain_ws/src/bot_bringup/config/foxglove_bridge_params.yaml"))
+
+    params = config["/**"]["ros__parameters"]
+    bridge_params = foxglove["/**"]["ros__parameters"]
+    assert params["publish"]["map_en"] is False
+    assert "/Laser_map_1" not in bridge_params["topic_whitelist"]
+
+
+def test_open3d_localization_uses_latest_only_realtime_inputs():
+    source = _read(
+        "botbrain_ws/src/open3d_loc/src/global_localization.cpp")
+
+    assert "rclcpp::QoS(rclcpp::KeepLast(10)).reliable()" in source
+    assert "rclcpp::QoS(rclcpp::KeepLast(1)).reliable()" in source
+    assert '"Odometry_loc", latest_input_qos' in source
+    assert '"cloud_registered_1", latest_input_qos' in source
+    assert "100000" not in source
 
 
 def test_pcd_service_and_exit_share_the_validated_map_save_path():

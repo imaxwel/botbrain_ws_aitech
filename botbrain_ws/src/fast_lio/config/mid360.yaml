@@ -7,7 +7,7 @@
     filter_size_map: 0.3   # 匹配参考
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/floor3_scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
       lid_topic: "/livox/lidar"
@@ -60,7 +60,9 @@
     publish:
       path_en: true # true: publish Path
       effect_map_en: false # true: publish Effects
-      map_en: true # true: publish Map cloud
+      # /Laser_map_1 rebuilds and republishes an ever-growing history cloud.
+      # Mapping, grid generation and PCD saving use other validated buffers.
+      map_en: false
       scan_publish_en: true # false: close all the point cloud output
       dense_publish_en: false # false: low down the points number in a global-frame point clouds scan.
       scan_bodyframe_pub_en: true # true: output the point cloud scans in IMU-body-frame

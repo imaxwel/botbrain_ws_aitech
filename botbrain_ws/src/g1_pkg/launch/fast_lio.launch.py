@@ -48,6 +48,7 @@ def generate_launch_description():
                 '--map-frame',      'camera_init',
                 '--body-frame',     'body',
                 '--resolution',     '0.05',
+                '--rate',           '2.0',
                 # Fixed-z values are used only with --no-ground-plane. In the
                 # normal path, a constrained plane is initialized around the
                 # known body-to-floor height and must pass quality gates.
@@ -90,7 +91,6 @@ def generate_launch_description():
                 '--free-spread-radius',     '0.05',
                 '--free-update',            '0.30',
                 '--min-obs-hits',   '3',     # distinct accepted scan frames
-                '--debug-clouds',            # ground/obstacle/self diagnostics
                 '--map-z',          '-1.247', # fallback display height before plane fit
             ],
             output='screen',

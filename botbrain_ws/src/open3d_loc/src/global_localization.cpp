@@ -332,11 +332,18 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     pcd_map_fine_.reset(new open3d::geometry::PointCloud);
     queue_maxsize_ = 1;
 
-    pub_baselink2map_ = this->create_publisher<nav_msgs::msg::Odometry>("baselink2map", 100000);
-    pub_baselink2map_kalman_ = this->create_publisher<nav_msgs::msg::Odometry>("baselink2map_kalman", 100000);
-    pub_motionlink2map_ = this->create_publisher<nav_msgs::msg::Odometry>("motionlink2map", 100000);
-    pub_odom2map_ = this->create_publisher<nav_msgs::msg::Odometry>("odom2map", 100000);
-    pub_odom2map_kalman_ = this->create_publisher<nav_msgs::msg::Odometry>("odom2map_kalman", 100000);
+    const auto pose_output_qos =
+        rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    pub_baselink2map_ = this->create_publisher<nav_msgs::msg::Odometry>(
+        "baselink2map", pose_output_qos);
+    pub_baselink2map_kalman_ = this->create_publisher<nav_msgs::msg::Odometry>(
+        "baselink2map_kalman", pose_output_qos);
+    pub_motionlink2map_ = this->create_publisher<nav_msgs::msg::Odometry>(
+        "motionlink2map", pose_output_qos);
+    pub_odom2map_ = this->create_publisher<nav_msgs::msg::Odometry>(
+        "odom2map", pose_output_qos);
+    pub_odom2map_kalman_ = this->create_publisher<nav_msgs::msg::Odometry>(
+        "odom2map_kalman", pose_output_qos);
 
     pub_map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("pcd_map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
     pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("submap", 1);
@@ -349,10 +356,19 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     loc_frequence_ = 2.0; //
     loc_fitness_ = 0.0;
     // 注册回调函数
+    // The localization worker consumes only the newest coherent cloud/odometry
+    // pair. A deep DDS queue makes overload self-amplifying because stale clouds
+    // are converted to Open3D before the application-level queue can discard them.
+    const auto latest_input_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
     sub_baselink2odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "Odometry_loc", 50, std::bind(&GloabalLocalization::CallbackBaselink2Odom, this, std::placeholders::_1));
+        "Odometry_loc", latest_input_qos,
+        std::bind(&GloabalLocalization::CallbackBaselink2Odom, this,
+                  std::placeholders::_1));
     sub_scan_cur_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "cloud_registered_1", 50, std::bind(&GloabalLocalization::CallbackScan, this, std::placeholders::_1));
+        "cloud_registered_1", latest_input_qos,
+        std::bind(&GloabalLocalization::CallbackScan, this,
+                  std::placeholders::_1));
     sub_initialpose_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "initialpose", 50, std::bind(&GloabalLocalization::CallbackInitialPose, this, std::placeholders::_1));
 
