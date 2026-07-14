@@ -116,6 +116,13 @@ bool GraphNode::parse_nodes(const nlohmann::json& doc, std::vector<NodeProfile>&
         return false;
     }
 
+    if (doc["nodes"].empty())
+    {
+        return true;
+    }
+
+    const std::size_t initial_node_count = nodes.size();
+
     for (const auto &item : doc["nodes"])
     {
         if(!item.contains("name") || !item["name"].is_string()) {continue;}
@@ -143,7 +150,7 @@ bool GraphNode::parse_nodes(const nlohmann::json& doc, std::vector<NodeProfile>&
         nodes.push_back(std::move(np));
     }
 
-    if (nodes.empty())
+    if (nodes.size() == initial_node_count)
     {
         std::cerr << "[GraphNode] Document contained no parsable nodes.\n";
         return false;

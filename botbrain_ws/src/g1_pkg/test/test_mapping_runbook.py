@@ -12,6 +12,8 @@ def _runbook():
 def test_mapping_runbook_uses_current_install_and_launch_paths():
     source = _runbook()
 
+    assert "/data/unitree/botbrain_ws" not in source
+    assert "/data/botbrain_ws/botbrain_project-main" in source
     assert "/botbrain_ws/tools/mapping/shift_pcd_z.py" not in source
     assert "/botbrain_ws/install/g1_pkg/lib/g1_pkg/shift_pcd_z.py" in source
     assert "/botbrain_ws/start_localization.sh" not in source
@@ -39,6 +41,9 @@ def test_mapping_runbook_documents_safe_save_and_editor_semantics():
     assert "Fixed Frame：`map`" in source
     assert "map_odom_z=1.247" in source
     assert "Map/odom height constraint: enabled=true z=1.247 m" in source
+    assert "Map/odom roll/pitch constraint: enabled=true" in source
+    assert "Planar base TF: enabled=true odom -> g1_robot/base_footprint" in source
+    assert "map_odom_rp=0.00/0.00 deg" in source
     assert "Manual relocalization applied" in source
     assert "ignoring /initialpose in frame 'camera_init'" in source
     assert "Waiting for odometry history" in source
@@ -47,6 +52,11 @@ def test_mapping_runbook_documents_safe_save_and_editor_semantics():
     assert "右键**画白" in source
     assert "当前不会影响 Nav2" in source
     assert "mode: trinary" in source
+    assert "ros2 lifecycle get \"/g1_robot/$node\"" in source
+    assert "^/g1_robot/navigate_to_pose " in source
+    assert "Nav2 readiness check failed after 90s" in source
+    assert "g1_robot_mapping" in source
+    assert "open3d_loc g1_pkg bot_navigation bot_state_machine" in source
     assert "python3 /botbrain_ws/tools/mapping/shift_pcd_z.py $PCD" not in legacy_save
     assert 'RAW_PCD="${PCD%.pcd}_raw.pcd"' in legacy_save
     assert "shift $PCD exactly once" in legacy_save

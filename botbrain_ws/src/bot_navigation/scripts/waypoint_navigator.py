@@ -33,6 +33,18 @@ def _default_file() -> Path:
 DEFAULT_FILE = _default_file()
 
 
+def _planar_quaternion(wp: dict):
+    x = float(wp.get('qx', 0.0))
+    y = float(wp.get('qy', 0.0))
+    z = float(wp.get('qz', 0.0))
+    w = float(wp.get('qw', 1.0))
+    yaw = math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+    return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
+
+
 def _load(path: Path) -> dict:
     if not path.exists():
         print(f'Waypoints file not found: {path}')
@@ -47,36 +59,15 @@ def navigate(names: list, db: dict, robot: str, loop: bool) -> None:
     from rclpy.node import Node
     from rclpy.action import ActionClient
     from nav2_msgs.action import NavigateToPose
-    from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+    from geometry_msgs.msg import PoseStamped
     from action_msgs.msg import GoalStatus
 
     rclpy.init()
     node = Node('waypoint_navigator')
     client = ActionClient(node, NavigateToPose, f'/{robot}/navigate_to_pose')
 
-    # Strategy E: re-anchor ICP to waypoint exact coordinates after each arrival
-    initialpose_pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
-
-    def publish_anchor(wp: dict) -> None:
-        """Publish waypoint exact pose to /initialpose to re-lock ICP drift."""
-        msg = PoseWithCovarianceStamped()
-        msg.header.frame_id = 'map'
-        msg.header.stamp = node.get_clock().now().to_msg()
-        msg.pose.pose.position.x = float(wp['x'])
-        msg.pose.pose.position.y = float(wp['y'])
-        msg.pose.pose.position.z = 0.0  # z_fix relay will correct to IMU height
-        msg.pose.pose.orientation.x = float(wp.get('qx', 0.0))
-        msg.pose.pose.orientation.y = float(wp.get('qy', 0.0))
-        msg.pose.pose.orientation.z = float(wp.get('qz', 0.0))
-        msg.pose.pose.orientation.w = float(wp.get('qw', 1.0))
-        msg.pose.covariance[0]  = 0.10  # x variance
-        msg.pose.covariance[7]  = 0.10  # y variance
-        msg.pose.covariance[35] = 0.05  # yaw variance
-        initialpose_pub.publish(msg)
-        print(f'  ↻ Re-anchored ICP to waypoint ({wp["x"]:.3f}, {wp["y"]:.3f})')
-
-    if not client.wait_for_server(timeout_sec=10.0):
-        node.get_logger().error('NavigateToPose server not available (10 s timeout)')
+    if not client.wait_for_server(timeout_sec=60.0):
+        node.get_logger().error('NavigateToPose server not available (60 s timeout)')
         node.destroy_node(); rclpy.shutdown(); sys.exit(1)
 
     def go_to(name: str) -> bool:
@@ -87,11 +78,12 @@ def navigate(names: list, db: dict, robot: str, loop: bool) -> None:
         goal.pose.header.stamp = node.get_clock().now().to_msg()
         goal.pose.pose.position.x = float(wp['x'])
         goal.pose.pose.position.y = float(wp['y'])
-        goal.pose.pose.position.z = float(wp.get('z', 0.0))
-        goal.pose.pose.orientation.x = float(wp.get('qx', 0.0))
-        goal.pose.pose.orientation.y = float(wp.get('qy', 0.0))
-        goal.pose.pose.orientation.z = float(wp.get('qz', 0.0))
-        goal.pose.pose.orientation.w = float(wp.get('qw', 1.0))
+        goal.pose.pose.position.z = 0.0
+        qx, qy, qz, qw = _planar_quaternion(wp)
+        goal.pose.pose.orientation.x = qx
+        goal.pose.pose.orientation.y = qy
+        goal.pose.pose.orientation.z = qz
+        goal.pose.pose.orientation.w = qw
 
         # Proximity override: if nav2 goal checker gets stuck in micro-correction loop
         # (robot physically can't execute tiny lateral moves after rotation drift),
@@ -136,9 +128,6 @@ def navigate(names: list, db: dict, robot: str, loop: bool) -> None:
         status = res_future.result().status
         if status == GoalStatus.STATUS_SUCCEEDED or override_done[0]:
             print(f'  ✓ Reached "{name}"')
-            # Strategy E: re-anchor ICP to exact waypoint coordinates to reset drift
-            publish_anchor(db[name])
-            time.sleep(1.5)  # wait for ICP to re-lock before next waypoint
             return True
         else:
             print(f'  ✗ Failed to reach "{name}" (status={status})')
@@ -147,7 +136,9 @@ def navigate(names: list, db: dict, robot: str, loop: bool) -> None:
     try:
         while True:
             for name in names:
-                go_to(name)
+                if not go_to(name):
+                    print('Stopping waypoint sequence after navigation failure.')
+                    return
             if not loop:
                 break
     except KeyboardInterrupt:

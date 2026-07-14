@@ -12,6 +12,7 @@ Options:
   --robot NAME    robot namespace      (default: g1_robot)
 """
 import sys
+import math
 import yaml
 import argparse
 from pathlib import Path
@@ -27,6 +28,14 @@ def _default_file() -> Path:
         return Path.home() / '.ros' / 'nav_waypoints.yaml'
 
 DEFAULT_FILE = _default_file()
+
+
+def _yaw_quaternion(x: float, y: float, z: float, w: float):
+    yaw = math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+    return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
 
 
 def _load(path: Path) -> dict:
@@ -66,10 +75,11 @@ def cmd_record(name: str, file: Path, robot: str) -> None:
                 node.destroy_node(); rclpy.shutdown(); sys.exit(1)
 
     t, r = tf.transform.translation, tf.transform.rotation
+    qx, qy, qz, qw = _yaw_quaternion(r.x, r.y, r.z, r.w)
     waypoints = _load(file)
     waypoints[name] = dict(
-        x=round(t.x, 4), y=round(t.y, 4), z=round(t.z, 4),
-        qx=round(r.x, 6), qy=round(r.y, 6), qz=round(r.z, 6), qw=round(r.w, 6),
+        x=round(t.x, 4), y=round(t.y, 4), z=0.0,
+        qx=qx, qy=qy, qz=round(qz, 6), qw=round(qw, 6),
         frame=map_frame,
     )
     _save(file, waypoints)

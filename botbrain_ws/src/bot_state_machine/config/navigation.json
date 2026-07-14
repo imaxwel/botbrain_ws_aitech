@@ -43,14 +43,15 @@
       "description": "Managed by nav2.launch.py lifecycle_manager.", "dependencies": []
     }
   ],
-  "nodes": [
+  "_disabled_non_lifecycle_nodes": [
     {
       "name": "nav2_utils",
       "display_name": "Nav2 Utilities",
       "classe": "navigation",
       "order": 1,
-      "description": "Nav2 Utilities — not in nav2.launch.py lifecycle_nodes, managed here.",
+      "description": "Ordinary rclpy Node started by navigation.launch.py; never manage it through lifecycle services.",
       "dependencies": []
     }
-  ]
+  ],
+  "nodes": []
 }

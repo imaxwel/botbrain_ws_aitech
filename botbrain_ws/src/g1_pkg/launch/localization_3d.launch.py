@@ -41,6 +41,9 @@ def generate_launch_description():
                 'use_sim_time':             LaunchConfiguration('use_sim_time'),
                 'pcd_queue_maxsize':        1,
                 'registered_cloud_world_frame': 'camera_init',
+                'publish_planar_base_tf':   True,
+                'planar_base_frame':        'g1_robot/base_footprint',
+                'planar_base_height':       IMU_HEIGHT,
                 'voxelsize_coarse':         0.15,
                 'voxelsize_fine':           0.2,    # 走廊环境大体素=大收敛盆地，防止跳局部最优
                 'threshold_fitness':        0.5,   # 0.7→0.5: 允许断流恢复时接受中等质量匹配；级联靠 dis_updatemap=5.0 防护
@@ -61,6 +64,10 @@ def generate_launch_description():
                 # its floor is map z=0. Vertical walls make point-to-plane ICP
                 # unable to determine this offset reliably, so keep it explicit.
                 'lock_map_odom_z':          True,
+                # FAST-LIO already aligns its world Z with gravity. Navigation
+                # localization should correct only planar x/y/yaw, otherwise
+                # corridor ICP can accumulate weakly-observed roll/pitch.
+                'lock_map_odom_roll_pitch': True,
                 'map_odom_z':               IMU_HEIGHT,
                 'max_icp_inlier_rmse':         0.30,
                 'min_initialization_fitness':  0.50,
@@ -129,8 +136,8 @@ def generate_launch_description():
 
     # Nav2 runs in "g1_robot" namespace and expects TF frames g1_robot/map and
     # g1_robot/odom, but open3d_loc publishes plain "map" and "odom".
-    # These identity bridges make both frame names available in the TF tree so
-    # Nav2 can compute: g1_robot/map → map → odom → g1_robot/odom → g1_robot/base_footprint
+    # These aliases make both names available. The localization node separately
+    # publishes odom -> g1_robot/base_footprint as a planar FAST-LIO projection.
     static_tf_map_alias = Node(
         package='tf2_ros', executable='static_transform_publisher',
         name='map_to_g1robot_map',
@@ -145,15 +152,6 @@ def generate_launch_description():
         arguments=['0', '0', '-1.247', '0', '0', '0', '1', 'odom', 'g1_robot/odom'],
     )
 
-    # Bridge FAST_LIO's "body" frame (accurate global position) to g1_robot/base_footprint.
-    # g1_read.py's publish_tf is disabled so only this static TF drives base_footprint.
-    # body z=0 is at IMU height (1.247m above ground); base_footprint is at ground level.
-    static_tf_body2footprint = Node(
-        package='tf2_ros', executable='static_transform_publisher',
-        name='body_to_base_footprint',
-        arguments=['0', '0', '-1.247', '0', '0', '0', '1', 'body', 'g1_robot/base_footprint'],
-    )
-
     return LaunchDescription([
         pcd_arg,
         grid_map_arg,
@@ -162,7 +160,6 @@ def generate_launch_description():
         global_localization,
         static_tf_camera_init,
         static_tf_imu2base,
-        static_tf_body2footprint,
         static_tf_motion2base,
         static_tf_map_alias,
         static_tf_odom_alias,

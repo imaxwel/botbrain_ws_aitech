@@ -16,6 +16,11 @@ global_localization_node:
     pcd_queue_maxsize: 1
     # /cloud_registered_1 must already be in this FAST-LIO world frame.
     registered_cloud_world_frame: camera_init
+    # Generic defaults. The G1 launch enables a yaw-only, ground-projected
+    # odom -> base_footprint TF from the same FAST-LIO odometry used by ICP.
+    publish_planar_base_tf: false
+    planar_base_frame: g1_robot/base_footprint
+    planar_base_height: 0.0
     voxelsize_coarse: 0.15
     voxelsize_fine: 0.20
     threshold_fitness: 0.50
@@ -40,6 +45,7 @@ global_localization_node:
     # Generic package default: disabled. g1_pkg/localization_3d.launch.py enables
     # this at +1.247 m only for PCDs corrected to put the floor at map z=0.
     lock_map_odom_z: false
+    lock_map_odom_roll_pitch: false
     map_odom_z: 0.0
     max_icp_inlier_rmse: 0.30
 

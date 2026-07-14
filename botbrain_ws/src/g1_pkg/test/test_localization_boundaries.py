@@ -1,4 +1,6 @@
 import re
+import json
+import math
 from pathlib import Path
 
 import yaml
@@ -93,23 +95,32 @@ def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():
     assert "100000" not in source
 
 
-def test_g1_localization_locks_corrected_map_height_only_in_g1_launch():
+def test_g1_localization_locks_corrected_map_to_planar_transform_in_g1_launch():
     source = _read(
         "botbrain_ws/src/open3d_loc/src/global_localization.cpp")
     launch = _read("botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py")
 
     assert 'declare_parameter<bool>("lock_map_odom_z", false)' in source
+    assert 'declare_parameter<bool>("lock_map_odom_roll_pitch", false)' in source
+    assert "Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())" in source
     assert "mat_initialpose_ = ConstrainMapOdom(mat_initialpose_);" in source
     assert "mat_odom2map_ = mat_initialpose_;" in source
     assert "candidate_odom2map = ConstrainMapOdom(" in source
     assert "effective_correction =" in source
     assert "new_odom2map = ConstrainMapOdom(" in source
+    assert "requested_yaw - odom_baselink_yaw" in source
     assert "mat_odom2map_kalman_ = ConstrainMapOdom(" in source
     assert "mat_odom2map_(2, 3), 1);" in source
     assert "Rejecting initial pose: waiting for valid odometry" in source
     assert "initialpose_frame != \"map\"" in source
     assert "'lock_map_odom_z':          True" in launch
+    assert "'lock_map_odom_roll_pitch': True" in launch
     assert "'map_odom_z':               IMU_HEIGHT" in launch
+    assert "'publish_planar_base_tf':   True" in launch
+    assert "'planar_base_height':       IMU_HEIGHT" in launch
+    assert "body_to_base_footprint" not in launch
+    assert 'planar_base_tf.header.frame_id = "odom";' in source
+    assert "planar_base_tf.transform.translation.z = -planar_base_height_;" in source
 
 
 def test_initialpose_relay_rejects_non_map_frames():
@@ -118,6 +129,65 @@ def test_initialpose_relay_rejects_non_map_frames():
     assert "frame_id = msg.header.frame_id.lstrip('/')" in source
     assert "if frame_id != 'map':" in source
     assert "set Foxglove Fixed Frame to 'map'" in source
+
+
+def test_g1_mppi_period_matches_controller_and_preserves_horizon():
+    params = yaml.safe_load(_read(
+        "botbrain_ws/src/g1_pkg/config/nav2_params.yaml"))
+    controller = params["/**/controller_server"]["ros__parameters"]
+    frequency = float(controller["controller_frequency"])
+    mppi = controller["FollowPath"]
+
+    assert float(mppi["model_dt"]) >= (1.0 / frequency) - 1e-12
+    assert 2.0 <= float(mppi["model_dt"]) * int(mppi["time_steps"]) <= 3.0
+    assert mppi["visualize"] is False
+    assert mppi["publish_optimal_trajectory"] is True
+    local_costmap = params["/**/local_costmap"]["local_costmap"]["ros__parameters"]
+    assert local_costmap["global_frame"] == "<prefix>odom"
+    bt_params = params["/**/bt_navigator"]["ros__parameters"]
+    assert "default_bt_xml_filename" not in bt_params
+    source = _read("botbrain_ws/src/g1_pkg/config/nav2_params.yaml")
+    assert "obstacle_range:" not in source
+    assert "raytrace_range:" not in source
+    assert "observation_queue_length:" not in source
+    assert source.count("obstacle_max_range:") == 2
+    assert source.count("raytrace_max_range:") == 2
+    global_cloud = params["/**/global_costmap"]["global_costmap"][
+        "ros__parameters"]["obstacle_layer"]["cloud"]
+    assert global_cloud["raytrace_max_range"] >= global_cloud["obstacle_max_range"]
+
+
+def test_waypoints_are_planar_and_never_reanchor_localization():
+    recorder = _read(
+        "botbrain_ws/src/bot_navigation/scripts/waypoint_recorder.py")
+    navigator = _read(
+        "botbrain_ws/src/bot_navigation/scripts/waypoint_navigator.py")
+    waypoints = yaml.safe_load(_read(
+        "botbrain_ws/src/bot_navigation/nav_waypoints.yaml"))["waypoints"]
+
+    assert "def _yaw_quaternion(" in recorder
+    assert "def _planar_quaternion(" in navigator
+    assert "PoseWithCovarianceStamped" not in navigator
+    assert "initialpose_pub" not in navigator
+    assert "goal.pose.pose.position.z = 0.0" in navigator
+    assert "wait_for_server(timeout_sec=60.0)" in navigator
+    assert "Stopping waypoint sequence after navigation failure." in navigator
+    for waypoint in waypoints.values():
+        assert float(waypoint["z"]) == 0.0
+        assert float(waypoint["qx"]) == 0.0
+        assert float(waypoint["qy"]) == 0.0
+        norm = math.hypot(float(waypoint["qz"]), float(waypoint["qw"]))
+        assert math.isclose(norm, 1.0, abs_tol=2e-6)
+
+
+def test_state_machine_does_not_manage_nav2_utils_as_lifecycle_node():
+    config = json.loads(_read(
+        "botbrain_ws/src/bot_state_machine/config/navigation.json"))
+
+    assert all(node["name"] != "nav2_utils" for node in config["nodes"])
+    graph_source = _read(
+        "botbrain_ws/src/bot_state_machine/src/graph_node.cpp")
+    assert 'if (doc["nodes"].empty())' in graph_source
 
 
 def test_pcd_service_and_exit_share_the_validated_map_save_path():

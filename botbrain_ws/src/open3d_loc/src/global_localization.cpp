@@ -62,6 +62,15 @@ double RotationAngleDegrees(const Eigen::Matrix3d &rotation)
     return std::acos(cosine) * 180.0 / M_PI;
 }
 
+Eigen::Vector2d RollPitchDegrees(const Eigen::Matrix3d &rotation)
+{
+    const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
+    const double pitch = std::atan2(
+        -rotation(2, 0),
+        std::hypot(rotation(2, 1), rotation(2, 2)));
+    return Eigen::Vector2d(roll, pitch) * 180.0 / M_PI;
+}
+
 std::string NormalizeFrameId(std::string frame_id)
 {
     while (!frame_id.empty() && frame_id.front() == '/')
@@ -236,6 +245,9 @@ private:
     double timestamp_scan_seconds_ = 0.0;
     std::atomic<unsigned long long> scan_generation_{0};
     std::string registered_cloud_world_frame_;
+    bool publish_planar_base_tf_ = false;
+    std::string planar_base_frame_ = "g1_robot/base_footprint";
+    double planar_base_height_ = 0.0;
     std::atomic<bool> flag_exit_{false};
 
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_baselink2map_;
@@ -274,6 +286,7 @@ private:
     double icp_candidate_max_age_sec_;
     double max_scan_odom_time_skew_sec_;
     bool lock_map_odom_z_ = false;
+    bool lock_map_odom_roll_pitch_ = false;
     double map_odom_z_ = 0.0;
     double max_icp_inlier_rmse_;
     double min_initialization_fitness_;
@@ -409,6 +422,10 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     // 队列最大数量
     this->declare_parameter<int>("pcd_queue_maxsize", 1);
     this->declare_parameter<std::string>("registered_cloud_world_frame", "camera_init");
+    this->declare_parameter<bool>("publish_planar_base_tf", false);
+    this->declare_parameter<std::string>(
+        "planar_base_frame", "g1_robot/base_footprint");
+    this->declare_parameter<double>("planar_base_height", 0.0);
     this->declare_parameter<bool>("save_scan", false);
     /// 最大点数量限制
     this->declare_parameter<int>("maxpoints_source", 50000);
@@ -427,6 +444,7 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->declare_parameter<double>("icp_candidate_max_age_sec", 1.0);
     this->declare_parameter<double>("max_scan_odom_time_skew_sec", 0.03);
     this->declare_parameter<bool>("lock_map_odom_z", false);
+    this->declare_parameter<bool>("lock_map_odom_roll_pitch", false);
     this->declare_parameter<double>("map_odom_z", 0.0);
     this->declare_parameter<double>("max_icp_inlier_rmse", 0.30);
     this->declare_parameter<double>("min_initialization_fitness", 0.20);
@@ -463,6 +481,22 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
                     "registered_cloud_world_frame is empty; forcing camera_init");
         registered_cloud_world_frame_ = "camera_init";
     }
+    this->get_parameter("publish_planar_base_tf", publish_planar_base_tf_);
+    this->get_parameter("planar_base_frame", planar_base_frame_);
+    planar_base_frame_ = NormalizeFrameId(planar_base_frame_);
+    this->get_parameter("planar_base_height", planar_base_height_);
+    if (planar_base_frame_.empty())
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "planar_base_frame is empty; disabling planar base TF");
+        publish_planar_base_tf_ = false;
+    }
+    if (!std::isfinite(planar_base_height_))
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "planar_base_height is not finite; using 0.0 m");
+        planar_base_height_ = 0.0;
+    }
     this->get_parameter("save_scan", save_scan_);
     this->get_parameter("maxpoints_source", maxpoints_source_);
     this->get_parameter("maxpoints_target", maxpoints_target_);
@@ -477,6 +511,7 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->get_parameter("icp_candidate_max_age_sec", icp_candidate_max_age_sec_);
     this->get_parameter("max_scan_odom_time_skew_sec", max_scan_odom_time_skew_sec_);
     this->get_parameter("lock_map_odom_z", lock_map_odom_z_);
+    this->get_parameter("lock_map_odom_roll_pitch", lock_map_odom_roll_pitch_);
     this->get_parameter("map_odom_z", map_odom_z_);
     this->get_parameter("max_icp_inlier_rmse", max_icp_inlier_rmse_);
     this->get_parameter("min_initialization_fitness", min_initialization_fitness_);
@@ -564,8 +599,15 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     RCLCPP_INFO(this->get_logger(), "Registered cloud world frame: %s",
                 registered_cloud_world_frame_.c_str());
     RCLCPP_INFO(this->get_logger(),
+                "Planar base TF: enabled=%s odom -> %s height=%.3f m",
+                publish_planar_base_tf_ ? "true" : "false",
+                planar_base_frame_.c_str(), planar_base_height_);
+    RCLCPP_INFO(this->get_logger(),
                 "Map/odom height constraint: enabled=%s z=%.3f m",
                 lock_map_odom_z_ ? "true" : "false", map_odom_z_);
+    RCLCPP_INFO(this->get_logger(),
+                "Map/odom roll/pitch constraint: enabled=%s",
+                lock_map_odom_roll_pitch_ ? "true" : "false");
     RCLCPP_INFO(this->get_logger(),
                 "ICP %.2f Hz (%.1f ms), cloud_queue=%d, odom_history=%zu, points=%d/%d, immediate<=%.2fm/%.1fdeg, max<=%.2fm/%.1fdeg, confirmations=%d within %.2fs, stamp_skew<=%.3fs, rmse<=%.2f",
                 loc_frequence_, 1000.0 / loc_frequence_, queue_maxsize_,
@@ -635,6 +677,12 @@ Eigen::Matrix4d GloabalLocalization::ConstrainMapOdom(
     const Eigen::Matrix4d &transform) const
 {
     Eigen::Matrix4d constrained = transform;
+    if (lock_map_odom_roll_pitch_)
+    {
+        const double yaw = std::atan2(constrained(1, 0), constrained(0, 0));
+        constrained.block<3, 3>(0, 0) =
+            Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    }
     if (lock_map_odom_z_)
     {
         constrained(2, 3) = map_odom_z_;
@@ -836,6 +884,24 @@ void GloabalLocalization::CallbackBaselink2Odom(const nav_msgs::msg::Odometry::S
     transform_odom2map.transform.translation.z = odom2map.pose.pose.position.z;
     transform_odom2map.transform.rotation = odom2map.pose.pose.orientation;
     br_odom2map_->sendTransform(transform_odom2map);
+
+    if (publish_planar_base_tf_)
+    {
+        const double planar_yaw = std::atan2(
+            mat_baselink2odom(1, 0), mat_baselink2odom(0, 0));
+        geometry_msgs::msg::TransformStamped planar_base_tf;
+        planar_base_tf.header.frame_id = "odom";
+        planar_base_tf.child_frame_id = planar_base_frame_;
+        planar_base_tf.header.stamp = baselink2odom->header.stamp;
+        planar_base_tf.transform.translation.x = mat_baselink2odom(0, 3);
+        planar_base_tf.transform.translation.y = mat_baselink2odom(1, 3);
+        planar_base_tf.transform.translation.z = -planar_base_height_;
+        planar_base_tf.transform.rotation.x = 0.0;
+        planar_base_tf.transform.rotation.y = 0.0;
+        planar_base_tf.transform.rotation.z = std::sin(planar_yaw * 0.5);
+        planar_base_tf.transform.rotation.w = std::cos(planar_yaw * 0.5);
+        br_odom2map_->sendTransform(planar_base_tf);
+    }
 
     if (!loc_initialized_.load())
     {
@@ -1248,12 +1314,15 @@ void GloabalLocalization::LocalizationInitialize()
             }
 
             loc_fitness_.store(fitness);
+            const Eigen::Vector2d roll_pitch_deg = RollPitchDegrees(
+                pending_initialization_candidate.block<3, 3>(0, 0));
             const double elapsed_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - loc_start).count();
             RCLCPP_INFO(this->get_logger(),
-                        "Localization initialization succeeded: fitness=%.3f, consistent confirmations=%d, map_odom_z=%.3f, last iteration=%.1f ms",
+                        "Localization initialization succeeded: fitness=%.3f, consistent confirmations=%d, map_odom_z=%.3f, map_odom_rp=%.2f/%.2f deg, last iteration=%.1f ms",
                         fitness, consecutive_successes,
-                        pending_initialization_candidate(2, 3), elapsed_ms);
+                        pending_initialization_candidate(2, 3),
+                        roll_pitch_deg.x(), roll_pitch_deg.y(), elapsed_ms);
             return;
         }
 
@@ -1672,12 +1741,15 @@ void GloabalLocalization::Localization()
 
         const double elapsed_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - loc_start).count();
+        const Eigen::Vector2d roll_pitch_deg = RollPitchDegrees(
+            candidate_odom2map.block<3, 3>(0, 0));
         RCLCPP_INFO_THROTTLE(
             this->get_logger(), *this->get_clock(), 2000,
-            "ICP: accepted=%s fitness=%.3f rmse=%.3f correction=%.3f m/%.2f deg map_odom_z=%.3f cost=%.1f ms",
+            "ICP: accepted=%s fitness=%.3f rmse=%.3f correction=%.3f m/%.2f deg map_odom_z=%.3f map_odom_rp=%.2f/%.2f deg cost=%.1f ms",
             accepted ? "true" : "false", fitness, inlier_rmse,
             translation_step, rotation_step_deg,
-            candidate_odom2map(2, 3), elapsed_ms);
+            candidate_odom2map(2, 3), roll_pitch_deg.x(),
+            roll_pitch_deg.y(), elapsed_ms);
     }
 }
 
@@ -1743,8 +1815,27 @@ void GloabalLocalization::CallbackInitialPose(
                         "Rejecting initial pose: latest odometry transform is invalid");
             return;
         }
-        new_odom2map = ConstrainMapOdom(
-            requested_baselink2map * mat_baselink2odom_.inverse());
+        if (lock_map_odom_roll_pitch_)
+        {
+            const double requested_yaw = std::atan2(
+                requested_baselink2map(1, 0), requested_baselink2map(0, 0));
+            const double odom_baselink_yaw = std::atan2(
+                mat_baselink2odom_(1, 0), mat_baselink2odom_(0, 0));
+            new_odom2map = Eigen::Matrix4d::Identity();
+            new_odom2map.block<3, 3>(0, 0) = Eigen::AngleAxisd(
+                requested_yaw - odom_baselink_yaw,
+                Eigen::Vector3d::UnitZ()).toRotationMatrix();
+            new_odom2map.block<3, 1>(0, 3) =
+                requested_baselink2map.block<3, 1>(0, 3) -
+                new_odom2map.block<3, 3>(0, 0) *
+                    mat_baselink2odom_.block<3, 1>(0, 3);
+            new_odom2map = ConstrainMapOdom(new_odom2map);
+        }
+        else
+        {
+            new_odom2map = ConstrainMapOdom(
+                requested_baselink2map * mat_baselink2odom_.inverse());
+        }
         if (!IsRigidTransform(new_odom2map))
         {
             RCLCPP_WARN(this->get_logger(),

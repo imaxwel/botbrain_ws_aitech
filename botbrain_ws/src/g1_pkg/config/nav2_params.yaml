@@ -37,8 +37,10 @@
       yaw_goal_tolerance: 0.35       # 0.25→0.35: 放宽yaw容差，减少旋转微调次数
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 50                 # 56→50: 减少预测步数降低计算量，2.4s窗口足够低速机器人
-      model_dt: 0.05
+      # MPPI requires model_dt >= controller period. At 12 Hz the period is
+      # exactly 1/12 s; 30 steps preserve the previous ~2.5 s horizon.
+      time_steps: 30
+      model_dt: 0.08333333333333333
       batch_size: 1800               # 2000→1800: 减少15%采样数，缓解控制周期超时
       ax_max: 0.4
       ax_min: -0.5
@@ -59,7 +61,7 @@
       temperature: 0.3
       gamma: 0.015
       motion_model: "Omni"    # DiffDrive→Omni: 恢复全向，配合12Hz控制频率消除停顿
-      visualize: true
+      visualize: false              # Disable the large sampled-trajectory debug cloud.
       publish_optimal_trajectory: true
       regenerate_noises: true
       TrajectoryVisualizer:
@@ -137,7 +139,6 @@
     global_frame: <prefix>map
     robot_base_frame: <prefix>base_footprint
     odom_topic: /<prefix>odom
-    default_bt_xml_filename: "navigate_w_replanning_time.xml"
     navigators: ["navigate_to_pose"]
 
 /**/global_costmap:
@@ -171,12 +172,11 @@
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          obstacle_range: 5.0
-          raytrace_range: 3.0
+          obstacle_max_range: 5.0
+          raytrace_max_range: 5.5
           min_obstacle_height: 0.20  # humanoid gait tilt causes ground points to appear up to ~0.12m; 0.15 gives margin
           max_obstacle_height: 1.30
           observation_persistence: 0.0
-          observation_queue_length: 50
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -186,7 +186,9 @@
 /**/local_costmap:
   local_costmap:
     ros__parameters:
-      global_frame: <prefix>map
+      # Keep the rolling local costmap continuous across map->odom ICP/manual
+      # corrections. Global planning remains in <prefix>map.
+      global_frame: <prefix>odom
       robot_base_frame: <prefix>base_footprint
       transform_tolerance: 1.0
       rolling_window: true
@@ -211,12 +213,11 @@
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          obstacle_range: 3.0
-          raytrace_range: 3.0
+          obstacle_max_range: 3.0
+          raytrace_max_range: 3.0
           min_obstacle_height: 0.20
           max_obstacle_height: 1.30
           observation_persistence: 0.0
-          observation_queue_length: 50
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
