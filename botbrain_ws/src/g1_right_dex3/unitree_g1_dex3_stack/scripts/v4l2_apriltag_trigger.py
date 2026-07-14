@@ -357,7 +357,7 @@ class V4L2AprilTagTrigger(Node):
         path = self.image_source_file
         try:
             age = time.time() - os.path.getmtime(path)
-            if age > 2.0:
+            if age > 5.0:
                 # Camera offline (localization restarting) — reset buffer and warn periodically
                 now = time.monotonic()
                 if now - self._file_stale_warned_at > 10.0:

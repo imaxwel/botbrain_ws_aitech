@@ -18,6 +18,12 @@ class InitialPoseZFix(Node):
         self.get_logger().info(f'initialpose_z_fix ready — ref_z={self._ref_z}')
 
     def _cb(self, msg: PoseWithCovarianceStamped) -> None:
+        frame_id = msg.header.frame_id.lstrip('/')
+        if frame_id != 'map':
+            self.get_logger().warning(
+                f"ignoring /initialpose in frame '{msg.header.frame_id}'; "
+                "set Foxglove Fixed Frame to 'map'")
+            return
         if abs(msg.pose.pose.position.z) < 0.5:   # 2D tool sent z≈0
             msg.pose.pose.position.z = self._ref_z
         self._pub.publish(msg)

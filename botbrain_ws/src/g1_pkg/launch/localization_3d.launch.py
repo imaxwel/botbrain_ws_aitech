@@ -57,6 +57,11 @@ def generate_launch_description():
                 # Pair world cloud N only with Odometry_loc N; FAST-LIO publishes
                 # odometry first, so an ICP timer can otherwise mix N and N+1.
                 'max_scan_odom_time_skew_sec': 0.03,
+                # The finished localization PCD is shifted up by IMU_HEIGHT so
+                # its floor is map z=0. Vertical walls make point-to-plane ICP
+                # unable to determine this offset reliably, so keep it explicit.
+                'lock_map_odom_z':          True,
+                'map_odom_z':               IMU_HEIGHT,
                 'max_icp_inlier_rmse':         0.30,
                 'min_initialization_fitness':  0.50,
                 'max_initialization_translation_step': 2.0,

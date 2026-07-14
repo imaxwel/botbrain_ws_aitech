@@ -72,7 +72,8 @@ while True:
             if _not_found_count >= NOT_FOUND_RESTART_COUNT:
                 log('realsense node gone — restarting container (kill PID 1)...')
                 os.kill(1, signal.SIGTERM)
-                time.sleep(30)
+                time.sleep(60)
+                import sys; sys.exit(0)
             time.sleep(3)
             continue
 

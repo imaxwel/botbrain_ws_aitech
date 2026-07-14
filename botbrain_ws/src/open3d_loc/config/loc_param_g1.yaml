@@ -37,6 +37,10 @@ global_localization_node:
     # /Odometry_loc is published before /cloud_registered_1; require the two
     # accepted FAST-LIO products to carry the same scan time before ICP.
     max_scan_odom_time_skew_sec: 0.03
+    # Generic package default: disabled. g1_pkg/localization_3d.launch.py enables
+    # this at +1.247 m only for PCDs corrected to put the floor at map z=0.
+    lock_map_odom_z: false
+    map_odom_z: 0.0
     max_icp_inlier_rmse: 0.30
 
     # Initialization uses the same high-quality floor as threshold_fitness_init;

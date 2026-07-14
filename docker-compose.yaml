@@ -168,6 +168,7 @@ services:
     environment:
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       UNITREE_SDK2_ROOT: /opt/robot_sdk
+      CYCLONEDDS_URI: "file:///botbrain_ws/cyclonedds_config.xml"
     container_name: g1_robot_manipulation
     command: ["bash", "/botbrain_ws/src/g1_manipulation_pkg/scripts/start_manipulation.sh"]
     restart: always

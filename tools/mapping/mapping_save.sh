@@ -149,7 +149,9 @@ echo "DONE. Files in $MAPS/ :"
 ls -la "$PCD" "$PGM" "$YML" 2>&1 | sed 's|^| |'
 echo ""
 echo "Next steps:"
-echo "  1. PCD floor校正: python3 /botbrain_ws/tools/mapping/shift_pcd_z.py $PCD"
+RAW_PCD="${PCD%.pcd}_raw.pcd"
+echo "  1. PCD floor correction: follow run.md Step 5; back up to $RAW_PCD and shift $PCD exactly once."
+echo "     If the raw backup already exists, stop and verify whether this PCD was already corrected."
 echo "  2. 验证ICP fitness: docker compose logs localization | grep fitness"
 echo "  3. 如需修图: scp到workstation → tools/host_side/map_edit/ 编辑 → scp回传"
 exit 0

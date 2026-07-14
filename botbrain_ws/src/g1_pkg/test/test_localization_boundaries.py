@@ -75,15 +75,49 @@ def test_mapping_disables_unbounded_laser_map_publication():
     assert "/Laser_map_1" not in bridge_params["topic_whitelist"]
 
 
-def test_open3d_localization_uses_latest_only_realtime_inputs():
+def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():
     source = _read(
         "botbrain_ws/src/open3d_loc/src/global_localization.cpp")
 
     assert "rclcpp::QoS(rclcpp::KeepLast(10)).reliable()" in source
+    assert "rclcpp::QoS(rclcpp::KeepLast(20)).reliable()" in source
     assert "rclcpp::QoS(rclcpp::KeepLast(1)).reliable()" in source
-    assert '"Odometry_loc", latest_input_qos' in source
-    assert '"cloud_registered_1", latest_input_qos' in source
+    assert '"Odometry_loc", odom_input_qos' in source
+    assert '"cloud_registered_1", latest_cloud_qos' in source
+    assert "Eigen::aligned_allocator<TimedOdomPose>" in source
+    assert source.count("if (!SnapshotForScan(") == 2
+    assert "unsigned int &manual_pose_generation" in source
+    assert "manual_pose_generation = manual_pose_generation_.load();" in source
+    assert "manual_pose_generation_.load() == iteration_manual_pose_generation" in source
+    assert "Manual pose reset detected during initialization" in source
     assert "100000" not in source
+
+
+def test_g1_localization_locks_corrected_map_height_only_in_g1_launch():
+    source = _read(
+        "botbrain_ws/src/open3d_loc/src/global_localization.cpp")
+    launch = _read("botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py")
+
+    assert 'declare_parameter<bool>("lock_map_odom_z", false)' in source
+    assert "mat_initialpose_ = ConstrainMapOdom(mat_initialpose_);" in source
+    assert "mat_odom2map_ = mat_initialpose_;" in source
+    assert "candidate_odom2map = ConstrainMapOdom(" in source
+    assert "effective_correction =" in source
+    assert "new_odom2map = ConstrainMapOdom(" in source
+    assert "mat_odom2map_kalman_ = ConstrainMapOdom(" in source
+    assert "mat_odom2map_(2, 3), 1);" in source
+    assert "Rejecting initial pose: waiting for valid odometry" in source
+    assert "initialpose_frame != \"map\"" in source
+    assert "'lock_map_odom_z':          True" in launch
+    assert "'map_odom_z':               IMU_HEIGHT" in launch
+
+
+def test_initialpose_relay_rejects_non_map_frames():
+    source = _read("botbrain_ws/src/g1_pkg/scripts/initialpose_z_fix.py")
+
+    assert "frame_id = msg.header.frame_id.lstrip('/')" in source
+    assert "if frame_id != 'map':" in source
+    assert "set Foxglove Fixed Frame to 'map'" in source
 
 
 def test_pcd_service_and_exit_share_the_validated_map_save_path():
