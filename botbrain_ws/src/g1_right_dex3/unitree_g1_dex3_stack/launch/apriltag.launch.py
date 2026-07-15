@@ -77,6 +77,17 @@ def generate_launch_description():
         }.items(),
     )
 
+    # Ensure the Unitree runtime libraries are visible before the robot nodes start.
+    unitree_ld_library_path = SetEnvironmentVariable(
+        name='LD_LIBRARY_PATH',
+        value=os.pathsep.join([
+            '/opt/unitree_ros2/cyclonedds_ws/install/unitree_hg/lib',
+            '/opt/unitree_ros2/cyclonedds_ws/install/unitree_go/lib',
+            '/opt/unitree_ros2/cyclonedds_ws/install/unitree_api/lib',
+            os.environ.get('LD_LIBRARY_PATH', ''),
+        ])
+    )
+
     # ---------- d435_link → camera_link static TF ----------
     d435_to_camera_link = Node(
         package='tf2_ros',
@@ -128,6 +139,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Unset ZENOH_CONFIG_OVERRIDE injected by docker-compose (old format causes parse errors).
         UnsetEnvironmentVariable('ZENOH_CONFIG_OVERRIDE'),
+        unitree_ld_library_path,
         urdf_name_arg,
         urdf_path_arg,
         config_file_arg,

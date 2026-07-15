@@ -260,6 +260,17 @@ services:
       - ./frontend/.env
     command: npm run start
     restart: unless-stopped
+
+  camera:
+    extends: nav3d
+    container_name: g1_robot_camera
+    environment:
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      ZENOH_CONFIG_OVERRIDE: ""
+      UNITREE_SDK2_ROOT: /opt/robot_sdk
+      LD_LIBRARY_PATH: /opt/open3d/lib
+    command: ["bash", "-lc", "set -e; rm -f /run/latest_cam.bin; source /opt/ros/humble/setup.bash; source /botbrain_ws/install/setup.bash; ros2 launch bot_localization realsense.launch.py > /tmp/realsense_camera.log 2>&1 & python3 /botbrain_ws/cam_lifecycle_activate.py > /tmp/cam_lifecycle.log 2>&1 & python3 /botbrain_ws/cam_frame_writer.py > /tmp/cam_frame_writer.log 2>&1 & wait -n"]
+    restart: always
   
   builder_dex3:
     image: unitree-dex3:humble

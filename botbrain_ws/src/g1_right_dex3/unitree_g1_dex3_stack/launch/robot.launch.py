@@ -5,6 +5,20 @@ from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 import os
 
+
+def _unitree_ld_library_path():
+    unitree_lib_dirs = [
+        '/opt/unitree_ros2/cyclonedds_ws/install/unitree_hg/lib',
+        '/opt/unitree_ros2/cyclonedds_ws/install/unitree_go/lib',
+        '/opt/unitree_ros2/cyclonedds_ws/install/unitree_api/lib',
+    ]
+    existing = os.environ.get('LD_LIBRARY_PATH', '')
+    candidates = [d for d in unitree_lib_dirs if os.path.isdir(d)]
+    if existing:
+        candidates.append(existing)
+    return os.pathsep.join(candidates)
+
+
 def launch_setup(context, *args, **kwargs):
     urdf_path_value = LaunchConfiguration('urdf_path').perform(context)
     urdf_name_value = LaunchConfiguration('urdf_name').perform(context)
@@ -20,6 +34,7 @@ def launch_setup(context, *args, **kwargs):
     with open(resolved_urdf_path, 'r') as infp:
         robot_description = infp.read()
     return [
+        SetEnvironmentVariable('LD_LIBRARY_PATH', _unitree_ld_library_path()),
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',

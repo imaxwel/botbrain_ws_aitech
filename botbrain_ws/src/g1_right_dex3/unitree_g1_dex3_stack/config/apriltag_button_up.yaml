@@ -9,10 +9,11 @@ v4l2_apriltag_trigger:
 
     tag_family: "tag36h11"
     tag_size: 0.08
-    target_tag_id: 0
+    target_tag_id: 1
     offset_xyz: [-0.10, -0.10, -0.04]
     decision_margin_min: 25.0
-    detect_scale: 0.5
+    quad_decimate: 1.0
+    detect_scale: 1.0
 
     camera_matrix: [602.0224609375, 0.0, 330.956695556641, 0.0, 601.472839355469, 256.269927978516, 0.0, 0.0, 1.0]
     dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]

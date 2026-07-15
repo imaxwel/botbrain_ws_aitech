@@ -60,6 +60,8 @@ botbrain_ws/src/g1_right_dex3/yolonas_ocr/
 **/*.pcd
 **/*.ply
 **/rtabmap.db
+!botbrain_ws/src/g1_pkg/maps/
+!botbrain_ws/src/g1_pkg/maps/**
 
 # ===== 大型文档/演示媒体（已确认不入库） =====
 **/*.gif
