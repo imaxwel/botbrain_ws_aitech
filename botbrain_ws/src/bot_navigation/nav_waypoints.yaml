@@ -1,4 +1,13 @@
 waypoints:
+  face_evelator:
+    frame: g1_robot/map
+    qw: 0.075089
+    qx: 0.0
+    qy: 0.0
+    qz: 0.997177
+    x: -3.867
+    y: -11.9903
+    z: 0.0
   home:
     frame: g1_robot/map
     qw: 0.999702
@@ -62,3 +71,84 @@ waypoints:
     x: 6.8009
     y: 0.1606
     z: 0.5027
+  ug_1:
+    frame: g1_robot/map
+    qw: 0.751051
+    qx: 0.0
+    qy: 0.0
+    qz: 0.660245
+    x: 8.6064
+    y: 1.3047
+    z: 0.0
+  ug_2:
+    frame: g1_robot/map
+    qw: 0.998169
+    qx: 0.0
+    qy: 0.0
+    qz: -0.060479
+    x: 15.2619
+    y: 0.2827
+    z: 0.0
+  ug_3:
+    frame: g1_robot/map
+    qw: 0.998574
+    qx: 0.0
+    qy: 0.0
+    qz: -0.053386
+    x: 21.7831
+    y: 3.9817
+    z: 0.0
+  ug_4:
+    frame: g1_robot/map
+    qw: 0.999986
+    qx: 0.0
+    qy: 0.0
+    qz: 0.00523
+    x: 21.1803
+    y: -3.814
+    z: 0.0
+  ug_5:
+    frame: g1_robot/map
+    qw: 0.884715
+    qx: 0.0
+    qy: 0.0
+    qz: -0.466132
+    x: 22.7338
+    y: -10.1553
+    z: 0.0
+  ug_6:
+    frame: g1_robot/map
+    qw: 0.678045
+    qx: 0.0
+    qy: 0.0
+    qz: -0.735021
+    x: 11.6982
+    y: -6.8433
+    z: 0.0
+  ug_crossegate:
+    frame: g1_robot/map
+    qw: 0.035951
+    qx: 0.0
+    qy: 0.0
+    qz: 0.999354
+    x: 0.2802
+    y: -12.1024
+    z: 0.0
+  ug_face_evelator:
+    frame: g1_robot/map
+    qw: 0.074185
+    qx: 0.0
+    qy: 0.0
+    qz: 0.997245
+    x: -3.853
+    y: -12.0093
+    z: 0.0
+  ug_facegate:
+    frame: g1_robot/map
+    qw: 0.473757
+    qx: 0.0
+    qy: 0.0
+    qz: -0.880656
+    x: 1.8558
+    y: -7.789
+    z: 0.0

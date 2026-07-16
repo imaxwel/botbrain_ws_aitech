@@ -22,18 +22,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    goal_pose_bridge_node = Node(
-        package='bot_navigation',
-        executable='goal_pose_bridge.py',
-        name='goal_pose_bridge',
-        namespace=robot_name,
-        output='screen',
-        parameters=[{
-            'default_goal_frame': f'{robot_name}/map' if robot_name else 'map'
-        }],
-    )
-
     return LaunchDescription([
         nav2_utils_node,
-        goal_pose_bridge_node,
     ])

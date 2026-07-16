@@ -33,7 +33,7 @@
     general_goal_checker:
       stateful: False                # True→False: 同时校验xy+yaw，避免旋转修正后横漂死循环
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.60        # 0.25→0.60: 放宽到达判定
+      xy_goal_tolerance: 0.40        # 0.60->0.40: reduce early goal success while keeping humanoid tolerance
       yaw_goal_tolerance: 0.35       # 0.25→0.35: 放宽yaw容差，减少旋转微调次数
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
