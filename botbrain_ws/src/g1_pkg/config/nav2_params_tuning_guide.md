@@ -49,8 +49,8 @@ az_max: 2.5       # 最大角加速度 (rad/s²)
 **位置**：`controller_server → general_goal_checker`
 
 ```yaml
-xy_goal_tolerance: 0.10   # 位置容差 (m)
-yaw_goal_tolerance: 0.15  # 朝向容差 (rad, ≈ 8.6°)
+xy_goal_tolerance: 0.15   # 位置容差 (m)
+yaw_goal_tolerance: 0.25  # 朝向容差 (rad, ≈ 14.3°)
 ```
 
 | 场景 | 建议调整 |
@@ -75,7 +75,7 @@ obstacle_max_range: 3.0     # 标记障碍物的最大距离 (m)
 raytrace_min_range: 0.20    # 近距离开始允许清除
 raytrace_max_range: 4.5     # 清除旧障碍的光线追踪距离 (m)
 inf_is_valid: true          # /scan 的 Inf 空方向也作为清除射线
-expected_update_rate: 0.5  # 超过 0.5s 无扫描时将障碍层标记为非 current
+expected_update_rate: 1.0  # 允许短暂 TF/guard 恢复；持续断流仍会停车
 observation_persistence: 0.0  # 不缓存旧观测；已标记格子仍依赖 raytrace 清除
 ```
 
@@ -124,7 +124,7 @@ allow_unknown: false          # 是否允许规划穿越未知区域
 | 路径绕远，明显走了不必要的大弯 | `cost_travel_multiplier: 15.0 ~ 20.0` |
 | 机器人总是贴着障碍物走，想让它更保守 | `cost_travel_multiplier: 50.0` |
 | 地图不完整（边缘有未知区域），目标不可达 | `allow_unknown: true` |
-| 目标点在障碍物附近，规划失败 | `tolerance: 0.3 ~ 0.5` |
+| 目标点在障碍物附近，规划失败 | 先修地图/移动点位；导航点不建议把 `tolerance` 放大到 `0.3` 以上 |
 
 ---
 
@@ -234,7 +234,8 @@ ros2 param set /g1_robot/controller_server FollowPath.PathAlignCritic.cost_weigh
 | 路径绕了很大的弯 | `cost_travel_multiplier` | 降低到 15~20 |
 | 速度太慢 | `vx_max` | 提高到 0.5 |
 | 启动/停止太猛，机器人不稳 | `ax_max`、`ax_min` | 降低绝对值 |
-| 到达目标后位置偏差大 | `xy_goal_tolerance` | 降低到 0.05 |
+| 路径还在但机器人突然停止 | BT action timeout、`/scan`、TF | 检查 `default_server_timeout`、扫描新鲜度和 FAST-LIO guard，不要只调 goal tolerance |
+| 到达目标后位置偏差大 | planner `tolerance` + `xy_goal_tolerance` | 两者都要降低，否则误差可叠加 |
 | 地图上有幽灵障碍物 | `observation_persistence` | 设为 0.0 |
 | 行人走过后障碍残留 | `/scan` 清除射线、TF、`observation_persistence` | 确保 `use_inf/inf_is_valid=true`、TF 不丢帧，并保持 0.0 |
 | 路径跟随偏差大、蛇形 | `PathAlignCritic.cost_weight` | 提高到 18~22 |

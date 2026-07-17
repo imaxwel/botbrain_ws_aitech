@@ -55,6 +55,22 @@ global_localization_node:
     max_initialization_translation_step: 2.0
     max_initialization_rotation_step_deg: 45.0
 
+    # Match the current FAST-LIO world cloud against the complete PCD before
+    # local ICP. No previous pose or fixed map start is required.
+    enable_global_initialization: false
+    global_voxel_size: 0.40
+    global_ransac_max_iterations: 100000
+    global_ransac_confidence: 0.999
+    global_min_fitness: 0.65
+    global_max_inlier_rmse: 0.30
+    global_retry_interval_sec: 1.0
+    global_initialization_confirmations: 2
+    global_candidate_consistency_translation: 0.35
+    global_candidate_consistency_rotation_deg: 5.0
+    global_candidate_max_age_sec: 15.0
+    global_min_source_points: 100
+    global_min_target_points: 1000
+
     # G1: Kalman filter -- MUST use slash (kf_baselink2map/x).
     # C++ declares "kf_baselink2map/x", ROS2 nesting -> "kf_baselink2map.x" (mismatch).
     # kf_baselink2map/x: [0.001, 0.002]

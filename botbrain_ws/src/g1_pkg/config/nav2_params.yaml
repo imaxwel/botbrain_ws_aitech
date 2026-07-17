@@ -8,7 +8,7 @@
       use_astar: true
       motion_model_for_search: "VON_NEUMANN"
       downsample_costmap: false
-      tolerance: 0.3          # 0.1→0.3: 允许在距目标0.3m内的空闲格停下，绕开膨胀圈
+      tolerance: 0.10         # keep the path endpoint close to the requested pose
       max_iterations: 500000
       cost_travel_multiplier: 15.0   # 20.0→15.0: 降低高代价区域惩罚，避免迭代耗尽
 
@@ -28,13 +28,14 @@
     speed_limit_topic: "speed_limit"
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.3  # 0.5→0.3: 转身时位移小，0.5易误判卡住触发abort
-      movement_time_allowance: 30.0
+      # Count slow but real progress on smooth floors without masking a stall.
+      required_movement_radius: 0.15
+      movement_time_allowance: 40.0
     general_goal_checker:
       stateful: False                # True→False: 同时校验xy+yaw，避免旋转修正后横漂死循环
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.40        # 0.60->0.40: reduce early goal success while keeping humanoid tolerance
-      yaw_goal_tolerance: 0.35       # 0.25→0.35: 放宽yaw容差，减少旋转微调次数
+      xy_goal_tolerance: 0.15        # planner + goal-checker error stays near 0.25 m worst-case
+      yaw_goal_tolerance: 0.25       # retain the robot-side precision setting
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       # MPPI requires model_dt >= controller period. At 12 Hz the period is
@@ -140,6 +141,13 @@
     robot_base_frame: <prefix>base_footprint
     odom_topic: /<prefix>odom
     navigators: ["navigate_to_pose"]
+    # The Nav2 defaults (10 ms loop, 20 ms server timeout) are too aggressive
+    # for Jetson + multi-container Zenoh scheduling and can cancel FollowPath
+    # while the robot is still executing a valid path.
+    bt_loop_duration: 50
+    default_server_timeout: 500
+    wait_for_service_timeout: 2000
+    default_nav_to_pose_bt_xml: "<nav_to_pose_bt_xml>"
 
 /**/global_costmap:
   global_costmap:
@@ -180,7 +188,9 @@
           raytrace_max_range: 4.5
           raytrace_min_range: 0.20
           inf_is_valid: true
-          expected_update_rate: 0.5
+          # Tolerate a short guarded FAST-LIO/TF recovery. A persistent outage
+          # still marks the costmap stale and stops navigation.
+          expected_update_rate: 1.0
           observation_persistence: 0.0
 
       denoise_layer:
@@ -234,7 +244,7 @@
           raytrace_max_range: 4.5
           raytrace_min_range: 0.20
           inf_is_valid: true
-          expected_update_rate: 0.5
+          expected_update_rate: 1.0
           observation_persistence: 0.0
 
       denoise_layer:

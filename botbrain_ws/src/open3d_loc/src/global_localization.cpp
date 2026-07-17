@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -78,6 +79,34 @@ std::string NormalizeFrameId(std::string frame_id)
         frame_id.erase(frame_id.begin());
     }
     return frame_id;
+}
+
+bool PrepareFpfhCloud(
+    const std::shared_ptr<open3d::geometry::PointCloud> &input,
+    double voxel_size,
+    std::shared_ptr<open3d::geometry::PointCloud> &downsampled,
+    std::shared_ptr<open3d::pipelines::registration::Feature> &features)
+{
+    if (!input || input->IsEmpty() || voxel_size <= 0.0)
+    {
+        return false;
+    }
+
+    auto finite = std::make_shared<open3d::geometry::PointCloud>();
+    *finite = input->RemoveNonFinitePoints(true, true);
+    downsampled = finite->VoxelDownSample(voxel_size);
+    if (!downsampled || downsampled->IsEmpty())
+    {
+        return false;
+    }
+
+    downsampled->EstimateNormals(
+        open3d::geometry::KDTreeSearchParamHybrid(voxel_size * 2.0, 30));
+    downsampled->OrientNormalsToAlignWithDirection();
+    features = open3d::pipelines::registration::ComputeFPFHFeature(
+        *downsampled,
+        open3d::geometry::KDTreeSearchParamHybrid(voxel_size * 5.0, 100));
+    return features && features->Num() == downsampled->points_.size();
 }
 } // namespace
 
@@ -186,6 +215,13 @@ private:
         Eigen::Matrix4d &odom_to_map,
         double &matched_odom_stamp,
         unsigned int &manual_pose_generation);
+    bool ComputeGlobalInitializationCandidate(
+        const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+        unsigned int seed,
+        Eigen::Matrix4d &candidate_odom2map,
+        double &fitness,
+        double &inlier_rmse,
+        double &ransac_fitness);
 
     /// @brief 订阅baselink2odom,即fast_lio的里程计信息
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_baselink2odom_;
@@ -295,6 +331,22 @@ private:
     int large_correction_confirmations_;
     int min_icp_source_points_;
     int min_icp_target_points_;
+
+    bool enable_global_initialization_ = false;
+    double global_voxel_size_ = 0.40;
+    int global_ransac_max_iterations_ = 100000;
+    double global_ransac_confidence_ = 0.999;
+    double global_min_fitness_ = 0.65;
+    double global_max_inlier_rmse_ = 0.30;
+    double global_retry_interval_sec_ = 1.0;
+    int global_initialization_confirmations_ = 2;
+    double global_candidate_consistency_translation_ = 0.35;
+    double global_candidate_consistency_rotation_deg_ = 5.0;
+    double global_candidate_max_age_sec_ = 15.0;
+    int global_min_source_points_ = 100;
+    int global_min_target_points_ = 1000;
+    std::shared_ptr<open3d::geometry::PointCloud> pcd_map_global_;
+    std::shared_ptr<open3d::pipelines::registration::Feature> fpfh_map_global_;
 
     /// @brief source点云最大点数量
     int maxpoints_source_ = 50000;
@@ -452,6 +504,19 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->declare_parameter<double>("max_initialization_rotation_step_deg", 45.0);
     this->declare_parameter<int>("min_icp_source_points", 100);
     this->declare_parameter<int>("min_icp_target_points", 1000);
+    this->declare_parameter<bool>("enable_global_initialization", false);
+    this->declare_parameter<double>("global_voxel_size", 0.40);
+    this->declare_parameter<int>("global_ransac_max_iterations", 100000);
+    this->declare_parameter<double>("global_ransac_confidence", 0.999);
+    this->declare_parameter<double>("global_min_fitness", 0.65);
+    this->declare_parameter<double>("global_max_inlier_rmse", 0.30);
+    this->declare_parameter<double>("global_retry_interval_sec", 1.0);
+    this->declare_parameter<int>("global_initialization_confirmations", 2);
+    this->declare_parameter<double>("global_candidate_consistency_translation", 0.35);
+    this->declare_parameter<double>("global_candidate_consistency_rotation_deg", 5.0);
+    this->declare_parameter<double>("global_candidate_max_age_sec", 15.0);
+    this->declare_parameter<int>("global_min_source_points", 100);
+    this->declare_parameter<int>("global_min_target_points", 1000);
 
     /// 定位阈值
     this->declare_parameter<double>("confidence_loc_th", 0.6);
@@ -519,6 +584,19 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->get_parameter("max_initialization_rotation_step_deg", max_initialization_rotation_step_deg_);
     this->get_parameter("min_icp_source_points", min_icp_source_points_);
     this->get_parameter("min_icp_target_points", min_icp_target_points_);
+    this->get_parameter("enable_global_initialization", enable_global_initialization_);
+    this->get_parameter("global_voxel_size", global_voxel_size_);
+    this->get_parameter("global_ransac_max_iterations", global_ransac_max_iterations_);
+    this->get_parameter("global_ransac_confidence", global_ransac_confidence_);
+    this->get_parameter("global_min_fitness", global_min_fitness_);
+    this->get_parameter("global_max_inlier_rmse", global_max_inlier_rmse_);
+    this->get_parameter("global_retry_interval_sec", global_retry_interval_sec_);
+    this->get_parameter("global_initialization_confirmations", global_initialization_confirmations_);
+    this->get_parameter("global_candidate_consistency_translation", global_candidate_consistency_translation_);
+    this->get_parameter("global_candidate_consistency_rotation_deg", global_candidate_consistency_rotation_deg_);
+    this->get_parameter("global_candidate_max_age_sec", global_candidate_max_age_sec_);
+    this->get_parameter("global_min_source_points", global_min_source_points_);
+    this->get_parameter("global_min_target_points", global_min_target_points_);
     this->get_parameter("confidence_loc_th", confidence_loc_th_);
     this->get_parameter("kf_baselink2map_x", kf_param_x_);
     this->get_parameter("kf_baselink2map_y", kf_param_y_);
@@ -596,6 +674,22 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
         std::max(0.0, std::min(1.0, min_initialization_fitness_)));
     max_initialization_translation_step_ = std::max(max_initialization_translation_step_, 0.01);
     max_initialization_rotation_step_deg_ = std::max(max_initialization_rotation_step_deg_, 0.1);
+    global_voxel_size_ = std::max(global_voxel_size_, 0.05);
+    global_ransac_max_iterations_ = std::max(global_ransac_max_iterations_, 1000);
+    global_ransac_confidence_ = std::max(
+        0.0, std::min(1.0, global_ransac_confidence_));
+    global_min_fitness_ = std::max(0.0, std::min(1.0, global_min_fitness_));
+    global_max_inlier_rmse_ = std::max(global_max_inlier_rmse_, 0.01);
+    global_retry_interval_sec_ = std::max(global_retry_interval_sec_, 0.0);
+    global_initialization_confirmations_ = std::max(
+        global_initialization_confirmations_, 2);
+    global_candidate_consistency_translation_ = std::max(
+        global_candidate_consistency_translation_, 0.05);
+    global_candidate_consistency_rotation_deg_ = std::max(
+        global_candidate_consistency_rotation_deg_, 0.5);
+    global_candidate_max_age_sec_ = std::max(global_candidate_max_age_sec_, 1.0);
+    global_min_source_points_ = std::max(global_min_source_points_, 10);
+    global_min_target_points_ = std::max(global_min_target_points_, 100);
     RCLCPP_INFO(this->get_logger(), "Registered cloud world frame: %s",
                 registered_cloud_world_frame_.c_str());
     RCLCPP_INFO(this->get_logger(),
@@ -617,6 +711,12 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
                 max_icp_translation_step_, max_icp_rotation_step_deg_,
                 large_correction_confirmations_, icp_candidate_max_age_sec_,
                 max_scan_odom_time_skew_sec_, max_icp_inlier_rmse_);
+    RCLCPP_INFO(this->get_logger(),
+                "Global initialization: enabled=%s voxel=%.2fm RANSAC=%d/%.4f quality>=%.2f rmse<=%.2f confirmations=%d",
+                enable_global_initialization_ ? "true" : "false",
+                global_voxel_size_, global_ransac_max_iterations_,
+                global_ransac_confidence_, global_min_fitness_,
+                global_max_inlier_rmse_, global_initialization_confirmations_);
 
     // 读取地图
     std::string path_map = "";
@@ -634,6 +734,28 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
         pcd_map_ori_->PaintUniformColor({1, 0, 0});
     }
     // pcd_map_ori_->PaintUniformColor({1, 0, 0});
+
+    if (enable_global_initialization_)
+    {
+        auto map_for_features =
+            std::make_shared<open3d::geometry::PointCloud>(*pcd_map_ori_);
+        if (!PrepareFpfhCloud(
+                map_for_features, global_voxel_size_,
+                pcd_map_global_, fpfh_map_global_) ||
+            pcd_map_global_->points_.size() <
+                static_cast<std::size_t>(global_min_target_points_))
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Disabling global initialization: map has insufficient FPFH features");
+            enable_global_initialization_ = false;
+        }
+        else
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "Prepared %zu map points for FPFH global initialization",
+                        pcd_map_global_->points_.size());
+        }
+    }
 
     pcd_map_coarse_ = pcd_map_ori_->VoxelDownSample(voxelsize_coarse_);
     pcd_map_coarse_->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(voxelsize_coarse_ * 2, 30));
@@ -727,6 +849,114 @@ bool GloabalLocalization::SnapshotForScan(
     odom_to_map = mat_odom2map_;
     manual_pose_generation = manual_pose_generation_.load();
     return IsRigidTransform(baselink_to_odom);
+}
+
+bool GloabalLocalization::ComputeGlobalInitializationCandidate(
+    const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+    unsigned int seed,
+    Eigen::Matrix4d &candidate_odom2map,
+    double &fitness,
+    double &inlier_rmse,
+    double &ransac_fitness)
+{
+    fitness = 0.0;
+    inlier_rmse = 0.0;
+    ransac_fitness = 0.0;
+    if (!enable_global_initialization_ || !scan || scan->IsEmpty() ||
+        !pcd_map_global_ || pcd_map_global_->IsEmpty() || !fpfh_map_global_)
+    {
+        return false;
+    }
+
+    std::shared_ptr<open3d::geometry::PointCloud> source_global;
+    std::shared_ptr<open3d::pipelines::registration::Feature> source_fpfh;
+    auto scan_for_features =
+        std::make_shared<open3d::geometry::PointCloud>(*scan);
+    if (!PrepareFpfhCloud(
+            scan_for_features, global_voxel_size_,
+            source_global, source_fpfh) ||
+        source_global->points_.size() <
+            static_cast<std::size_t>(global_min_source_points_))
+    {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000,
+            "Global initialization waiting for enough source features (%zu/%d)",
+            source_global ? source_global->points_.size() : 0,
+            global_min_source_points_);
+        return false;
+    }
+
+    const double ransac_distance = global_voxel_size_ * 1.5;
+    const auto edge_checker =
+        open3d::pipelines::registration::CorrespondenceCheckerBasedOnEdgeLength(
+            0.9);
+    const auto distance_checker =
+        open3d::pipelines::registration::CorrespondenceCheckerBasedOnDistance(
+            ransac_distance);
+    std::vector<std::reference_wrapper<const
+        open3d::pipelines::registration::CorrespondenceChecker>> checkers;
+    checkers.push_back(edge_checker);
+    checkers.push_back(distance_checker);
+    const auto ransac = open3d::pipelines::registration::
+        RegistrationRANSACBasedOnFeatureMatching(
+            *source_global, *pcd_map_global_, *source_fpfh,
+            *fpfh_map_global_, true, ransac_distance,
+            open3d::pipelines::registration::
+                TransformationEstimationPointToPoint(false),
+            4, checkers,
+            open3d::pipelines::registration::RANSACConvergenceCriteria(
+                global_ransac_max_iterations_, global_ransac_confidence_),
+            seed);
+    ransac_fitness = ransac.fitness_;
+    if (!IsRigidTransform(ransac.transformation_) ||
+        !std::isfinite(ransac_fitness) || ransac_fitness <= 0.0)
+    {
+        return false;
+    }
+
+    Eigen::Matrix4d candidate = ConstrainMapOdom(ransac.transformation_);
+    auto source_icp = scan->VoxelDownSample(voxelsize_fine_);
+    if (!source_icp || source_icp->points_.size() <
+            static_cast<std::size_t>(min_icp_source_points_))
+    {
+        return false;
+    }
+
+    const auto coarse_icp = pcd_tools::RegistrationIcp(
+        source_icp, pcd_map_fine_, global_voxel_size_ * 2.0,
+        candidate, 1, 60);
+    if (!IsRigidTransform(coarse_icp.transformation_))
+    {
+        return false;
+    }
+    candidate = ConstrainMapOdom(coarse_icp.transformation_ * candidate);
+
+    const auto fine_icp = pcd_tools::RegistrationIcp(
+        source_icp, pcd_map_fine_, voxelsize_fine_ * 2.0,
+        candidate, 1, 40);
+    if (!IsRigidTransform(fine_icp.transformation_))
+    {
+        return false;
+    }
+    candidate = ConstrainMapOdom(fine_icp.transformation_ * candidate);
+    if (!IsRigidTransform(candidate))
+    {
+        return false;
+    }
+
+    const auto evaluation =
+        open3d::pipelines::registration::EvaluateRegistration(
+            *source_icp, *pcd_map_fine_, voxelsize_fine_ * 2.0,
+            candidate);
+    fitness = evaluation.fitness_;
+    inlier_rmse = evaluation.inlier_rmse_;
+    if (!std::isfinite(fitness) || !std::isfinite(inlier_rmse))
+    {
+        return false;
+    }
+
+    candidate_odom2map = candidate;
+    return true;
 }
 
 Eigen::Matrix3d GloabalLocalization::Euler2Matrix3d(const Eigen::Vector3d euler)
@@ -1164,53 +1394,88 @@ void GloabalLocalization::LocalizationInitialize()
             continue;
         }
 
-        obb_map->center_ = mat_baselink2map_cur.block<3, 1>(0, 3);
-        obb_map->R_ = mat_baselink2map_cur.block<3, 3>(0, 0);
-        obb_scan->center_ = mat_baselink2odom_cur.block<3, 1>(0, 3);
-        obb_scan->R_ = mat_baselink2odom_cur.block<3, 3>(0, 0);
-        *map_fine_crop = *pcd_map_fine_->Crop(*obb_map);
-        *target = *map_fine_crop;
-        if (target->points_.size() > static_cast<size_t>(maxpoints_target_))
+        const bool used_global_initialization =
+            enable_global_initialization_ &&
+            iteration_manual_pose_generation == 0;
+        Eigen::Matrix4d raw_correction = Eigen::Matrix4d::Identity();
+        Eigen::Matrix4d candidate_odom2map = Eigen::Matrix4d::Identity();
+        double fitness = 0.0;
+        double inlier_rmse = 0.0;
+        double ransac_fitness = 0.0;
+        unsigned int ransac_seed = 0;
+
+        if (used_global_initialization)
         {
-            target = target->RandomDownSample(
-                static_cast<double>(maxpoints_target_) / target->points_.size());
+            ransac_seed = static_cast<unsigned int>(
+                (current_scan_generation * 2654435761ULL) & 0xffffffffULL);
+            if (!ComputeGlobalInitializationCandidate(
+                    pcd_scan, ransac_seed, candidate_odom2map,
+                    fitness, inlier_rmse, ransac_fitness))
+            {
+                loc_fitness_.store(0.0);
+                consecutive_successes = 0;
+                pending_initialization_candidate = Eigen::Matrix4d::Identity();
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 2000,
+                    "Global initialization did not produce a valid FPFH/RANSAC candidate");
+                std::this_thread::sleep_for(std::chrono::duration<double>(
+                    global_retry_interval_sec_));
+                continue;
+            }
         }
-        source = pcd_scan->Crop(*obb_scan);
-        if (source->points_.size() > static_cast<size_t>(maxpoints_source_))
+        else
         {
-            source = source->RandomDownSample(
-                static_cast<double>(maxpoints_source_) / source->points_.size());
+            obb_map->center_ = mat_baselink2map_cur.block<3, 1>(0, 3);
+            obb_map->R_ = mat_baselink2map_cur.block<3, 3>(0, 0);
+            obb_scan->center_ = mat_baselink2odom_cur.block<3, 1>(0, 3);
+            obb_scan->R_ = mat_baselink2odom_cur.block<3, 3>(0, 0);
+            *map_fine_crop = *pcd_map_fine_->Crop(*obb_map);
+            *target = *map_fine_crop;
+            if (target->points_.size() > static_cast<size_t>(maxpoints_target_))
+            {
+                target = target->RandomDownSample(
+                    static_cast<double>(maxpoints_target_) / target->points_.size());
+            }
+            source = pcd_scan->Crop(*obb_scan);
+            if (source->points_.size() > static_cast<size_t>(maxpoints_source_))
+            {
+                source = source->RandomDownSample(
+                    static_cast<double>(maxpoints_source_) / source->points_.size());
+            }
+
+            if (source->points_.size() < static_cast<size_t>(min_icp_source_points_) ||
+                target->points_.size() < static_cast<size_t>(min_icp_target_points_))
+            {
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 2000,
+                    "LocalizationInitialize: insufficient ICP points (source=%zu/%d target=%zu/%d)",
+                    source->points_.size(), min_icp_source_points_,
+                    target->points_.size(), min_icp_target_points_);
+                loc_fitness_.store(0.0);
+                consecutive_successes = 0;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+
+            source->Transform(current_odom2map);
+            raw_correction = pcd_tools::RegistrationMultiScaleIcp(
+                source, target, voxelsize_fine_, 1, {1, 2, 3});
+            candidate_odom2map = ConstrainMapOdom(
+                raw_correction * current_odom2map);
+            const Eigen::Matrix4d local_effective_correction =
+                candidate_odom2map * current_odom2map.inverse();
+            source->Transform(local_effective_correction);
+            // Evaluate with the same fine-scale correspondence radius used by
+            // normal ICP. A wider radius makes parallel corridor walls appear valid.
+            const auto evaluation =
+                open3d::pipelines::registration::EvaluateRegistration(
+                    *source, *target, voxelsize_fine_ * 2);
+            fitness = evaluation.fitness_;
+            inlier_rmse = evaluation.inlier_rmse_;
         }
 
-        if (source->points_.size() < static_cast<size_t>(min_icp_source_points_) ||
-            target->points_.size() < static_cast<size_t>(min_icp_target_points_))
-        {
-            RCLCPP_WARN_THROTTLE(
-                this->get_logger(), *this->get_clock(), 2000,
-                "LocalizationInitialize: insufficient ICP points (source=%zu/%d target=%zu/%d)",
-                source->points_.size(), min_icp_source_points_,
-                target->points_.size(), min_icp_target_points_);
-            loc_fitness_.store(0.0);
-            consecutive_successes = 0;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            continue;
-        }
-
-        source->Transform(current_odom2map);
-        const Eigen::Matrix4d raw_correction = pcd_tools::RegistrationMultiScaleIcp(
-            source, target, voxelsize_fine_, 1, {1, 2, 3});
-        const Eigen::Matrix4d candidate_odom2map = ConstrainMapOdom(
-            raw_correction * current_odom2map);
         const Eigen::Matrix4d effective_correction =
             candidate_odom2map * current_odom2map.inverse();
-        source->Transform(effective_correction);
-        // Evaluate with the same fine-scale correspondence radius used by
-        // normal ICP. The previous 3x radius inflated fitness in corridors by
-        // counting visibly displaced parallel walls as inliers.
-        const auto evaluation = open3d::pipelines::registration::EvaluateRegistration(
-            *source, *target, voxelsize_fine_ * 2);
-        const double fitness = evaluation.fitness_;
-        const double inlier_rmse = evaluation.inlier_rmse_;
         const double translation_step =
             effective_correction.block<3, 1>(0, 3).norm();
         const double rotation_step_deg = RotationAngleDegrees(
@@ -1221,32 +1486,73 @@ void GloabalLocalization::LocalizationInitialize()
             IsRigidTransform(candidate_odom2map) &&
             std::isfinite(fitness) && std::isfinite(inlier_rmse) &&
             std::isfinite(translation_step) && std::isfinite(rotation_step_deg);
+        const double required_fitness = used_global_initialization
+            ? std::max(min_initialization_fitness_, global_min_fitness_)
+            : min_initialization_fitness_;
+        const double allowed_rmse = used_global_initialization
+            ? std::min(max_icp_inlier_rmse_, global_max_inlier_rmse_)
+            : max_icp_inlier_rmse_;
+        const bool step_is_safe = used_global_initialization ||
+            (translation_step <= max_initialization_translation_step_ &&
+             rotation_step_deg <= max_initialization_rotation_step_deg_);
         const bool safe_initialization_step =
-            valid_result && fitness >= min_initialization_fitness_ &&
-            inlier_rmse <= max_icp_inlier_rmse_ &&
-            translation_step <= max_initialization_translation_step_ &&
-            rotation_step_deg <= max_initialization_rotation_step_deg_;
+            valid_result && fitness >= required_fitness &&
+            inlier_rmse <= allowed_rmse && step_is_safe;
 
         if (!safe_initialization_step)
         {
             loc_fitness_.store(0.0);
             RCLCPP_WARN_THROTTLE(
                 this->get_logger(), *this->get_clock(), 2000,
-                "LocalizationInitialize: rejecting ICP fitness=%.3f rmse=%.3f step=%.3fm/%.2fdeg (min fitness %.3f, max rmse %.3f, max step %.2fm/%.1fdeg)",
-                fitness, inlier_rmse, translation_step, rotation_step_deg,
-                min_initialization_fitness_, max_icp_inlier_rmse_,
-                max_initialization_translation_step_, max_initialization_rotation_step_deg_);
+                "LocalizationInitialize: rejecting %s candidate fitness=%.3f rmse=%.3f RANSAC=%.3f step=%.3fm/%.2fdeg (min fitness %.3f, max rmse %.3f)",
+                used_global_initialization ? "global" : "local",
+                fitness, inlier_rmse, ransac_fitness,
+                translation_step, rotation_step_deg,
+                required_fitness, allowed_rmse);
             consecutive_successes = 0;
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (used_global_initialization)
+            {
+                std::this_thread::sleep_for(std::chrono::duration<double>(
+                    global_retry_interval_sec_));
+            }
+            else
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
             continue;
         }
 
+        if (used_global_initialization)
+        {
+            const double candidate_yaw_deg = std::atan2(
+                candidate_odom2map(1, 0), candidate_odom2map(0, 0)) *
+                180.0 / M_PI;
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Global candidate seed=%u map->odom=(%.3f, %.3f, yaw %.2fdeg) RANSAC=%.3f fitness=%.3f rmse=%.3f",
+                ransac_seed, candidate_odom2map(0, 3),
+                candidate_odom2map(1, 3), candidate_yaw_deg,
+                ransac_fitness, fitness, inlier_rmse);
+        }
+
         const auto candidate_time = std::chrono::steady_clock::now();
+        const double candidate_max_age = used_global_initialization
+            ? global_candidate_max_age_sec_
+            : icp_candidate_max_age_sec_;
+        const double candidate_consistency_translation = used_global_initialization
+            ? global_candidate_consistency_translation_
+            : icp_candidate_consistency_translation_;
+        const double candidate_consistency_rotation = used_global_initialization
+            ? global_candidate_consistency_rotation_deg_
+            : icp_candidate_consistency_rotation_deg_;
+        const int required_confirmations = used_global_initialization
+            ? global_initialization_confirmations_
+            : std::max(2, large_correction_confirmations_);
         const bool pending_is_fresh =
             consecutive_successes > 0 &&
             pending_initialization_time != std::chrono::steady_clock::time_point::min() &&
             std::chrono::duration<double>(candidate_time - pending_initialization_time).count() <=
-                icp_candidate_max_age_sec_;
+                candidate_max_age;
         bool consistent_with_pending = false;
         if (pending_is_fresh && IsRigidTransform(pending_initialization_candidate))
         {
@@ -1255,9 +1561,9 @@ void GloabalLocalization::LocalizationInitialize()
             consistent_with_pending =
                 IsRigidTransform(candidate_delta) &&
                 candidate_delta.block<3, 1>(0, 3).norm() <=
-                    icp_candidate_consistency_translation_ &&
+                    candidate_consistency_translation &&
                 RotationAngleDegrees(candidate_delta.block<3, 3>(0, 0)) <=
-                    icp_candidate_consistency_rotation_deg_;
+                    candidate_consistency_rotation;
         }
 
         if (consistent_with_pending)
@@ -1288,7 +1594,7 @@ void GloabalLocalization::LocalizationInitialize()
         // Do not walk map->odom one frame at a time during initialization. Two
         // independent scan windows must estimate the same absolute candidate
         // within a bounded time before the candidate is committed atomically.
-        if (consecutive_successes >= std::max(2, large_correction_confirmations_))
+        if (consecutive_successes >= required_confirmations)
         {
             bool stale_after_manual_pose = false;
             {
@@ -1319,7 +1625,8 @@ void GloabalLocalization::LocalizationInitialize()
             const double elapsed_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - loc_start).count();
             RCLCPP_INFO(this->get_logger(),
-                        "Localization initialization succeeded: fitness=%.3f, consistent confirmations=%d, map_odom_z=%.3f, map_odom_rp=%.2f/%.2f deg, last iteration=%.1f ms",
+                        "%s localization initialization succeeded: fitness=%.3f, consistent confirmations=%d, map_odom_z=%.3f, map_odom_rp=%.2f/%.2f deg, last iteration=%.1f ms",
+                        used_global_initialization ? "Global" : "Local",
                         fitness, consecutive_successes,
                         pending_initialization_candidate(2, 3),
                         roll_pitch_deg.x(), roll_pitch_deg.y(), elapsed_ms);
@@ -1329,9 +1636,10 @@ void GloabalLocalization::LocalizationInitialize()
         loc_fitness_.store(0.0);
         RCLCPP_INFO_THROTTLE(
             this->get_logger(), *this->get_clock(), 2000,
-            "LocalizationInitialize: holding consistent candidate (%d/%d), fitness=%.3f rmse=%.3f",
-            consecutive_successes, std::max(2, large_correction_confirmations_),
-            fitness, inlier_rmse);
+            "LocalizationInitialize: holding consistent %s candidate (%d/%d), fitness=%.3f rmse=%.3f RANSAC=%.3f",
+            used_global_initialization ? "global" : "local",
+            consecutive_successes, required_confirmations,
+            fitness, inlier_rmse, ransac_fitness);
     }
 }
 

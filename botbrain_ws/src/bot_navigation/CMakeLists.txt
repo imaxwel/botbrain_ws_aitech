@@ -24,17 +24,23 @@ endif()
 install(
   DIRECTORY
     launch
+    behavior_trees
   DESTINATION
     share/${PROJECT_NAME}/
 )
 
 install(PROGRAMS
-  scripts/goal_pose_bridge.py
   scripts/nav2_utils.py
   scripts/waypoint_recorder.py
   scripts/waypoint_navigator.py
   scripts/localization_monitor.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Nav2's bt_navigator handles the namespaced goal_pose topic directly. Remove
+# the obsolete bridge from existing install spaces so it cannot be restarted.
+install(CODE
+  "file(REMOVE \"\$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/${PROJECT_NAME}/goal_pose_bridge.py\")"
 )
 ament_python_install_package(${PROJECT_NAME})
 

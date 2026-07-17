@@ -136,12 +136,12 @@ waypoints:
     z: 0.0
   ug_face_evelator:
     frame: g1_robot/map
-    qw: 0.074185
+    qw: 0.033165
     qx: 0.0
     qy: 0.0
-    qz: 0.997245
-    x: -3.853
-    y: -12.0093
+    qz: 0.99945
+    x: -4.1379
+    y: -11.9329
     z: 0.0
   ug_facegate:
     frame: g1_robot/map

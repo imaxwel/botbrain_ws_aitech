@@ -147,7 +147,33 @@ def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():
     assert "manual_pose_generation = manual_pose_generation_.load();" in source
     assert "manual_pose_generation_.load() == iteration_manual_pose_generation" in source
     assert "Manual pose reset detected during initialization" in source
-    assert "100000" not in source
+    assert "KeepLast(100000)" not in source
+
+
+def test_open3d_initializes_from_current_cloud_without_persisted_pose():
+    source = _read(
+        "botbrain_ws/src/open3d_loc/src/global_localization.cpp")
+    registration = _read(
+        "botbrain_ws/src/open3d_loc/src/open3d_registration/"
+        "open3d_registration.cpp")
+    launch = _read("botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py")
+    config = yaml.safe_load(_read(
+        "botbrain_ws/src/open3d_loc/config/loc_param_g1.yaml"))
+    params = config["global_localization_node"]["ros__parameters"]
+
+    assert 'declare_parameter<bool>("enable_global_initialization", false)' in source
+    assert "PrepareFpfhCloud" in source
+    assert "ComputeGlobalInitializationCandidate" in source
+    assert "RegistrationRANSACBasedOnFeatureMatching(" in source
+    assert "iteration_manual_pose_generation == 0" in source
+    assert "global_initialization_confirmations_" in source
+    assert "RegistrationRANSACBasedOnFeatureMatching" in registration
+    assert "global_ransac_max_iterations_" in source
+    assert "'enable_global_initialization': True" in launch
+    assert params["enable_global_initialization"] is False
+    assert int(params["global_initialization_confirmations"]) >= 2
+    assert "last_localization_pose" not in source
+    assert "last_localization_pose" not in launch
 
 
 def test_g1_localization_locks_corrected_map_to_planar_transform_in_g1_launch():
@@ -216,7 +242,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert global_scan["obstacle_min_range"] > global_scan["raytrace_min_range"]
     assert global_scan["raytrace_max_range"] >= global_scan["obstacle_max_range"]
     assert global_scan["inf_is_valid"] is True
-    assert 0.0 < float(global_scan["expected_update_rate"]) <= 0.5
+    assert 0.5 <= float(global_scan["expected_update_rate"]) <= 1.0
     assert global_costmap["denoise_layer"]["minimal_group_size"] == 2
     global_footprint = ast.literal_eval(global_costmap["footprint"])
     global_padding = float(global_costmap["footprint_padding"])
@@ -234,7 +260,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert local_scan["obstacle_min_range"] > local_scan["raytrace_min_range"]
     assert local_scan["raytrace_max_range"] >= local_scan["obstacle_max_range"]
     assert local_scan["inf_is_valid"] is True
-    assert 0.0 < float(local_scan["expected_update_rate"]) <= 0.5
+    assert 0.5 <= float(local_scan["expected_update_rate"]) <= 1.0
     assert local_costmap["denoise_layer"]["minimal_group_size"] == 2
     local_footprint = ast.literal_eval(local_costmap["footprint"])
     local_padding = float(local_costmap["footprint_padding"])
@@ -258,6 +284,10 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
     assert "initialpose_pub" not in navigator
     assert "goal.pose.pose.position.z = 0.0" in navigator
     assert "wait_for_server(timeout_sec=60.0)" in navigator
+    assert "No fresh {scan_topic} received" in navigator
+    assert "cancel_goal_async" not in navigator
+    assert "status != GoalStatus.STATUS_SUCCEEDED" in navigator
+    assert "sys.exit(1)" in navigator
     assert "Stopping waypoint sequence after navigation failure." in navigator
     for waypoint in waypoints.values():
         assert float(waypoint["z"]) == 0.0
@@ -265,6 +295,34 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
         assert float(waypoint["qy"]) == 0.0
         norm = math.hypot(float(waypoint["qz"]), float(waypoint["qw"]))
         assert math.isclose(norm, 1.0, abs_tol=2e-6)
+
+
+def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
+    params = yaml.safe_load(_read(
+        "botbrain_ws/src/g1_pkg/config/nav2_params.yaml"))
+    planner = params["/**/planner_server"]["ros__parameters"]["GridBased"]
+    controller = params["/**/controller_server"]["ros__parameters"]
+    bt = params["/**/bt_navigator"]["ros__parameters"]
+    tree = _read(
+        "botbrain_ws/src/bot_navigation/behavior_trees/g1_navigate_to_pose.xml")
+    launch = _read("botbrain_ws/src/bot_navigation/launch/nav2.launch.py")
+    cmake = _read("botbrain_ws/src/bot_navigation/CMakeLists.txt")
+
+    assert float(planner["tolerance"]) <= 0.10
+    assert float(controller["general_goal_checker"]["xy_goal_tolerance"]) <= 0.15
+    assert float(controller["progress_checker"]["required_movement_radius"]) <= 0.15
+    assert int(bt["bt_loop_duration"]) >= 20
+    assert int(bt["default_server_timeout"]) >= 200
+    assert int(bt["wait_for_service_timeout"]) >= 1000
+    assert bt["default_nav_to_pose_bt_xml"] == "<nav_to_pose_bt_xml>"
+    assert "<IsPathValid path=\"{path}\"/>" in tree
+    assert "goal_checker_id=\"general_goal_checker\"" in tree
+    assert "<Spin" not in tree
+    assert "<BackUp" not in tree
+    assert "<nav_to_pose_bt_xml>" in launch
+    assert "behavior_trees" in cmake
+    assert "file(REMOVE" in cmake
+    assert "goal_pose_bridge.py" in cmake
 
 
 def test_state_machine_does_not_manage_nav2_utils_as_lifecycle_node():

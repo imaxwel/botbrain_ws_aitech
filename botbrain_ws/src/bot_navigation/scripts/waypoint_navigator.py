@@ -10,16 +10,13 @@ Options:
   --file PATH     waypoints YAML file (default: ~/.ros/nav_waypoints.yaml)
   --robot NAME    robot namespace      (default: g1_robot)
   --loop          repeat the sequence indefinitely
+  --scan-timeout SEC   wait this long for a fresh /scan before sending a goal
 """
 import sys
 import math
 import yaml
 import argparse
 from pathlib import Path
-
-# --- Proximity override: bypass nav2 goal checker for micro-correction deadlocks ---
-NEAR_GOAL_M   = 0.20   # declare success when distance_remaining drops below this (m)
-NEAR_GOAL_SEC = 2.0    # must stay within NEAR_GOAL_M for this many seconds
 
 
 def _default_file() -> Path:
@@ -29,6 +26,7 @@ def _default_file() -> Path:
         return share.parents[3] / 'src' / 'bot_navigation' / 'nav_waypoints.yaml'
     except Exception:
         return Path.home() / '.ros' / 'nav_waypoints.yaml'
+
 
 DEFAULT_FILE = _default_file()
 
@@ -53,22 +51,68 @@ def _load(path: Path) -> dict:
     return (yaml.safe_load(path.read_text()) or {}).get('waypoints', {})
 
 
-def navigate(names: list, db: dict, robot: str, loop: bool) -> None:
+def navigate(
+    names: list,
+    db: dict,
+    robot: str,
+    loop: bool,
+    scan_topic: str,
+    scan_timeout: float,
+    max_scan_age: float,
+    success_distance_limit: float,
+) -> bool:
     import rclpy
-    import time
     from rclpy.node import Node
     from rclpy.action import ActionClient
+    from rclpy.qos import qos_profile_sensor_data
     from nav2_msgs.action import NavigateToPose
     from geometry_msgs.msg import PoseStamped
+    from sensor_msgs.msg import LaserScan
     from action_msgs.msg import GoalStatus
 
     rclpy.init()
     node = Node('waypoint_navigator')
     client = ActionClient(node, NavigateToPose, f'/{robot}/navigate_to_pose')
 
+    last_scan_received = [None]
+    last_scan_stamp = [None]
+
+    def scan_cb(msg: LaserScan):
+        last_scan_received[0] = node.get_clock().now().nanoseconds * 1e-9
+        last_scan_stamp[0] = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+
+    scan_subscription = node.create_subscription(
+        LaserScan,
+        scan_topic,
+        scan_cb,
+        qos_profile_sensor_data,
+    )
+
+    def wait_for_fresh_scan() -> bool:
+        if scan_timeout <= 0.0:
+            return True
+
+        deadline = node.get_clock().now().nanoseconds * 1e-9 + scan_timeout
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.1)
+            now = node.get_clock().now().nanoseconds * 1e-9
+            if last_scan_received[0] is not None and last_scan_stamp[0] is not None:
+                receive_age = now - last_scan_received[0]
+                stamp_age = now - last_scan_stamp[0]
+                if receive_age <= max_scan_age and -0.25 <= stamp_age <= max_scan_age:
+                    return True
+            if now >= deadline:
+                node.get_logger().error(
+                    f'No fresh {scan_topic} received within {scan_timeout:.1f} s. '
+                    'FAST-LIO/TF/costmap is unhealthy; goal was not sent.'
+                )
+                return False
+
     if not client.wait_for_server(timeout_sec=60.0):
         node.get_logger().error('NavigateToPose server not available (60 s timeout)')
-        node.destroy_node(); rclpy.shutdown(); sys.exit(1)
+        node.destroy_node()
+        rclpy.shutdown()
+        return False
 
     def go_to(name: str) -> bool:
         wp = db[name]
@@ -85,32 +129,24 @@ def navigate(names: list, db: dict, robot: str, loop: bool) -> None:
         goal.pose.pose.orientation.z = qz
         goal.pose.pose.orientation.w = qw
 
-        # Proximity override: if nav2 goal checker gets stuck in micro-correction loop
-        # (robot physically can't execute tiny lateral moves after rotation drift),
-        # we declare success independently once distance_remaining stays below
-        # NEAR_GOAL_M for NEAR_GOAL_SEC seconds.
-        near_since    = [None]   # timestamp when robot first entered proximity zone
-        override_done = [False]  # True once proximity override fires
-        gh_ref        = [None]   # goal handle reference for cancellation
+        last_distance = [None]
+        last_feedback_log = [0.0]
 
         def feedback_cb(fb):
-            # Use direct Euclidean distance, NOT distance_remaining (which is path length)
-            cp   = fb.feedback.current_pose.pose.position
-            dx   = cp.x - float(wp['x'])
-            dy   = cp.y - float(wp['y'])
-            dist = math.sqrt(dx * dx + dy * dy)
-            now  = time.time()
-            if dist <= NEAR_GOAL_M:
-                if near_since[0] is None:
-                    near_since[0] = now
-                    print(f'  ≈ Within {dist:.2f} m of goal, proximity hold started...')
-                elif (now - near_since[0] >= NEAR_GOAL_SEC) and not override_done[0]:
-                    override_done[0] = True
-                    print(f'  ✓ Proximity hold complete ({dist:.2f} m), overriding nav2 goal')
-                    gh_ref[0].cancel_goal_async()
-            else:
-                if near_since[0] is not None:
-                    near_since[0] = None  # drifted away, reset hold timer
+            current = fb.feedback.current_pose.pose.position
+            dx = current.x - float(wp['x'])
+            dy = current.y - float(wp['y'])
+            last_distance[0] = math.hypot(dx, dy)
+            now = node.get_clock().now().nanoseconds * 1e-9
+            if now - last_feedback_log[0] >= 1.0:
+                last_feedback_log[0] = now
+                print(
+                    f'  distance={last_distance[0]:.2f} m, '
+                    f'path_remaining={fb.feedback.distance_remaining:.2f} m'
+                )
+
+        if not wait_for_fresh_scan():
+            return False
 
         print(f'→ Navigating to "{name}" (x={wp["x"]:.3f}, y={wp["y"]:.3f})')
         gh_future = client.send_goal_async(goal, feedback_callback=feedback_cb)
@@ -118,35 +154,65 @@ def navigate(names: list, db: dict, robot: str, loop: bool) -> None:
         gh = gh_future.result()
 
         if not gh.accepted:
-            print(f'  ✗ Goal rejected')
+            print('  ✗ Goal rejected')
             return False
 
-        gh_ref[0] = gh
         res_future = gh.get_result_async()
         rclpy.spin_until_future_complete(node, res_future)
 
-        status = res_future.result().status
-        if status == GoalStatus.STATUS_SUCCEEDED or override_done[0]:
-            print(f'  ✓ Reached "{name}"')
-            return True
-        else:
-            print(f'  ✗ Failed to reach "{name}" (status={status})')
+        result = res_future.result()
+        if result is None:
+            print(f'  ✗ Failed to get NavigateToPose result for "{name}"')
             return False
 
+        status = result.status
+        status_names = {
+            GoalStatus.STATUS_SUCCEEDED: 'SUCCEEDED',
+            GoalStatus.STATUS_CANCELED: 'CANCELED',
+            GoalStatus.STATUS_ABORTED: 'ABORTED',
+        }
+        final_distance = last_distance[0]
+        final_text = (
+            f', final_distance={final_distance:.2f} m'
+            if final_distance is not None else ''
+        )
+        if status != GoalStatus.STATUS_SUCCEEDED:
+            status_name = status_names.get(status, str(status))
+            print(f'  ✗ Failed to reach "{name}" ({status_name}{final_text})')
+            return False
+
+        too_far_from_goal = False
+        if final_distance is not None:
+            too_far_from_goal = final_distance > success_distance_limit
+        if too_far_from_goal:
+            print(
+                f'  ✗ Nav2 reported success but "{name}" is still '
+                f'{final_distance:.2f} m away '
+                f'(limit={success_distance_limit:.2f} m)'
+            )
+            return False
+
+        print(f'  ✓ Reached "{name}"{final_text}')
+        return True
+
+    completed = True
     try:
         while True:
             for name in names:
                 if not go_to(name):
                     print('Stopping waypoint sequence after navigation failure.')
-                    return
+                    completed = False
+                    return completed
             if not loop:
                 break
     except KeyboardInterrupt:
         print('\nNavigation interrupted.')
+        completed = False
     finally:
+        node.destroy_subscription(scan_subscription)
         node.destroy_node()
         rclpy.shutdown()
-        sys.exit(0)
+    return completed
 
 
 def main():
@@ -157,6 +223,10 @@ def main():
     p.add_argument('--robot', default='g1_robot')
     p.add_argument('--loop', action='store_true', help='Repeat sequence indefinitely')
     p.add_argument('--list', action='store_true', help='List saved waypoints')
+    p.add_argument('--scan-topic', default='/scan')
+    p.add_argument('--scan-timeout', type=float, default=5.0)
+    p.add_argument('--max-scan-age', type=float, default=1.0)
+    p.add_argument('--success-distance-limit', type=float, default=0.35)
     args = p.parse_args()
 
     db = _load(args.file)
@@ -180,7 +250,18 @@ def main():
         print(f'Available: {sorted(db.keys())}')
         sys.exit(1)
 
-    navigate(args.waypoints, db, args.robot, args.loop)
+    success = navigate(
+        args.waypoints,
+        db,
+        args.robot,
+        args.loop,
+        args.scan_topic,
+        max(0.0, args.scan_timeout),
+        max(0.1, args.max_scan_age),
+        max(0.05, args.success_distance_limit),
+    )
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,55 @@
+<!--
+  Replan only when the goal changes or the current path becomes invalid.
+  Automatic spin and backup recoveries are intentionally omitted because they
+  can increase foot slip and FAST-LIO attitude transients on smooth floors.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="4" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithStableReplanning">
+        <RateController hz="0.5" name="PathValidityRate">
+          <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
+            <Fallback name="ComputePathWhenNeeded">
+              <ReactiveSequence name="KeepValidPath">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose
+                goal="{goal}"
+                path="{path}"
+                planner_id="GridBased"/>
+            </Fallback>
+            <ClearEntireCostmap
+              name="ClearGlobalCostmapContext"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
+          <FollowPath
+            path="{path}"
+            controller_id="FollowPath"
+            goal_checker_id="general_goal_checker"/>
+          <ClearEntireCostmap
+            name="ClearLocalCostmapContext"
+            service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="StationaryRecoveryActions">
+          <Sequence name="ClearCostmaps">
+            <ClearEntireCostmap
+              name="ClearLocalCostmap"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap
+              name="ClearGlobalCostmap"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <Wait wait_duration="2"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

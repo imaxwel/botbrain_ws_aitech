@@ -8,6 +8,12 @@ import yaml
 
 
 def generate_launch_description():
+    bot_navigation_share = get_package_share_directory('bot_navigation')
+    nav_to_pose_bt_xml = os.path.join(
+        bot_navigation_share,
+        'behavior_trees',
+        'g1_navigate_to_pose.xml',
+    )
     launch_dir = os.path.dirname(os.path.abspath(__file__))
     workspace_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(launch_dir)))))
     config_file = os.path.join(workspace_dir, 'robot_config.yaml')
@@ -35,6 +41,10 @@ def generate_launch_description():
     params_file = ReplaceString(
         source_file=params_file,
         replacements={'<back_obstacle_layer>': back_layer_token})
+
+    params_file = ReplaceString(
+        source_file=params_file,
+        replacements={'<nav_to_pose_bt_xml>': nav_to_pose_bt_xml})
 
     use_sim_time = False
     autostart = True
