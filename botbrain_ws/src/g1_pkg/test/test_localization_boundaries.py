@@ -1,3 +1,4 @@
+import ast
 import re
 import json
 import math
@@ -65,6 +66,37 @@ def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
     assert "'--debug-clouds'" not in source
 
 
+def test_g1_laserscan_filters_body_cloud_for_navigation_obstacles():
+    launch = _read("botbrain_ws/src/g1_pkg/launch/pc2ls.launch.py")
+    params = yaml.safe_load(_read(
+        "botbrain_ws/src/g1_pkg/config/pointcloud_to_laserscan_params.yaml"))
+    scan_params = params["pointcloud_to_laserscan_node"]["ros__parameters"]
+
+    assert "('cloud_in', '/cloud_registered_body_1')" in launch
+    assert "('scan', '/scan')" in launch
+    assert "/livox/lidar" not in launch
+    assert "f'{robot_name}/base_footprint'" in launch
+    assert scan_params["target_frame"] == "g1_robot/base_footprint"
+    assert 0.15 <= float(scan_params["min_height"]) <= 0.25
+    assert 1.20 <= float(scan_params["max_height"]) <= 1.50
+    assert float(scan_params["range_min"]) >= 0.40
+    assert float(scan_params["range_max"]) >= 3.0
+    assert float(scan_params["transform_tolerance"]) >= 0.10
+    assert scan_params["use_inf"] is True
+    assert int(scan_params["queue_size"]) >= 5
+    assert "concurrency_level" not in scan_params
+
+    compose_localization_launch = _read(
+        "botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py")
+    generic_localization_launch = _read(
+        "botbrain_ws/src/open3d_loc/launch/open3d_loc_g1.launch.py")
+    assert "('scan', '/scan_loc')" in compose_localization_launch
+    assert "('initialpose', 'initialpose_corrected')" in compose_localization_launch
+    assert "remappings=[('scan', '/scan_loc')]" in generic_localization_launch
+    assert "('/scan', '/scan_loc')" not in compose_localization_launch
+    assert "remappings=[('/scan', '/scan_loc')]" not in generic_localization_launch
+
+
 def test_mapping_disables_unbounded_laser_map_publication():
     config = yaml.safe_load(
         _read("botbrain_ws/src/fast_lio/config/mid360.yaml"))
@@ -74,7 +106,30 @@ def test_mapping_disables_unbounded_laser_map_publication():
     params = config["/**"]["ros__parameters"]
     bridge_params = foxglove["/**"]["ros__parameters"]
     assert params["publish"]["map_en"] is False
+    assert params["pcd_save"]["pcd_save_en"] is False
     assert "/Laser_map_1" not in bridge_params["topic_whitelist"]
+
+
+def test_fast_lio_guard_recovers_early_or_stops_unconfirmed_outputs():
+    source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
+    params = yaml.safe_load(_read(
+        "botbrain_ws/src/fast_lio/config/mid360.yaml"
+    ))["/**"]["ros__parameters"]
+    guard = params["mapping"]
+
+    recovery_points = guard["guard_recovery_min_effective_points"]
+    strict_points = guard["guard_min_effective_points"]
+    unconfirmed_frames = guard["guard_max_unconfirmed_odometry_frames"]
+    max_rejections = guard["guard_max_consecutive_rejections"]
+    assert recovery_points < strict_points
+    assert unconfirmed_frames < max_rejections
+    assert "effct_feat_num >= guard_recovery_min_effective_points" in source
+    assert (
+        "consecutive_guard_rejections <= "
+        "guard_max_unconfirmed_odometry_frames" in source
+    )
+    assert "output latched unhealthy after %d consecutive" in source
+    assert "guard_failure_latched = true;" in source
 
 
 def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():
@@ -152,9 +207,41 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert "observation_queue_length:" not in source
     assert source.count("obstacle_max_range:") == 2
     assert source.count("raytrace_max_range:") == 2
-    global_cloud = params["/**/global_costmap"]["global_costmap"][
-        "ros__parameters"]["obstacle_layer"]["cloud"]
-    assert global_cloud["raytrace_max_range"] >= global_cloud["obstacle_max_range"]
+    global_costmap = params["/**/global_costmap"]["global_costmap"]["ros__parameters"]
+    assert global_costmap["plugins"] == [
+        "static_layer", "obstacle_layer", "denoise_layer", "inflation_layer"]
+    global_scan = global_costmap["obstacle_layer"]["scan"]
+    assert global_scan["topic"] == "/scan"
+    assert global_scan["data_type"] == "LaserScan"
+    assert global_scan["obstacle_min_range"] > global_scan["raytrace_min_range"]
+    assert global_scan["raytrace_max_range"] >= global_scan["obstacle_max_range"]
+    assert global_scan["inf_is_valid"] is True
+    assert 0.0 < float(global_scan["expected_update_rate"]) <= 0.5
+    assert global_costmap["denoise_layer"]["minimal_group_size"] == 2
+    global_footprint = ast.literal_eval(global_costmap["footprint"])
+    global_padding = float(global_costmap["footprint_padding"])
+    global_circumscribed_radius = max(
+        math.hypot(abs(x) + global_padding, abs(y) + global_padding)
+        for x, y in global_footprint)
+    assert global_costmap["inflation_layer"]["inflation_radius"] >= global_circumscribed_radius
+    assert local_costmap["plugins"] == [
+        "obstacle_layer", "denoise_layer", "inflation_layer"]
+    assert float(local_costmap["width"]) >= 8.0
+    assert float(local_costmap["height"]) >= 8.0
+    local_scan = local_costmap["obstacle_layer"]["scan"]
+    assert local_scan["topic"] == "/scan"
+    assert local_scan["data_type"] == "LaserScan"
+    assert local_scan["obstacle_min_range"] > local_scan["raytrace_min_range"]
+    assert local_scan["raytrace_max_range"] >= local_scan["obstacle_max_range"]
+    assert local_scan["inf_is_valid"] is True
+    assert 0.0 < float(local_scan["expected_update_rate"]) <= 0.5
+    assert local_costmap["denoise_layer"]["minimal_group_size"] == 2
+    local_footprint = ast.literal_eval(local_costmap["footprint"])
+    local_padding = float(local_costmap["footprint_padding"])
+    local_circumscribed_radius = max(
+        math.hypot(abs(x) + local_padding, abs(y) + local_padding)
+        for x, y in local_footprint)
+    assert local_costmap["inflation_layer"]["inflation_radius"] >= local_circumscribed_radius
 
 
 def test_waypoints_are_planar_and_never_reanchor_localization():

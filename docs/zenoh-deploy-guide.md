@@ -17,7 +17,7 @@
 
 ## 步骤一：安装 Zenoh 到 botbrain 容器并 commit 镜像
 
-> ⚠️ 以下假设 docker compose 项目目录为 `/data/botbrain_ws/botbrain_project-main`，
+> ⚠️ 以下假设 docker compose 项目目录为 `/data/unitree/botbrain_ws`，
 > 如实际路径不同请替换。
 
 ```bash
@@ -63,7 +63,7 @@ docker images botbotrobotics/botbrain:base   --format "base  → {{.ID}}"
 ## 步骤二：修改 docker-compose.yaml
 
 ```bash
-cd <项目目录>   # 例如 /data/botbrain_ws/botbrain_project-main
+cd <项目目录>   # 例如 /data/unitree/botbrain_ws
 
 # 备份原文件
 cp docker-compose.yaml docker-compose.yaml.bak.zenoh

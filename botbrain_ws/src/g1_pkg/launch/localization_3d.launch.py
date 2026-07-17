@@ -86,7 +86,12 @@ def generate_launch_description():
                 'dis_updatemap':            5.0,    # 3.0→5.0: 降低submap更新频率，一旦漂移不会立即把错误位置固化进submap
             },
         ],
-        remappings=[('initialpose', 'initialpose_corrected')],
+        remappings=[
+            ('initialpose', 'initialpose_corrected'),
+            # Navigation owns /scan as a LaserScan. Keep Open3D's diagnostic
+            # PointCloud2 on a separate topic.
+            ('scan', '/scan_loc'),
+        ],
     )
 
     # Static TFs required by fast_lio + open3d_loc:

@@ -62,12 +62,12 @@ def generate_launch_description():
         executable='global_localization_node',
         name='global_localization_node',
         output='screen',
-        # Remap: the C++ node has a hardcoded /scan PointCloud2 publisher that
-        # collides with pointcloud_to_laserscan's /scan LaserScan. FastDDS
+        # Remap the C++ node's relative "scan" PointCloud2 publisher, which
+        # otherwise collides with pointcloud_to_laserscan's /scan LaserScan. FastDDS
         # tolerates same-name-different-type; rmw_zenoh_cpp does not (topic
         # echo /scan reports "more than one type"). Move to /scan_loc so the
         # standard /scan namespace is left to pcl2scan.
-        remappings=[('/scan', '/scan_loc')],
+        remappings=[('scan', '/scan_loc')],
         parameters=[
             config_file,
             {

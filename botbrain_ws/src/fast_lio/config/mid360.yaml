@@ -7,7 +7,7 @@
     filter_size_map: 0.3   # 匹配参考
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/ug_scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
       lid_topic: "/livox/lidar"
@@ -47,10 +47,18 @@
       guard_max_rotation_correction_deg: 5.0
       # 连续拒帧后允许一次“只修状态、不写地图”的高置信恢复，避免纯 IMU 越漂越远后永久锁死。
       guard_recovery_min_rejections: 5
+      guard_recovery_min_effective_points: 60
       guard_recovery_min_effective_ratio: 0.15
       guard_recovery_max_residual: 0.10
       guard_recovery_max_translation_correction: 0.75
       guard_recovery_max_rotation_correction_deg: 15.0
+      # 最多发布 3 帧未被 LiDAR 确认的纯 IMU 里程计。持续失败时停止 TF，
+      # 让 localization/costmap 超时并停车，而不是继续使用发散位姿。
+      guard_max_unconfirmed_odometry_frames: 3
+      guard_max_consecutive_rejections: 30
+      guard_max_position_norm: 1000.0
+      guard_max_abs_z: 5.0
+      guard_max_velocity_norm: 20.0
       extrinsic_est_en: false  # MID360 LiDAR-to-built-in-IMU extrinsic is fixed
       # LiDAR pose in the MID360 built-in IMU frame (centimetre scale).
       # 1.247 m is the robot sensor height above the floor, NOT this extrinsic.
@@ -68,7 +76,7 @@
       scan_bodyframe_pub_en: true # true: output the point cloud scans in IMU-body-frame
 
     pcd_save:
-      pcd_save_en: false  # 建图时设为 true；定位/导航时设为 false，避免退出时覆盖地图
+      pcd_save_en: false  # 导航安全默认；仅在按 runbook 正式建图时临时改为 true
       interval:
         -1 # how many LiDAR frames saved in each pcd file;
         # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.

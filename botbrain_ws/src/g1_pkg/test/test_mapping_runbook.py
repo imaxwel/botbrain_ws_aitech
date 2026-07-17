@@ -12,12 +12,21 @@ def _runbook():
 def test_mapping_runbook_uses_current_install_and_launch_paths():
     source = _runbook()
 
-    assert "/data/unitree/botbrain_ws" not in source
-    assert "/data/botbrain_ws/botbrain_project-main" in source
+    assert "/data/unitree/botbrain_ws" in source
+    assert "/data/botbrain_ws/botbrain_project-main" not in source
     assert "/botbrain_ws/tools/mapping/shift_pcd_z.py" not in source
     assert "/botbrain_ws/install/g1_pkg/lib/g1_pkg/shift_pcd_z.py" in source
     assert "/botbrain_ws/start_localization.sh" not in source
     assert "grid_map_file:=" in source
+
+
+def test_g1_map_assets_are_not_gitignored():
+    ignore_rules = (
+        PROJECT_ROOT / "botbrain_ws/src/g1_pkg/.gitignore"
+    ).read_text()
+    assert "maps/*.pgm" not in ignore_rules
+    assert "maps/*.yaml" not in ignore_rules
+    assert "maps/*.db" not in ignore_rules
 
 
 def test_mapping_runbook_documents_safe_save_and_editor_semantics():

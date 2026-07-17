@@ -63,43 +63,49 @@ yaw_goal_tolerance: 0.15  # 朝向容差 (rad, ≈ 8.6°)
 
 ## 3. Costmap — 障碍物检测
 
-**位置**：`global_costmap` 和 `local_costmap` 的 `obstacle_layer → cloud`（两处相同，需同步修改）
+**位置**：
+
+- `global_costmap`：`static_layer + obstacle_layer + denoise_layer + inflation_layer`，动态层只接 `/scan`，不要接原始 PointCloud2。
+- `local_costmap`：`obstacle_layer + denoise_layer + inflation_layer`，输入 `/scan`，窗口比全局动态层更适合实时避障。
+- `/scan` 来源：`pointcloud_to_laserscan` 从 `/cloud_registered_body_1` 转到 `<robot_name>/base_footprint` 后过滤生成。
 
 ```yaml
-min_obstacle_height: 0.15   # 点云最低有效高度 (m)
-max_obstacle_height: 1.30   # 点云最高有效高度 (m)
-obstacle_range: 3.0         # 标记障碍物的最大距离 (m)
-raytrace_range: 3.0         # 清除旧障碍的光线追踪距离 (m)
-observation_persistence: 0.0  # 障碍物记忆时间 (s)，0 = 实时清除
+obstacle_min_range: 0.45    # 近身回波不标记为障碍，避免腿部/机身/地面噪点
+obstacle_max_range: 3.0     # 标记障碍物的最大距离 (m)
+raytrace_min_range: 0.20    # 近距离开始允许清除
+raytrace_max_range: 4.5     # 清除旧障碍的光线追踪距离 (m)
+inf_is_valid: true          # /scan 的 Inf 空方向也作为清除射线
+expected_update_rate: 0.5  # 超过 0.5s 无扫描时将障碍层标记为非 current
+observation_persistence: 0.0  # 不缓存旧观测；已标记格子仍依赖 raytrace 清除
 ```
 
 | 场景 | 建议调整 |
 |------|---------|
-| 地面不平整（斜坡/地毯），地面点干扰导航 | `min_obstacle_height: 0.20` |
-| 平整地面，想检测更低障碍物（门槛等） | `min_obstacle_height: 0.10` |
-| 有高障碍物（货架顶板） | `max_obstacle_height: 2.0` |
-| 动态障碍（行人）残影残留 | `observation_persistence: 0.5 ~ 1.0` |
-| 地图出现幽灵障碍物 | 确认 `raytrace_range ≥ obstacle_range` |
+| 机器人脚边/附近大片发黑 | 增大 `/scan range_min` 或 `obstacle_min_range`，例如 `0.50` |
+| 地面点干扰导航 | 提高 `pointcloud_to_laserscan.min_height`，例如 `0.25` |
+| 检测不到低矮障碍物 | 降低 `pointcloud_to_laserscan.min_height`，例如 `0.10~0.15` |
+| 动态障碍（行人）残影残留 | 保持 `observation_persistence: 0.0`，检查 `/scan` 是否有 `Inf` 空方向以及 TF 是否丢帧 |
+| 地图出现幽灵障碍物 | 确认 `raytrace_max_range ≥ obstacle_max_range`，global/local 都使用 `/scan` 清除，不要接原始 PointCloud2 |
 
 ---
 
 ## 4. Costmap — 膨胀层
 
-**位置**：`global_costmap` 和 `local_costmap` 的 `inflation_layer`（两处相同，需同步修改）
+**位置**：`global_costmap` 和 `local_costmap` 的 `inflation_layer`
 
 ```yaml
-inflation_radius: 0.4     # 障碍物膨胀半径 (m)
-cost_scaling_factor: 10.0 # 代价衰减速率（越大衰减越快，可通行区域越宽）
+inflation_radius: 0.35    # 覆盖 G1 padding 后约 0.34m 的外接半径
+cost_scaling_factor: 12.0 # 衰减更快，减少中低代价格形成的宽黑圈
 ```
 
 | 场景 | 建议调整 |
 |------|---------|
-| 走廊太窄，机器人频繁因路径代价过高而停止 | `inflation_radius: 0.3` |
+| 走廊太窄，机器人频繁因路径代价过高而停止 | 先提高 `cost_scaling_factor`；不要把 `inflation_radius` 降到 footprint 外接半径以下 |
 | 机器人经常靠近墙壁/障碍物 | `inflation_radius: 0.5 ~ 0.6` |
 | 想让机器人优先走中间通道 | `cost_scaling_factor: 5.0`（衰减更慢，远离障碍更强） |
 | 机器人绕路太多 | `cost_scaling_factor: 15.0`（衰减更快，近障碍代价低） |
 
-> 💡 `inflation_radius` 是**最常调整**的参数，直接决定机器人能否通过窄通道
+> 对非圆形 footprint，`inflation_radius` 应覆盖机器人外接半径。窄通道优先调整 `cost_scaling_factor`，避免 SmacPlanner 失去可靠的 footprint 碰撞检查范围。
 
 ---
 
@@ -224,13 +230,13 @@ ros2 param set /g1_robot/controller_server FollowPath.PathAlignCritic.cost_weigh
 
 | 症状 | 首先检查 | 调整方向 |
 |------|---------|---------|
-| 走廊通不过，规划失败 | `inflation_radius` | 降低到 0.3 |
+| 走廊通不过，规划失败 | `cost_scaling_factor`、静态地图噪点 | 先提高衰减系数并修图，保持 `inflation_radius >= 0.35` |
 | 路径绕了很大的弯 | `cost_travel_multiplier` | 降低到 15~20 |
 | 速度太慢 | `vx_max` | 提高到 0.5 |
 | 启动/停止太猛，机器人不稳 | `ax_max`、`ax_min` | 降低绝对值 |
 | 到达目标后位置偏差大 | `xy_goal_tolerance` | 降低到 0.05 |
 | 地图上有幽灵障碍物 | `observation_persistence` | 设为 0.0 |
-| 行人走过后障碍残留 | `observation_persistence` | 设为 0.5~1.0 |
+| 行人走过后障碍残留 | `/scan` 清除射线、TF、`observation_persistence` | 确保 `use_inf/inf_is_valid=true`、TF 不丢帧，并保持 0.0 |
 | 路径跟随偏差大、蛇形 | `PathAlignCritic.cost_weight` | 提高到 18~22 |
 | 接近目标时频繁旋转 | `GoalAngleCritic.threshold_to_consider` | 降低到 0.3 |
 | Recovery 行为频繁触发 | `failure_tolerance` | 提高到 0.5 |

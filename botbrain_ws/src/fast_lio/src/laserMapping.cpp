@@ -86,11 +86,14 @@ bool imu_flip_yz = false;
 bool lidar_update_guard_enable = true;
 int imu_queue_depth = 2000, lidar_queue_depth = 100;
 int guard_min_effective_points = 100, consecutive_guard_rejections = 0;
-int guard_recovery_min_rejections = 5;
+int guard_recovery_min_rejections = 5, guard_recovery_min_effective_points = 60;
+int guard_max_unconfirmed_odometry_frames = 3, guard_max_consecutive_rejections = 30;
 double guard_min_effective_ratio = 0.10, guard_max_residual = 0.15;
 double guard_max_translation_correction = 0.25, guard_max_rotation_correction_deg = 5.0;
 double guard_recovery_min_effective_ratio = 0.15, guard_recovery_max_residual = 0.10;
 double guard_recovery_max_translation_correction = 0.75, guard_recovery_max_rotation_correction_deg = 15.0;
+double guard_max_position_norm = 1000.0, guard_max_abs_z = 5.0, guard_max_velocity_norm = 20.0;
+bool guard_failure_latched = false;
 double last_timing_log_time = -1.0;
 /**************************/
 
@@ -165,6 +168,14 @@ bool IsFiniteState(const state_ikfom &state)
            state.bg.allFinite() && state.ba.allFinite() &&
            state.offset_T_L_I.allFinite() && state.rot.coeffs().allFinite() &&
            state.offset_R_L_I.coeffs().allFinite() && state.grav.vec.allFinite();
+}
+
+bool IsPlausibleState(const state_ikfom &state)
+{
+    return IsFiniteState(state) &&
+           state.pos.norm() <= guard_max_position_norm &&
+           std::abs(state.pos.z()) <= guard_max_abs_z &&
+           state.vel.norm() <= guard_max_velocity_norm;
 }
 
 void RefreshStateOutputs()
@@ -940,10 +951,16 @@ public:
         this->declare_parameter<double>("mapping.guard_max_translation_correction", 0.25);
         this->declare_parameter<double>("mapping.guard_max_rotation_correction_deg", 5.0);
         this->declare_parameter<int>("mapping.guard_recovery_min_rejections", 5);
+        this->declare_parameter<int>("mapping.guard_recovery_min_effective_points", 60);
         this->declare_parameter<double>("mapping.guard_recovery_min_effective_ratio", 0.15);
         this->declare_parameter<double>("mapping.guard_recovery_max_residual", 0.10);
         this->declare_parameter<double>("mapping.guard_recovery_max_translation_correction", 0.75);
         this->declare_parameter<double>("mapping.guard_recovery_max_rotation_correction_deg", 15.0);
+        this->declare_parameter<int>("mapping.guard_max_unconfirmed_odometry_frames", 3);
+        this->declare_parameter<int>("mapping.guard_max_consecutive_rejections", 30);
+        this->declare_parameter<double>("mapping.guard_max_position_norm", 1000.0);
+        this->declare_parameter<double>("mapping.guard_max_abs_z", 5.0);
+        this->declare_parameter<double>("mapping.guard_max_velocity_norm", 20.0);
         this->declare_parameter<double>("preprocess.blind", 0.01);
         this->declare_parameter<int>("preprocess.lidar_type", AVIA);
         this->declare_parameter<int>("preprocess.scan_line", 16);
@@ -990,10 +1007,16 @@ public:
         this->get_parameter_or<double>("mapping.guard_max_translation_correction", guard_max_translation_correction, 0.25);
         this->get_parameter_or<double>("mapping.guard_max_rotation_correction_deg", guard_max_rotation_correction_deg, 5.0);
         this->get_parameter_or<int>("mapping.guard_recovery_min_rejections", guard_recovery_min_rejections, 5);
+        this->get_parameter_or<int>("mapping.guard_recovery_min_effective_points", guard_recovery_min_effective_points, 60);
         this->get_parameter_or<double>("mapping.guard_recovery_min_effective_ratio", guard_recovery_min_effective_ratio, 0.15);
         this->get_parameter_or<double>("mapping.guard_recovery_max_residual", guard_recovery_max_residual, 0.10);
         this->get_parameter_or<double>("mapping.guard_recovery_max_translation_correction", guard_recovery_max_translation_correction, 0.75);
         this->get_parameter_or<double>("mapping.guard_recovery_max_rotation_correction_deg", guard_recovery_max_rotation_correction_deg, 15.0);
+        this->get_parameter_or<int>("mapping.guard_max_unconfirmed_odometry_frames", guard_max_unconfirmed_odometry_frames, 3);
+        this->get_parameter_or<int>("mapping.guard_max_consecutive_rejections", guard_max_consecutive_rejections, 30);
+        this->get_parameter_or<double>("mapping.guard_max_position_norm", guard_max_position_norm, 1000.0);
+        this->get_parameter_or<double>("mapping.guard_max_abs_z", guard_max_abs_z, 5.0);
+        this->get_parameter_or<double>("mapping.guard_max_velocity_norm", guard_max_velocity_norm, 20.0);
         this->get_parameter_or<double>("preprocess.blind", p_pre->blind, 0.01);
         this->get_parameter_or<int>("preprocess.lidar_type", p_pre->lidar_type, AVIA);
         this->get_parameter_or<int>("preprocess.scan_line", p_pre->N_SCANS, 16);
@@ -1013,6 +1036,16 @@ public:
         guard_min_effective_points = std::max(1, guard_min_effective_points);
         guard_min_effective_ratio = std::max(0.0, std::min(1.0, guard_min_effective_ratio));
         guard_recovery_min_rejections = std::max(1, guard_recovery_min_rejections);
+        guard_recovery_min_effective_points = std::max(
+            1, std::min(guard_min_effective_points, guard_recovery_min_effective_points));
+        guard_max_unconfirmed_odometry_frames = std::max(
+            0, guard_max_unconfirmed_odometry_frames);
+        guard_max_consecutive_rejections = std::max(
+            guard_max_unconfirmed_odometry_frames + 1,
+            guard_max_consecutive_rejections);
+        guard_max_position_norm = std::max(10.0, guard_max_position_norm);
+        guard_max_abs_z = std::max(1.0, guard_max_abs_z);
+        guard_max_velocity_norm = std::max(1.0, guard_max_velocity_norm);
         guard_recovery_min_effective_ratio = std::max(
             guard_min_effective_ratio,
             std::min(1.0, guard_recovery_min_effective_ratio));
@@ -1024,12 +1057,22 @@ public:
             guard_max_translation_correction, guard_recovery_max_translation_correction);
         guard_recovery_max_rotation_correction_deg = std::max(
             guard_max_rotation_correction_deg, guard_recovery_max_rotation_correction_deg);
+        consecutive_guard_rejections = 0;
+        guard_failure_latched = false;
 
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
         RCLCPP_INFO(this->get_logger(),
                     "FAST-LIO input: imu=%s flip_yz=%s imu_q=%d lidar_q=%d guard=%s",
                     imu_topic.c_str(), imu_flip_yz ? "true" : "false", imu_queue_depth,
                     lidar_queue_depth, lidar_update_guard_enable ? "true" : "false");
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[FAST_LIO_GUARD] recovery_points=%d unconfirmed_odom_frames=%d "
+            "max_rejections=%d bounds=%.1fm/%.1fm-z/%.1fmps",
+            guard_recovery_min_effective_points,
+            guard_max_unconfirmed_odometry_frames,
+            guard_max_consecutive_rejections,
+            guard_max_position_norm, guard_max_abs_z, guard_max_velocity_norm);
         RCLCPP_INFO(this->get_logger(),
                     "[FAST_LIO_PCD] enabled=%s path=%s interval=%d laser_map=%s",
                     pcd_save_en ? "true" : "false", map_file_path.c_str(),
@@ -1125,6 +1168,15 @@ private:
     {
         if (sync_packages(Measures))
         {
+            if (guard_failure_latched)
+            {
+                RCLCPP_ERROR_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 5000,
+                    "[FAST_LIO_GUARD] output remains latched unhealthy; restart fast_lio "
+                    "after checking LiDAR/IMU timing and effective points");
+                return;
+            }
+
             // Compute timing health on every scan, not only when printing the
             // throttled diagnostic. A finite ICP result after an IMU dropout can
             // still be geometrically plausible in a corridor, yet its deskew and
@@ -1205,10 +1257,12 @@ private:
             // of leaving the EKF permanently poisoned for every following frame.
             state_ikfom state_before_imu = kf.get_x();
             auto covariance_before_imu = kf.get_P();
-            if (!IsFiniteState(state_before_imu) || !covariance_before_imu.allFinite())
+            if (!IsPlausibleState(state_before_imu) || !covariance_before_imu.allFinite())
             {
+                guard_failure_latched = true;
                 RCLCPP_ERROR(this->get_logger(),
-                             "[FAST_LIO_GUARD] EKF was already non-finite before IMU propagation; scan and map insertion skipped");
+                             "[FAST_LIO_GUARD] EKF was non-finite or outside safety bounds "
+                             "before IMU propagation; output latched unhealthy");
                 return;
             }
             const ImuProcess::PropagationCheckpoint imu_checkpoint =
@@ -1216,7 +1270,7 @@ private:
             p_imu->Process(Measures, kf, feats_undistort);
             state_point = kf.get_x();
             auto covariance_after_imu = kf.get_P();
-            if (!IsFiniteState(state_point) || !covariance_after_imu.allFinite())
+            if (!IsPlausibleState(state_point) || !covariance_after_imu.allFinite())
             {
                 kf.change_x(state_before_imu);
                 kf.change_P(covariance_before_imu);
@@ -1224,8 +1278,9 @@ private:
                 feats_undistort->clear();
                 state_point = state_before_imu;
                 RefreshStateOutputs();
+                guard_failure_latched = true;
                 RCLCPP_ERROR(this->get_logger(),
-                             "[FAST_LIO_GUARD] non-finite IMU propagation rolled back; scan and map insertion skipped");
+                             "[FAST_LIO_GUARD] unsafe IMU propagation rolled back; output latched unhealthy");
                 return;
             }
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
@@ -1314,10 +1369,11 @@ private:
             double solve_H_time = 0;
             state_ikfom predicted_state = kf.get_x();
             auto predicted_cov = kf.get_P();
-            if (!IsFiniteState(predicted_state) || !predicted_cov.allFinite())
+            if (!IsPlausibleState(predicted_state) || !predicted_cov.allFinite())
             {
+                guard_failure_latched = true;
                 RCLCPP_ERROR(this->get_logger(),
-                             "[FAST_LIO_GUARD] IMU-predicted state/covariance is non-finite; skipping LiDAR update and map insertion");
+                             "[FAST_LIO_GUARD] IMU-predicted state is unsafe; output latched unhealthy");
                 return;
             }
 
@@ -1337,7 +1393,7 @@ private:
                 rotation_correction_deg = Log(rotation_delta).norm() * 180.0 / PI_M;
             }
 
-            const bool finite_update = IsFiniteState(updated_state) && updated_cov.allFinite() &&
+            const bool finite_update = IsPlausibleState(updated_state) && updated_cov.allFinite() &&
                                        std::isfinite(res_mean_last) &&
                                        std::isfinite(translation_correction) &&
                                        std::isfinite(rotation_correction_deg);
@@ -1358,7 +1414,7 @@ private:
             // to the ikd-tree/PCD; the following normal frame must pass the strict gate
             // before map writing resumes.
             const bool recovery_geometry_ok =
-                enough_effective_points &&
+                effct_feat_num >= guard_recovery_min_effective_points &&
                 effective_ratio >= guard_recovery_min_effective_ratio &&
                 res_mean_last <= guard_recovery_max_residual;
             const bool recovery_correction_ok =
@@ -1389,15 +1445,36 @@ private:
                             guard_max_residual, guard_max_translation_correction,
                             guard_max_rotation_correction_deg);
 
-                // Keep odometry continuity, but do not publish a world-frame scan
-                // whose pose was not LiDAR-confirmed. Otherwise Open3D (and a
-                // Foxglove decay trail) can consume/display a rejected turn and
-                // turn one guarded FAST-LIO failure into a second localization jump.
-                // The body-frame diagnostic cloud is still safe because it carries
-                // no untrusted world pose. Map insertion and PCD saving are skipped.
-                publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
-                if (path_en)
-                    publish_path(pubPath_);
+                if (consecutive_guard_rejections >= guard_max_consecutive_rejections)
+                {
+                    guard_failure_latched = true;
+                    RCLCPP_ERROR(
+                        this->get_logger(),
+                        "[FAST_LIO_GUARD] output latched unhealthy after %d consecutive "
+                        "rejected scans; suppressing odometry, TF and point clouds until "
+                        "fast_lio is restarted",
+                        consecutive_guard_rejections);
+                    return;
+                }
+
+                // Bridge only a short transient with IMU-predicted odometry. Once
+                // the configured limit is exceeded, stop TF/odometry so Nav2's
+                // sensor freshness checks stop the robot instead of consuming an
+                // unconstrained IMU trajectory. The body cloud remains diagnostic.
+                if (consecutive_guard_rejections <= guard_max_unconfirmed_odometry_frames)
+                {
+                    publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+                    if (path_en)
+                        publish_path(pubPath_);
+                }
+                else
+                {
+                    RCLCPP_ERROR_THROTTLE(
+                        this->get_logger(), *this->get_clock(), 2000,
+                        "[FAST_LIO_GUARD] suppressing unconfirmed odometry/TF after %d "
+                        "rejected scans",
+                        consecutive_guard_rejections);
+                }
                 if (scan_pub_en && scan_body_pub_en)
                     publish_frame_body(pubLaserCloudFull_body_);
                 return;

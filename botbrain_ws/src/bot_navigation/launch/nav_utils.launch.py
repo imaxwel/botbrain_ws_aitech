@@ -1,5 +1,4 @@
 import os
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import Node
 import yaml
@@ -7,7 +6,9 @@ import yaml
 
 def generate_launch_description():
     launch_dir = os.path.dirname(os.path.abspath(__file__))
-    workspace_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(launch_dir)))))
+    workspace_dir = os.path.abspath(
+        os.path.join(launch_dir, '../../../../..')
+    )
     config_file = os.path.join(workspace_dir, 'robot_config.yaml')
     with open(config_file, 'r') as f:
         config = yaml.safe_load(f)['robot_configuration']
