@@ -11,6 +11,8 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDir>
+#include <QTimer>
+#include <QFileInfo>
 #include <visualization_msgs/MarkerArray.h>
 
 namespace ros_map_edit
@@ -33,6 +35,22 @@ MapEditPanel::~MapEditPanel()
 void MapEditPanel::onInitialize()
 {
   status_label_->setText("Ready — please open a map file");
+
+  // Auto-load map from ROS param after map_server is ready
+  QTimer::singleShot(1500, this, [this]() {
+    ros::NodeHandle nh;
+    std::string map_file;
+    if (nh.getParam("/rviz/map_file", map_file) || nh.getParam("/map_server/map_file", map_file)) {
+      if (!map_file.empty()) {
+        current_map_file_ = QString::fromStdString(map_file);
+        clearAllMessages();
+        loadAndPublishMap(map_file);
+        QString display_name = QFileInfo(current_map_file_).fileName();
+        current_map_label_->setText("Current map: " + display_name);
+        current_map_label_->setStyleSheet("QLabel { color: #007700; font-weight: bold; padding: 5px; }");
+      }
+    }
+  });
 }
 
 void MapEditPanel::setupUI()
