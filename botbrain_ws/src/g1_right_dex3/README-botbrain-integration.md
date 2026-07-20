@@ -87,9 +87,12 @@ docker exec -it g1_robot_dev_dex3 bash -c \
   "source /botbrain_ws/install/setup.bash && \
    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
    ros2 launch unitree_g1_dex3_stack apriltag_button_press.launch.py dry_run:=false"
-```
 
+看到下面这四行后证明启动完成，可以按g进行按压：
+[v4l2_apriltag_trigger.py-6] [INFO] [1784512587.072704168] [v4l2_apriltag_trigger]: [v4l2_apriltag_trigger] Cached shoulder origin: (0.004, -0.100, 0.248)
+[v4l2_apriltag_trigger.py-6] [INFO] [1784512591.731864356] [v4l2_apriltag_trigger]: [v4l2_apriltag_trigger] buffer ready from file (35 frames, 5.1s)
 ---
+```
 
 ## 4. 编译详解
 

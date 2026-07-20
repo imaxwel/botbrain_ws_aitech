@@ -29,23 +29,36 @@ def test_open3d_directory_is_an_overridable_cache_default():
 def test_localization_launch_keeps_pcd_and_grid_map_arguments_separate():
     source = _read("botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py")
 
-    assert "DeclareLaunchArgument('map_file', default_value=default_pcd_path)" in source
-    assert "DeclareLaunchArgument('grid_map_file', default_value=default_grid_yaml)" in source
+    assert "DeclareLaunchArgument('map_scene', default_value='ug')" in source
+    assert "DeclareLaunchArgument('map_file', default_value='')" in source
+    assert "DeclareLaunchArgument('grid_map_file', default_value='')" in source
     assert "'path_map':                 LaunchConfiguration('map_file')" in source
     assert "'yaml_filename': LaunchConfiguration('grid_map_file')" in source
     assert "maps_dir = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps')" in source
-    assert "default_grid_yaml = os.path.join(maps_dir, 'accumulated.yaml')" in source
-    assert "OpaqueFunction(function=_validate_map_pair)" in source
+    assert "f'{scene}_scans.pcd'" in source
+    assert "f'{scene}.yaml'" in source
+    assert "SetLaunchConfiguration('map_file', str(resolved_pcd))" in source
+    assert "SetLaunchConfiguration('grid_map_file', str(resolved_grid))" in source
+    assert "Map selection: scene=" in source
     assert "3D/2D map scene mismatch" in source
+    assert "using_scene_defaults = not map_file and not grid_map_file" in source
+    assert "Requested map_scene={scene}" in source
+    assert "Map scene {scene!r} is incomplete" in source
+    assert "resolved_pcd.stat().st_size == 0" in source
+    assert "image_path.suffix.lower() != '.pgm'" in source
 
 
-def test_active_3d_and_2d_maps_resolve_to_the_same_scene():
+def test_default_map_scene_files_are_a_complete_matching_set():
     maps = PROJECT_ROOT / "botbrain_ws/src/g1_pkg/maps"
-    pcd = (maps / "scans.pcd").resolve(strict=True)
-    grid = (maps / "accumulated.yaml").resolve(strict=True)
+    pcd = maps / "ug_scans.pcd"
+    grid = maps / "ug.yaml"
+    grid_data = yaml.safe_load(grid.read_text(encoding="utf-8"))
+    image = (grid.parent / grid_data["image"]).resolve(strict=True)
 
-    pcd_scene = pcd.stem[:-6] if pcd.stem.endswith("_scans") else pcd.stem
-    assert pcd_scene == grid.stem
+    assert pcd.resolve(strict=True).stem == "ug_scans"
+    assert grid.resolve(strict=True).stem == "ug"
+    assert image.stem == "ug"
+    assert image.suffix.lower() == ".pgm"
 
 
 def test_localization_service_starts_the_installed_launch_file_directly():
@@ -56,8 +69,17 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     assert "source /opt/ros/humble/setup.bash" in source
     assert "source /botbrain_ws/install/setup.bash" in source
     assert "exec ros2 launch g1_pkg localization_3d.launch.py" in source
+    assert "MAP_SCENE: ${MAP_SCENE:-ug}" in source
     compose = yaml.safe_load(source)
     assert compose["services"]["localization"]["restart"] == "no"
+    assert compose["services"]["localization"]["environment"]["MAP_SCENE"] == (
+        "${MAP_SCENE:-ug}"
+    )
+    localization_command = compose["services"]["localization"]["command"][-1]
+    assert localization_command.count("MAP_SCENE") == 1
+    assert 'map_scene:="$${MAP_SCENE}"' in localization_command
+    assert "map_file:=" not in localization_command
+    assert "grid_map_file:=" not in localization_command
     assert compose["services"]["navigation"]["restart"] == "no"
     assert "navigation_preflight.py" in compose["services"]["navigation"]["command"][-1]
 

@@ -1,9 +1,0 @@
-image: office1.pgm
-resolution: 0.05
-origin:
-- -2.912879705429077
-- -0.9709420800209045
-- 0.0
-negate: 0
-occupied_thresh: 0.65
-free_thresh: 0.25
