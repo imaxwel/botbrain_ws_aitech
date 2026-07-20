@@ -193,9 +193,15 @@ def generate_launch_description():
                 # localization PCD. Manual /initialpose remains a fallback.
                 'enable_global_initialization': True,
                 'global_voxel_size':          0.40,
+                # Cycle through fine/medium/coarse FPFH descriptions so map
+                # selection is not tied to one building scale or wall spacing.
+                'global_voxel_sizes':         [0.25, 0.40, 0.60],
                 'global_ransac_max_iterations': 100000,
                 'global_ransac_confidence':   0.999,
-                'global_min_ransac_fitness':  0.15,
+                # RANSAC is only a seed generator. Reject zero-overlap results,
+                # then let fine ICP quality and three consistent confirmations
+                # decide whether the absolute pose is safe to publish.
+                'global_min_ransac_fitness':  0.0,
                 'global_min_fitness':         0.65,
                 'global_max_inlier_rmse':     0.30,
                 'global_retry_interval_sec':  1.0,
@@ -205,7 +211,9 @@ def generate_launch_description():
                 'global_candidate_max_age_sec': 30.0,
                 'global_min_source_points':   100,
                 'global_min_target_points':   1000,
-                'global_scan_window_size':    3,
+                # A short rolling world-frame window adds corners observed
+                # during a slow turn; voxel filtering removes stationary duplicates.
+                'global_scan_window_size':    10,
                 'save_scan':                False,
                 'maxpoints_source':         80000,
                 'maxpoints_target':         400000,

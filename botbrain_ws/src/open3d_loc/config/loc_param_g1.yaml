@@ -59,9 +59,12 @@ global_localization_node:
     # local ICP. No previous pose or fixed map start is required.
     enable_global_initialization: false
     global_voxel_size: 0.40
+    global_voxel_sizes: [0.25, 0.40, 0.60]
     global_ransac_max_iterations: 100000
     global_ransac_confidence: 0.999
-    global_min_ransac_fitness: 0.15
+    # Raw RANSAC only seeds ICP. The final 0.65 fitness / 0.30 m RMSE gates and
+    # three consistent confirmations remain responsible for pose acceptance.
+    global_min_ransac_fitness: 0.0
     global_min_fitness: 0.65
     global_max_inlier_rmse: 0.30
     global_retry_interval_sec: 1.0
@@ -71,7 +74,7 @@ global_localization_node:
     global_candidate_max_age_sec: 30.0
     global_min_source_points: 100
     global_min_target_points: 1000
-    global_scan_window_size: 3
+    global_scan_window_size: 10
 
     # G1: Kalman filter -- MUST use slash (kf_baselink2map/x).
     # C++ declares "kf_baselink2map/x", ROS2 nesting -> "kf_baselink2map.x" (mismatch).

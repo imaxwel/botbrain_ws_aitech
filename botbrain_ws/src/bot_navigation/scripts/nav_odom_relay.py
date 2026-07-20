@@ -11,7 +11,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 
-def _planar_quaternion(quaternion):
+def _yaw_from_quaternion(quaternion):
     norm = math.sqrt(
         quaternion.x * quaternion.x + quaternion.y * quaternion.y +
         quaternion.z * quaternion.z + quaternion.w * quaternion.w)
@@ -25,7 +25,18 @@ def _planar_quaternion(quaternion):
         2.0 * (w * z + x * y),
         1.0 - 2.0 * (y * y + z * z),
     )
+    return yaw
+
+
+def _planar_quaternion(quaternion):
+    yaw = _yaw_from_quaternion(quaternion)
+    if yaw is None:
+        return None
     return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
+
+
+def _shortest_angle(angle):
+    return math.atan2(math.sin(angle), math.cos(angle))
 
 
 class NavOdomRelay(Node):
@@ -37,6 +48,11 @@ class NavOdomRelay(Node):
         self.declare_parameter('output_frame', 'g1_robot/odom')
         self.declare_parameter('child_frame', 'g1_robot/base_footprint')
         self.declare_parameter('twist_timeout_sec', 0.5)
+        self.declare_parameter('derive_twist_from_pose', True)
+        self.declare_parameter('derived_twist_min_dt_sec', 0.02)
+        self.declare_parameter('derived_twist_max_dt_sec', 0.5)
+        self.declare_parameter('max_derived_linear_speed', 2.0)
+        self.declare_parameter('max_derived_angular_speed', 3.0)
 
         pose_topic = str(self.get_parameter('pose_topic').value)
         twist_topic = str(self.get_parameter('twist_topic').value)
@@ -47,12 +63,24 @@ class NavOdomRelay(Node):
             self.get_parameter('child_frame').value).lstrip('/')
         self.twist_timeout = max(
             0.05, float(self.get_parameter('twist_timeout_sec').value))
+        self.derive_twist_from_pose = bool(
+            self.get_parameter('derive_twist_from_pose').value)
+        self.derived_twist_min_dt = max(
+            0.001, float(self.get_parameter('derived_twist_min_dt_sec').value))
+        self.derived_twist_max_dt = max(
+            self.derived_twist_min_dt,
+            float(self.get_parameter('derived_twist_max_dt_sec').value))
+        self.max_derived_linear_speed = max(
+            0.1, float(self.get_parameter('max_derived_linear_speed').value))
+        self.max_derived_angular_speed = max(
+            0.1, float(self.get_parameter('max_derived_angular_speed').value))
 
         self._last_twist = None
         self._last_twist_receive = None
         self._last_twist_stamp = None
+        self._last_pose_sample = None
         self._last_stale_warning = -math.inf
-        self._announced_ready = False
+        self._twist_source = None
         self._publisher = self.create_publisher(Odometry, output_topic, 20)
         self.create_subscription(
             Odometry, twist_topic, self._twist_callback, 20)
@@ -60,6 +88,52 @@ class NavOdomRelay(Node):
         self.get_logger().info(
             f'Nav odom relay: pose={pose_topic} twist={twist_topic} '
             f'output={output_topic}')
+
+    def _announce_twist_source(self, source):
+        if source == self._twist_source:
+            return
+        if source == 'unitree':
+            self.get_logger().info(
+                'Nav odometry is using fresh Unitree planar twist')
+        elif source == 'fast_lio_pose':
+            self.get_logger().warning(
+                'Unitree twist is unavailable; deriving planar twist from '
+                'successive FAST-LIO poses')
+        else:
+            self.get_logger().warning(
+                'No valid odometry twist source; publishing zero twist with '
+                'high covariance')
+        self._twist_source = source
+
+    def _derive_pose_twist(self, x, y, yaw, stamp):
+        current = (x, y, yaw, stamp)
+        previous = self._last_pose_sample
+        self._last_pose_sample = current
+        if not self.derive_twist_from_pose or previous is None:
+            return None
+
+        prev_x, prev_y, prev_yaw, prev_stamp = previous
+        dt = stamp - prev_stamp
+        if not self.derived_twist_min_dt <= dt <= self.derived_twist_max_dt:
+            return None
+
+        velocity_world_x = (x - prev_x) / dt
+        velocity_world_y = (y - prev_y) / dt
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        velocity_body_x = (
+            cos_yaw * velocity_world_x + sin_yaw * velocity_world_y)
+        velocity_body_y = (
+            -sin_yaw * velocity_world_x + cos_yaw * velocity_world_y)
+        yaw_rate = _shortest_angle(yaw - prev_yaw) / dt
+        if not all(math.isfinite(value) for value in (
+                velocity_body_x, velocity_body_y, yaw_rate)):
+            return None
+        if (math.hypot(velocity_body_x, velocity_body_y) >
+                self.max_derived_linear_speed or
+                abs(yaw_rate) > self.max_derived_angular_speed):
+            return None
+        return velocity_body_x, velocity_body_y, yaw_rate
 
     def _twist_callback(self, msg):
         twist = msg.twist.twist
@@ -80,11 +154,13 @@ class NavOdomRelay(Node):
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
 
     def _pose_callback(self, msg):
-        quaternion = _planar_quaternion(msg.pose.pose.orientation)
-        if quaternion is None:
+        yaw = _yaw_from_quaternion(msg.pose.pose.orientation)
+        if yaw is None:
             self.get_logger().warning(
                 'Ignoring FAST-LIO odometry with invalid quaternion')
             return
+        quaternion = (
+            0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5))
         if not all(math.isfinite(value) for value in (
                 msg.pose.pose.position.x, msg.pose.pose.position.y)):
             self.get_logger().warning(
@@ -96,6 +172,10 @@ class NavOdomRelay(Node):
         twist_stamp_age = (
             ros_now - self._last_twist_stamp
             if self._last_twist_stamp is not None else math.inf)
+        pose_stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        derived_twist = self._derive_pose_twist(
+            float(msg.pose.pose.position.x),
+            float(msg.pose.pose.position.y), yaw, pose_stamp)
         output = Odometry()
         output.header.stamp = msg.header.stamp
         output.header.frame_id = self.output_frame
@@ -120,15 +200,20 @@ class NavOdomRelay(Node):
             output.twist.twist.linear.z = 0.0
             output.twist.twist.angular.x = 0.0
             output.twist.twist.angular.y = 0.0
-            if not self._announced_ready:
-                self.get_logger().info(
-                    'Publishing coherent planar nav odometry with fresh '
-                    'Unitree twist')
-                self._announced_ready = True
+            self._announce_twist_source('unitree')
+        elif derived_twist is not None:
+            output.twist.twist.linear.x = derived_twist[0]
+            output.twist.twist.linear.y = derived_twist[1]
+            output.twist.twist.angular.z = derived_twist[2]
+            output.twist.covariance[0] = 0.10
+            output.twist.covariance[7] = 0.10
+            output.twist.covariance[35] = 0.20
+            self._announce_twist_source('fast_lio_pose')
         else:
             output.twist.covariance[0] = 1e3
             output.twist.covariance[7] = 1e3
             output.twist.covariance[35] = 1e3
+            self._announce_twist_source('none')
             if now - self._last_stale_warning >= 5.0:
                 self.get_logger().warning(
                     'Unitree odometry twist is missing or stale; publishing '

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
+from rclpy.qos import qos_profile_sensor_data
 
 from std_msgs.msg import Float32
 from unitree_hg.msg import BmsState, LowState
@@ -71,9 +72,18 @@ class RobotRead(LifecycleNode):
         self.imu_temp_pub = self.create_publisher(Float32, 'imu_temp', 10)
 
         # Create subscribers
-        self.low_bms_state_subscriber = self.create_subscription(BmsState, '/lf/bmsstate', self.low_bms_state_callback, 10)
-        self.low_state_subscriber = self.create_subscription(LowState, '/lf/lowstate', self.low_state_callback, 10)
-        self.sport_mode_state_subscriber = self.create_subscription(SportModeState, '/lf/odommodestate', self.sport_mode_state_callback, 10)
+        # Unitree SDK publishers may offer BEST_EFFORT. A BEST_EFFORT reader is
+        # compatible with both BEST_EFFORT and RELIABLE writers, while the old
+        # default RELIABLE reader received nothing from BEST_EFFORT firmware.
+        self.low_bms_state_subscriber = self.create_subscription(
+            BmsState, '/lf/bmsstate', self.low_bms_state_callback,
+            qos_profile_sensor_data)
+        self.low_state_subscriber = self.create_subscription(
+            LowState, '/lf/lowstate', self.low_state_callback,
+            qos_profile_sensor_data)
+        self.sport_mode_state_subscriber = self.create_subscription(
+            SportModeState, '/lf/odommodestate',
+            self.sport_mode_state_callback, qos_profile_sensor_data)
 
         # TF broadcaster for odom -> base_footprint transform
         self.tf_broadcaster = TransformBroadcaster(self)

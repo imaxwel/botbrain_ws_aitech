@@ -84,6 +84,27 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     assert "navigation_preflight.py" in compose["services"]["navigation"]["command"][-1]
 
 
+def test_map_scene_selector_recreates_and_verifies_localization_container():
+    selector = _read("tools/nav/select_map_scene.sh")
+    compact_runbook = _read("建图导航指令.md")
+
+    assert 'MAP_SCENE="$scene" docker compose --profile navigation' in selector
+    assert "docker compose rm -f navigation localization" in selector
+    assert "--force-recreate --no-deps localization" in selector
+    assert "docker inspect g1_robot_localization" in selector
+    assert 'expected_log="Map selection: scene=$scene "' in selector
+    assert "ros2 param get /global_localization_node path_map" in selector
+    assert "ros2 param get /map_server yaml_filename" in selector
+    assert 'ros2 topic info /pcd_map' in selector
+    assert 'Publisher count: 1' in selector
+    assert "docker compose up -d --force-recreate foxglove" in selector
+    assert "--restart-fast-lio" in selector
+    assert 'grep -Fq "IMU Initial Done"' in selector
+    assert "botbrain_ws/install/fast_lio/share/fast_lio/config/mid360.yaml" in selector
+    assert "pcd_save_en:" in selector
+    assert 'bash tools/nav/select_map_scene.sh "$scene"' in compact_runbook
+
+
 def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
     source = _read("docker-compose.yaml")
     compose = yaml.safe_load(source)
@@ -154,13 +175,10 @@ def test_compact_map_review_keeps_live_fast_lio_topics_available():
     review = source.split("步骤 6：建图完成后查看效果", 1)[1].split("---", 1)[0]
 
     assert "docker compose up -d bringup state_machine" in review
-    start_fast_lio = "docker compose up -d --force-recreate fast_lio"
-    start_localization = (
-        "docker compose --profile navigation up -d --force-recreate localization"
+    assert (
+        'bash tools/nav/select_map_scene.sh "$scene" --restart-fast-lio'
+        in review
     )
-    assert start_fast_lio in review
-    assert start_localization in review
-    assert review.index(start_fast_lio) < review.index(start_localization)
     assert "docker compose up fast_lio localization" not in source
     assert "/cloud_registered_1" in review
     assert "/cloud_registered_body_1" in review
@@ -227,6 +245,11 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "global_initialization_confirmations_" in source
     assert "global_scan_window_size_" in source
     assert "global_min_ransac_fitness_" in source
+    assert '"global_voxel_sizes"' in source
+    assert "global_feature_levels_" in source
+    assert "mutual_filter" in source
+    assert "Global RANSAC rejected" in source
+    assert "Global registration seed=" in source
     assert "expire_pending_candidate(global_candidate_max_age_sec_)" in source
     assert "must not erase" in source
     assert '"localization_ready"' in source
@@ -236,11 +259,13 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "RegistrationRANSACBasedOnFeatureMatching" in registration
     assert "global_ransac_max_iterations_" in source
     assert "'enable_global_initialization': True" in launch
+    assert "'global_voxel_sizes':         [0.25, 0.40, 0.60]" in launch
     assert "'global_initialization_confirmations': 3" in launch
     assert params["enable_global_initialization"] is False
     assert int(params["global_initialization_confirmations"]) >= 3
-    assert int(params["global_scan_window_size"]) >= 3
-    assert float(params["global_min_ransac_fitness"]) > 0.0
+    assert int(params["global_scan_window_size"]) >= 10
+    assert float(params["global_min_ransac_fitness"]) == 0.0
+    assert "ransac_fitness <= global_min_ransac_fitness_" in source
     assert "last_localization_pose" not in source
     assert "last_localization_pose" not in launch
 
@@ -347,9 +372,12 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
         "botbrain_ws/src/bot_navigation/scripts/waypoint_recorder.py")
     navigator = _read(
         "botbrain_ws/src/bot_navigation/scripts/waypoint_navigator.py")
+    compact_runbook = _read("建图导航指令.md")
     waypoints = yaml.safe_load(_read(
         "botbrain_ws/src/bot_navigation/nav_waypoints.yaml"))["waypoints"]
 
+    assert "choices=['record', 'list', 'delete']" in recorder
+    assert "waypoint_recorder.py delete floor1_old" in compact_runbook
     assert "def _yaw_quaternion(" in recorder
     assert "def _planar_quaternion(" in navigator
     assert "PoseWithCovarianceStamped" not in navigator
@@ -377,6 +405,7 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
         "botbrain_ws/src/bot_navigation/scripts/navigation_preflight.py")
     monitor = _read(
         "botbrain_ws/src/bot_navigation/scripts/localization_monitor.py")
+    robot_read = _read("botbrain_ws/src/g1_pkg/scripts/g1_read.py")
 
     assert "scripts/nav_odom_relay.py" in cmake
     assert "scripts/navigation_preflight.py" in cmake
@@ -386,8 +415,19 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
     assert "nav_odom" in relay
     assert "output.pose.pose.position.z = 0.0" in relay
     assert "output.twist = copy.deepcopy(self._last_twist)" in relay
+    assert "derive_twist_from_pose" in relay
+    assert "def _derive_pose_twist(" in relay
+    assert "fast_lio_pose" in relay
+    assert "max_derived_linear_speed" in relay
     assert "twist_stamp_age" in relay
     assert "Navigation preflight passed" in preflight
+    assert "pose_odom_topic" in preflight
+    assert "allow_pose_derived_twist" in preflight
+    assert "max_derived_linear_speed" in preflight
+    assert "max_derived_angular_speed" in preflight
+    assert "twist_source={twist_source}" in preflight
+    assert "qos_profile_sensor_data" in robot_read
+    assert "SportModeState, '/lf/odommodestate'" in robot_read
     assert "max_base_tilt_deg" in preflight
     assert "twist_odom_topic" in preflight
     assert "_twist_odom_is_fresh" in preflight

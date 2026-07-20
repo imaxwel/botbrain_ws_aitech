@@ -41,12 +41,18 @@ class NavigationPreflight(Node):
         self.declare_parameter(
             'confidence_topic', '/localization_3d_confidence')
         self.declare_parameter('twist_odom_topic', '/g1_robot/odom')
+        self.declare_parameter('pose_odom_topic', '/Odometry_loc')
+        self.declare_parameter('allow_pose_derived_twist', True)
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'g1_robot/base_footprint')
         self.declare_parameter('timeout_sec', 300.0)
         self.declare_parameter('max_scan_age_sec', 1.0)
         self.declare_parameter('max_confidence_age_sec', 1.0)
         self.declare_parameter('max_twist_odom_age_sec', 0.5)
+        self.declare_parameter('max_pose_odom_age_sec', 0.5)
+        self.declare_parameter('derived_twist_min_dt_sec', 0.02)
+        self.declare_parameter('max_derived_linear_speed', 2.0)
+        self.declare_parameter('max_derived_angular_speed', 3.0)
         self.declare_parameter('min_confidence', 0.55)
         self.declare_parameter('max_base_height_error', 0.20)
         self.declare_parameter('max_base_tilt_deg', 5.0)
@@ -57,6 +63,10 @@ class NavigationPreflight(Node):
             self.get_parameter('confidence_topic').value)
         self.twist_odom_topic = str(
             self.get_parameter('twist_odom_topic').value)
+        self.pose_odom_topic = str(
+            self.get_parameter('pose_odom_topic').value)
+        self.allow_pose_derived_twist = bool(
+            self.get_parameter('allow_pose_derived_twist').value)
         self.map_frame = str(
             self.get_parameter('map_frame').value).lstrip('/')
         self.base_frame = str(
@@ -69,6 +79,14 @@ class NavigationPreflight(Node):
             0.1, float(self.get_parameter('max_confidence_age_sec').value))
         self.max_twist_odom_age = max(
             0.1, float(self.get_parameter('max_twist_odom_age_sec').value))
+        self.max_pose_odom_age = max(
+            0.1, float(self.get_parameter('max_pose_odom_age_sec').value))
+        self.derived_twist_min_dt = max(
+            0.001, float(self.get_parameter('derived_twist_min_dt_sec').value))
+        self.max_derived_linear_speed = max(
+            0.1, float(self.get_parameter('max_derived_linear_speed').value))
+        self.max_derived_angular_speed = max(
+            0.1, float(self.get_parameter('max_derived_angular_speed').value))
         self.min_confidence = max(
             0.0, float(self.get_parameter('min_confidence').value))
         self.max_base_height_error = max(
@@ -82,6 +100,10 @@ class NavigationPreflight(Node):
         self._last_twist_odom_receive = None
         self._last_twist_odom_stamp = None
         self._twist_odom_valid = False
+        self._last_pose_odom_receive = None
+        self._last_pose_odom_stamp = None
+        self._last_pose_odom_sample = None
+        self._pose_odom_valid = False
         self._confidence = 0.0
         self._localization_ready = False
         self._tf_buffer = Buffer()
@@ -101,6 +123,8 @@ class NavigationPreflight(Node):
             Float32, self.confidence_topic, self._confidence_callback, 10)
         self.create_subscription(
             Odometry, self.twist_odom_topic, self._twist_odom_callback, 10)
+        self.create_subscription(
+            Odometry, self.pose_odom_topic, self._pose_odom_callback, 20)
 
     def _ros_now(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -128,6 +152,62 @@ class NavigationPreflight(Node):
         self._last_twist_odom_receive = time.monotonic()
         self._last_twist_odom_stamp = (
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9)
+
+    def _pose_odom_callback(self, msg):
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        pose = msg.pose.pose
+        quaternion_norm = math.sqrt(
+            pose.orientation.x * pose.orientation.x +
+            pose.orientation.y * pose.orientation.y +
+            pose.orientation.z * pose.orientation.z +
+            pose.orientation.w * pose.orientation.w)
+        valid_pose = (
+            msg.header.frame_id.lstrip('/') == 'camera_init' and
+            msg.child_frame_id.lstrip('/') == 'body' and
+            all(math.isfinite(value) for value in (
+                stamp, pose.position.x, pose.position.y,
+                pose.orientation.x, pose.orientation.y,
+                pose.orientation.z, pose.orientation.w,
+                quaternion_norm,
+            )) and
+            quaternion_norm >= 1e-9
+        )
+        yaw = None
+        if valid_pose:
+            qx = pose.orientation.x / quaternion_norm
+            qy = pose.orientation.y / quaternion_norm
+            qz = pose.orientation.z / quaternion_norm
+            qw = pose.orientation.w / quaternion_norm
+            yaw = math.atan2(
+                2.0 * (qw * qz + qx * qy),
+                1.0 - 2.0 * (qy * qy + qz * qz),
+            )
+
+        previous = self._last_pose_odom_sample
+        dt = stamp - previous[3] if previous is not None else math.inf
+        valid_interval = (
+            previous is not None and
+            self.derived_twist_min_dt <= dt <= self.max_pose_odom_age)
+        valid_motion = False
+        if valid_pose and valid_interval:
+            linear_speed = math.hypot(
+                pose.position.x - previous[0],
+                pose.position.y - previous[1]) / dt
+            yaw_rate = abs(math.atan2(
+                math.sin(yaw - previous[2]),
+                math.cos(yaw - previous[2]))) / dt
+            valid_motion = (
+                math.isfinite(linear_speed) and
+                math.isfinite(yaw_rate) and
+                linear_speed <= self.max_derived_linear_speed and
+                yaw_rate <= self.max_derived_angular_speed
+            )
+        if valid_pose:
+            self._last_pose_odom_sample = (
+                float(pose.position.x), float(pose.position.y), yaw, stamp)
+        self._last_pose_odom_stamp = stamp
+        self._last_pose_odom_receive = time.monotonic()
+        self._pose_odom_valid = valid_pose and valid_interval and valid_motion
 
     @staticmethod
     def _message_is_fresh(
@@ -166,6 +246,19 @@ class NavigationPreflight(Node):
             )
         )
 
+    def _pose_odom_is_fresh(self, monotonic_now, ros_now):
+        return (
+            self.allow_pose_derived_twist and
+            self._pose_odom_valid and
+            self._message_is_fresh(
+                self._last_pose_odom_receive,
+                self._last_pose_odom_stamp,
+                self.max_pose_odom_age,
+                monotonic_now,
+                ros_now,
+            )
+        )
+
     def _planar_map_tf_is_valid(self):
         try:
             transform = self._tf_buffer.lookup_transform(
@@ -197,7 +290,12 @@ class NavigationPreflight(Node):
             now = time.monotonic()
             ros_now = self._ros_now()
             scan_ok = self._scan_is_fresh(now, ros_now)
-            twist_odom_ok = self._twist_odom_is_fresh(now, ros_now)
+            unitree_twist_ok = self._twist_odom_is_fresh(now, ros_now)
+            pose_twist_ok = self._pose_odom_is_fresh(now, ros_now)
+            twist_odom_ok = unitree_twist_ok or pose_twist_ok
+            twist_source = (
+                'unitree' if unitree_twist_ok else
+                'fast_lio_pose' if pose_twist_ok else 'none')
             confidence_ok = self._confidence_is_fresh(now)
             tf_ok = (
                 self._planar_map_tf_is_valid()
@@ -205,8 +303,8 @@ class NavigationPreflight(Node):
             if (scan_ok and twist_odom_ok and self._localization_ready and
                     confidence_ok and tf_ok):
                 self.get_logger().info(
-                    'Navigation preflight passed: fresh scan and Unitree '
-                    'odometry, '
+                    'Navigation preflight passed: fresh scan and coherent '
+                    f'odometry twist_source={twist_source}, '
                     'localization ready, '
                     f'confidence={self._confidence:.3f}, planar map TF valid')
                 return True
@@ -215,6 +313,7 @@ class NavigationPreflight(Node):
                 self.get_logger().info(
                     'Waiting for navigation inputs: '
                     f'scan={scan_ok} twist_odom={twist_odom_ok} '
+                    f'twist_source={twist_source} '
                     f'ready={self._localization_ready} '
                     f'confidence={self._confidence:.3f}/'
                     f'{self.min_confidence:.3f} '
