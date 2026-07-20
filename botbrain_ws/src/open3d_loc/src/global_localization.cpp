@@ -10,6 +10,7 @@
 #include <tf2_ros/static_transform_broadcaster.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
 
 #include <tf2_eigen/tf2_eigen.hpp>
@@ -301,6 +302,7 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_localization_3d_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_3d_confidence_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_3d_delay_ms_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_localization_ready_;
 
     geometry_msgs::msg::PoseStamped localization_3d_;
     std_msgs::msg::Float32 localization_3d_confidence_;
@@ -345,6 +347,8 @@ private:
     double global_candidate_max_age_sec_ = 15.0;
     int global_min_source_points_ = 100;
     int global_min_target_points_ = 1000;
+    int global_scan_window_size_ = 3;
+    double global_min_ransac_fitness_ = 0.15;
     std::shared_ptr<open3d::geometry::PointCloud> pcd_map_global_;
     std::shared_ptr<open3d::pipelines::registration::Feature> fpfh_map_global_;
 
@@ -435,6 +439,12 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     pub_localization_3d_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("localization_3d", 1);
     pub_localization_3d_confidence_ = this->create_publisher<std_msgs::msg::Float32>("localization_3d_confidence", 1);
     pub_localization_3d_delay_ms_ = this->create_publisher<std_msgs::msg::Float32>("localization_3d_delay_ms", 1);
+    pub_localization_ready_ = this->create_publisher<std_msgs::msg::Bool>(
+        "localization_ready",
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+    std_msgs::msg::Bool localization_ready;
+    localization_ready.data = false;
+    pub_localization_ready_->publish(localization_ready);
 
     loc_frequence_ = 2.0; //
     loc_fitness_ = 0.0;
@@ -517,6 +527,8 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->declare_parameter<double>("global_candidate_max_age_sec", 15.0);
     this->declare_parameter<int>("global_min_source_points", 100);
     this->declare_parameter<int>("global_min_target_points", 1000);
+    this->declare_parameter<int>("global_scan_window_size", 3);
+    this->declare_parameter<double>("global_min_ransac_fitness", 0.15);
 
     /// 定位阈值
     this->declare_parameter<double>("confidence_loc_th", 0.6);
@@ -597,6 +609,8 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->get_parameter("global_candidate_max_age_sec", global_candidate_max_age_sec_);
     this->get_parameter("global_min_source_points", global_min_source_points_);
     this->get_parameter("global_min_target_points", global_min_target_points_);
+    this->get_parameter("global_scan_window_size", global_scan_window_size_);
+    this->get_parameter("global_min_ransac_fitness", global_min_ransac_fitness_);
     this->get_parameter("confidence_loc_th", confidence_loc_th_);
     this->get_parameter("kf_baselink2map_x", kf_param_x_);
     this->get_parameter("kf_baselink2map_y", kf_param_y_);
@@ -690,6 +704,9 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     global_candidate_max_age_sec_ = std::max(global_candidate_max_age_sec_, 1.0);
     global_min_source_points_ = std::max(global_min_source_points_, 10);
     global_min_target_points_ = std::max(global_min_target_points_, 100);
+    global_scan_window_size_ = std::max(1, std::min(global_scan_window_size_, 5));
+    global_min_ransac_fitness_ = std::max(
+        0.0, std::min(1.0, global_min_ransac_fitness_));
     RCLCPP_INFO(this->get_logger(), "Registered cloud world frame: %s",
                 registered_cloud_world_frame_.c_str());
     RCLCPP_INFO(this->get_logger(),
@@ -712,11 +729,12 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
                 large_correction_confirmations_, icp_candidate_max_age_sec_,
                 max_scan_odom_time_skew_sec_, max_icp_inlier_rmse_);
     RCLCPP_INFO(this->get_logger(),
-                "Global initialization: enabled=%s voxel=%.2fm RANSAC=%d/%.4f quality>=%.2f rmse<=%.2f confirmations=%d",
+                "Global initialization: enabled=%s voxel=%.2fm RANSAC=%d/%.4f raw>=%.2f quality>=%.2f rmse<=%.2f confirmations=%d scan_window=%d",
                 enable_global_initialization_ ? "true" : "false",
                 global_voxel_size_, global_ransac_max_iterations_,
-                global_ransac_confidence_, global_min_fitness_,
-                global_max_inlier_rmse_, global_initialization_confirmations_);
+                global_ransac_confidence_, global_min_ransac_fitness_,
+                global_min_fitness_, global_max_inlier_rmse_,
+                global_initialization_confirmations_, global_scan_window_size_);
 
     // 读取地图
     std::string path_map = "";
@@ -909,7 +927,8 @@ bool GloabalLocalization::ComputeGlobalInitializationCandidate(
             seed);
     ransac_fitness = ransac.fitness_;
     if (!IsRigidTransform(ransac.transformation_) ||
-        !std::isfinite(ransac_fitness) || ransac_fitness <= 0.0)
+        !std::isfinite(ransac_fitness) ||
+        ransac_fitness < global_min_ransac_fitness_)
     {
         return false;
     }
@@ -1087,6 +1106,33 @@ void GloabalLocalization::CallbackBaselink2Odom(const nav_msgs::msg::Odometry::S
         timestamp_odom_ = baselink2odom->header.stamp;
     }
 
+    if (publish_planar_base_tf_)
+    {
+        const double planar_yaw = std::atan2(
+            mat_baselink2odom(1, 0), mat_baselink2odom(0, 0));
+        geometry_msgs::msg::TransformStamped planar_base_tf;
+        planar_base_tf.header.frame_id = "odom";
+        planar_base_tf.child_frame_id = planar_base_frame_;
+        planar_base_tf.header.stamp = baselink2odom->header.stamp;
+        planar_base_tf.transform.translation.x = mat_baselink2odom(0, 3);
+        planar_base_tf.transform.translation.y = mat_baselink2odom(1, 3);
+        planar_base_tf.transform.translation.z = -planar_base_height_;
+        planar_base_tf.transform.rotation.x = 0.0;
+        planar_base_tf.transform.rotation.y = 0.0;
+        planar_base_tf.transform.rotation.z = std::sin(planar_yaw * 0.5);
+        planar_base_tf.transform.rotation.w = std::cos(planar_yaw * 0.5);
+        br_odom2map_->sendTransform(planar_base_tf);
+    }
+
+    if (!loc_initialized_.load())
+    {
+        return;
+    }
+
+    // Do not publish an identity/seeded map transform while global
+    // initialization is still searching. The odom->planar-base TF above is
+    // sufficient for scan filtering; map consumers must wait for a verified
+    // localization candidate.
     Eigen::Isometry3d isometry_baselink2map = Eigen::Isometry3d::Identity();
     isometry_baselink2map.matrix() = mat_baselink2map;
     nav_msgs::msg::Odometry baselink2map;
@@ -1114,29 +1160,6 @@ void GloabalLocalization::CallbackBaselink2Odom(const nav_msgs::msg::Odometry::S
     transform_odom2map.transform.translation.z = odom2map.pose.pose.position.z;
     transform_odom2map.transform.rotation = odom2map.pose.pose.orientation;
     br_odom2map_->sendTransform(transform_odom2map);
-
-    if (publish_planar_base_tf_)
-    {
-        const double planar_yaw = std::atan2(
-            mat_baselink2odom(1, 0), mat_baselink2odom(0, 0));
-        geometry_msgs::msg::TransformStamped planar_base_tf;
-        planar_base_tf.header.frame_id = "odom";
-        planar_base_tf.child_frame_id = planar_base_frame_;
-        planar_base_tf.header.stamp = baselink2odom->header.stamp;
-        planar_base_tf.transform.translation.x = mat_baselink2odom(0, 3);
-        planar_base_tf.transform.translation.y = mat_baselink2odom(1, 3);
-        planar_base_tf.transform.translation.z = -planar_base_height_;
-        planar_base_tf.transform.rotation.x = 0.0;
-        planar_base_tf.transform.rotation.y = 0.0;
-        planar_base_tf.transform.rotation.z = std::sin(planar_yaw * 0.5);
-        planar_base_tf.transform.rotation.w = std::cos(planar_yaw * 0.5);
-        br_odom2map_->sendTransform(planar_base_tf);
-    }
-
-    if (!loc_initialized_.load())
-    {
-        return;
-    }
 
     Eigen::Matrix4d mat_baselink2map_filtered = mat_baselink2map;
     if (filter_odom2map_)
@@ -1271,12 +1294,18 @@ void GloabalLocalization::CallbackScan(
         return;
     }
 
-    // Keep one coherent, newest-first window. The old implementation built the
-    // aggregate before pushing the newest scan and modified the queue outside
-    // the mutex, so ICP could consume stale data and race with this callback.
+    // Normal ICP keeps only the newest world-frame scan. During automatic
+    // global initialization, retain a very short world-frame window to provide
+    // enough geometry for FPFH without accumulating a long, drift-prone trail.
     std::lock_guard<std::mutex> scan_guard(lock_scan_);
     que_pcd_scan_.push(std::move(pcd_received));
-    while (que_pcd_scan_.size() > static_cast<size_t>(queue_maxsize_))
+    const bool collecting_global_window =
+        enable_global_initialization_ && !loc_initialized_.load() &&
+        manual_pose_generation_.load() == 0;
+    const int active_window_size = collecting_global_window
+        ? std::max(queue_maxsize_, global_scan_window_size_)
+        : queue_maxsize_;
+    while (que_pcd_scan_.size() > static_cast<size_t>(active_window_size))
     {
         que_pcd_scan_.pop();
     }
@@ -1314,6 +1343,29 @@ void GloabalLocalization::LocalizationInitialize()
     auto pending_initialization_time = std::chrono::steady_clock::time_point::min();
     unsigned long long last_processed_scan_generation = 0;
     unsigned int observed_manual_pose_generation = manual_pose_generation_.load();
+    const auto clear_pending_candidate = [&]()
+    {
+        consecutive_successes = 0;
+        pending_initialization_candidate = Eigen::Matrix4d::Identity();
+        pending_initialization_time = std::chrono::steady_clock::time_point::min();
+    };
+    const auto expire_pending_candidate = [&](double max_age_sec)
+    {
+        if (consecutive_successes <= 0 ||
+            pending_initialization_time == std::chrono::steady_clock::time_point::min())
+        {
+            return;
+        }
+        const double age = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - pending_initialization_time).count();
+        if (age > max_age_sec)
+        {
+            clear_pending_candidate();
+            RCLCPP_INFO(this->get_logger(),
+                        "LocalizationInitialize: expired unconfirmed candidate after %.1fs",
+                        age);
+        }
+    };
     while (rclcpp::ok() && !flag_exit_.load())
     {
         const auto loc_start = std::chrono::steady_clock::now();
@@ -1361,9 +1413,7 @@ void GloabalLocalization::LocalizationInitialize()
         {
             observed_manual_pose_generation = iteration_manual_pose_generation;
             loc_fitness_.store(0.0);
-            consecutive_successes = 0;
-            pending_initialization_candidate = Eigen::Matrix4d::Identity();
-            pending_initialization_time = std::chrono::steady_clock::time_point::min();
+            clear_pending_candidate();
             RCLCPP_INFO(this->get_logger(),
                         "Manual pose reset detected during initialization: cleared ICP candidate history");
         }
@@ -1413,8 +1463,10 @@ void GloabalLocalization::LocalizationInitialize()
                     fitness, inlier_rmse, ransac_fitness))
             {
                 loc_fitness_.store(0.0);
-                consecutive_successes = 0;
-                pending_initialization_candidate = Eigen::Matrix4d::Identity();
+                // Feature RANSAC is stochastic on a partial indoor scan. A
+                // missed attempt provides no confirmation, but must not erase
+                // a recent high-quality candidate from another scan window.
+                expire_pending_candidate(global_candidate_max_age_sec_);
                 RCLCPP_WARN_THROTTLE(
                     this->get_logger(), *this->get_clock(), 2000,
                     "Global initialization did not produce a valid FPFH/RANSAC candidate");
@@ -1509,7 +1561,17 @@ void GloabalLocalization::LocalizationInitialize()
                 fitness, inlier_rmse, ransac_fitness,
                 translation_step, rotation_step_deg,
                 required_fitness, allowed_rmse);
-            consecutive_successes = 0;
+            if (used_global_initialization)
+            {
+                // Keep a recent, previously accepted global candidate across
+                // intermittent low-quality RANSAC attempts. It still needs the
+                // configured number of distinct, consistent confirmations.
+                expire_pending_candidate(global_candidate_max_age_sec_);
+            }
+            else
+            {
+                clear_pending_candidate();
+            }
             if (used_global_initialization)
             {
                 std::this_thread::sleep_for(std::chrono::duration<double>(
@@ -1717,6 +1779,11 @@ void GloabalLocalization::Localization()
             mat_odom2map_(2, 3), 1);
         loc_initialized_.store(true);
     }
+    std_msgs::msg::Bool localization_ready;
+    localization_ready.data = true;
+    pub_localization_ready_->publish(localization_ready);
+    RCLCPP_INFO(this->get_logger(),
+                "Localization ready: verified map->odom is now available");
     if (!valid_baselink_filter_parameters)
     {
         RCLCPP_ERROR(this->get_logger(), "Invalid Kalman filter parameters");

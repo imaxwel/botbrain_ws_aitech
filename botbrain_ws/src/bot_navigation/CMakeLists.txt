@@ -30,7 +30,10 @@ install(
 )
 
 install(PROGRAMS
+  scripts/costmap_center_check.py
   scripts/nav2_utils.py
+  scripts/nav_odom_relay.py
+  scripts/navigation_preflight.py
   scripts/waypoint_recorder.py
   scripts/waypoint_navigator.py
   scripts/localization_monitor.py

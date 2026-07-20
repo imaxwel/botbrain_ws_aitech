@@ -132,14 +132,18 @@ services:
     container_name: g1_robot_localization
     profiles: ["navigation"]
     command: ["bash", "-lc", "sleep 30 && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_pkg localization_3d.launch.py"]
-    restart: always
+    # Localization is map-specific and must be started explicitly after
+    # FAST-LIO. A profile does not prevent an already-created container with
+    # restart: always from auto-starting after a robot/Docker reboot.
+    restart: "no"
 
   navigation:
     extends: base
     container_name: g1_robot_navigation
     profiles: ["navigation"]
-    command: ["bash", "-lc", "sleep 30 && source install/setup.bash && ros2 launch bot_navigation navigation.launch.py"]
-    restart: always
+    command: ["bash", "-lc", "sleep 30 && source install/setup.bash && ros2 run bot_navigation navigation_preflight.py --ros-args -p timeout_sec:=300.0 && exec ros2 launch bot_navigation navigation.launch.py"]
+    # Nav2 must not come up on a stale scan or an uninitialized map transform.
+    restart: "no"
 
   manipulation:
     build:
@@ -203,6 +207,7 @@ services:
     environment:
       YOLO_CONFIG_DIR: /root/.cache/ultralytics
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: "file:///botbrain_ws/cyclonedds_config.xml"
     volumes:
       - ./botbrain_ws/:/botbrain_ws
       - /dev:/dev
@@ -260,17 +265,6 @@ services:
       - ./frontend/.env
     command: npm run start
     restart: unless-stopped
-
-  camera:
-    extends: nav3d
-    container_name: g1_robot_camera
-    environment:
-      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-      ZENOH_CONFIG_OVERRIDE: ""
-      UNITREE_SDK2_ROOT: /opt/robot_sdk
-      LD_LIBRARY_PATH: /opt/open3d/lib
-    command: ["bash", "-lc", "set -e; rm -f /run/latest_cam.bin; source /opt/ros/humble/setup.bash; source /botbrain_ws/install/setup.bash; ros2 launch bot_localization realsense.launch.py > /tmp/realsense_camera.log 2>&1 & python3 /botbrain_ws/cam_lifecycle_activate.py > /tmp/cam_lifecycle.log 2>&1 & python3 /botbrain_ws/cam_frame_writer.py > /tmp/cam_frame_writer.log 2>&1 & wait -n"]
-    restart: always
   
   builder_dex3:
     image: unitree-dex3:humble
@@ -302,6 +296,7 @@ services:
     environment:
       RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       LD_LIBRARY_PATH: /usr/local/lib
+      CYCLONEDDS_URI: "file:///botbrain_ws/cyclonedds_config.xml"
       PYTHONPATH: /opt/unitree_dex3_tools:/botbrain_ws/src/g1_right_dex3/unitree_dex3_cpp/build
     command: ["sleep", "infinity"]
     restart: unless-stopped

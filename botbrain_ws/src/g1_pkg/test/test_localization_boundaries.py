@@ -33,7 +33,19 @@ def test_localization_launch_keeps_pcd_and_grid_map_arguments_separate():
     assert "DeclareLaunchArgument('grid_map_file', default_value=default_grid_yaml)" in source
     assert "'path_map':                 LaunchConfiguration('map_file')" in source
     assert "'yaml_filename': LaunchConfiguration('grid_map_file')" in source
-    assert "os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps', 'accumulated.yaml')" in source
+    assert "maps_dir = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps')" in source
+    assert "default_grid_yaml = os.path.join(maps_dir, 'accumulated.yaml')" in source
+    assert "OpaqueFunction(function=_validate_map_pair)" in source
+    assert "3D/2D map scene mismatch" in source
+
+
+def test_active_3d_and_2d_maps_resolve_to_the_same_scene():
+    maps = PROJECT_ROOT / "botbrain_ws/src/g1_pkg/maps"
+    pcd = (maps / "scans.pcd").resolve(strict=True)
+    grid = (maps / "accumulated.yaml").resolve(strict=True)
+
+    pcd_scene = pcd.stem[:-6] if pcd.stem.endswith("_scans") else pcd.stem
+    assert pcd_scene == grid.stem
 
 
 def test_localization_service_starts_the_installed_launch_file_directly():
@@ -44,6 +56,10 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     assert "source /opt/ros/humble/setup.bash" in source
     assert "source /botbrain_ws/install/setup.bash" in source
     assert "exec ros2 launch g1_pkg localization_3d.launch.py" in source
+    compose = yaml.safe_load(source)
+    assert compose["services"]["localization"]["restart"] == "no"
+    assert compose["services"]["navigation"]["restart"] == "no"
+    assert "navigation_preflight.py" in compose["services"]["navigation"]["command"][-1]
 
 
 def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
@@ -167,11 +183,22 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "RegistrationRANSACBasedOnFeatureMatching(" in source
     assert "iteration_manual_pose_generation == 0" in source
     assert "global_initialization_confirmations_" in source
+    assert "global_scan_window_size_" in source
+    assert "global_min_ransac_fitness_" in source
+    assert "expire_pending_candidate(global_candidate_max_age_sec_)" in source
+    assert "must not erase" in source
+    assert '"localization_ready"' in source
+    assert "Localization ready: verified map->odom is now available" in source
+    assert source.index("if (!loc_initialized_.load())") < source.index(
+        "// Do not publish an identity/seeded map transform")
     assert "RegistrationRANSACBasedOnFeatureMatching" in registration
     assert "global_ransac_max_iterations_" in source
     assert "'enable_global_initialization': True" in launch
+    assert "'global_initialization_confirmations': 3" in launch
     assert params["enable_global_initialization"] is False
-    assert int(params["global_initialization_confirmations"]) >= 2
+    assert int(params["global_initialization_confirmations"]) >= 3
+    assert int(params["global_scan_window_size"]) >= 3
+    assert float(params["global_min_ransac_fitness"]) > 0.0
     assert "last_localization_pose" not in source
     assert "last_localization_pose" not in launch
 
@@ -223,9 +250,11 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert 2.0 <= float(mppi["model_dt"]) * int(mppi["time_steps"]) <= 3.0
     assert mppi["visualize"] is False
     assert mppi["publish_optimal_trajectory"] is True
+    assert controller["odom_topic"] == "/<prefix>nav_odom"
     local_costmap = params["/**/local_costmap"]["local_costmap"]["ros__parameters"]
     assert local_costmap["global_frame"] == "<prefix>odom"
     bt_params = params["/**/bt_navigator"]["ros__parameters"]
+    assert bt_params["odom_topic"] == "/<prefix>nav_odom"
     assert "default_bt_xml_filename" not in bt_params
     source = _read("botbrain_ws/src/g1_pkg/config/nav2_params.yaml")
     assert "obstacle_range:" not in source
@@ -244,6 +273,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert global_scan["inf_is_valid"] is True
     assert 0.5 <= float(global_scan["expected_update_rate"]) <= 1.0
     assert global_costmap["denoise_layer"]["minimal_group_size"] == 2
+    assert float(global_costmap["inflation_layer"]["cost_scaling_factor"]) >= 15.0
     global_footprint = ast.literal_eval(global_costmap["footprint"])
     global_padding = float(global_costmap["footprint_padding"])
     global_circumscribed_radius = max(
@@ -295,6 +325,38 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
         assert float(waypoint["qy"]) == 0.0
         norm = math.hypot(float(waypoint["qz"]), float(waypoint["qw"]))
         assert math.isclose(norm, 1.0, abs_tol=2e-6)
+
+
+def test_navigation_uses_preflight_and_coherent_nav_odometry():
+    cmake = _read("botbrain_ws/src/bot_navigation/CMakeLists.txt")
+    launch = _read("botbrain_ws/src/bot_navigation/launch/nav_utils.launch.py")
+    relay = _read("botbrain_ws/src/bot_navigation/scripts/nav_odom_relay.py")
+    preflight = _read(
+        "botbrain_ws/src/bot_navigation/scripts/navigation_preflight.py")
+    monitor = _read(
+        "botbrain_ws/src/bot_navigation/scripts/localization_monitor.py")
+
+    assert "scripts/nav_odom_relay.py" in cmake
+    assert "scripts/navigation_preflight.py" in cmake
+    assert "scripts/costmap_center_check.py" in cmake
+    assert "executable='nav_odom_relay.py'" in launch
+    assert "pose_topic': '/Odometry_loc'" in launch
+    assert "nav_odom" in relay
+    assert "output.pose.pose.position.z = 0.0" in relay
+    assert "output.twist = copy.deepcopy(self._last_twist)" in relay
+    assert "twist_stamp_age" in relay
+    assert "Navigation preflight passed" in preflight
+    assert "max_base_tilt_deg" in preflight
+    assert "twist_odom_topic" in preflight
+    assert "_twist_odom_is_fresh" in preflight
+    assert "time.monotonic()" in preflight
+    center_check = _read(
+        "botbrain_ws/src/bot_navigation/scripts/costmap_center_check.py")
+    assert "Time.from_msg(msg.header.stamp)" in center_check
+    assert "time.monotonic()" in center_check
+    assert "math.cos(yaw) * half_width" in center_check
+    assert "PoseWithCovarianceStamped" not in monitor
+    assert "auto_anchor" not in monitor
 
 
 def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
