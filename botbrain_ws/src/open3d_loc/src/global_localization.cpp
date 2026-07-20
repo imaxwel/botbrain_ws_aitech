@@ -457,24 +457,12 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
 
     loc_frequence_ = 2.0; //
     loc_fitness_ = 0.0;
-    // 注册回调函数
-    // Keep only the newest cloud, but retain a short odometry history so that
-    // cloud N is paired with odometry N by stamp instead of the newer N+1 pose.
-    const auto odom_input_qos =
-        rclcpp::QoS(rclcpp::KeepLast(20)).reliable();
-    const auto latest_cloud_qos =
-        rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
-    sub_baselink2odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "Odometry_loc", odom_input_qos,
-        std::bind(&GloabalLocalization::CallbackBaselink2Odom, this,
-                  std::placeholders::_1));
-    sub_scan_cur_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "cloud_registered_1", latest_cloud_qos,
-        std::bind(&GloabalLocalization::CallbackScan, this,
-                  std::placeholders::_1));
+    // Keep the low-rate manual fallback available while whole-map features are
+    // prepared. High-rate odometry/cloud inputs are connected after that work.
     sub_initialpose_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "initialpose", 50, std::bind(&GloabalLocalization::CallbackInitialPose, this, std::placeholders::_1));
-
+        "initialpose", 50,
+        std::bind(&GloabalLocalization::CallbackInitialPose, this,
+                  std::placeholders::_1));
     pose_baselink2odom_ = nav_msgs::msg::Odometry();
     pose_baselink2odom_.header.frame_id = "odom";
     pose_baselink2odom_.child_frame_id = "base_link";
@@ -845,6 +833,21 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     std::cout << "mat_baselink2motionlink_:\n"
               << mat_baselink2motionlink_ << std::endl;
 
+    // Create reliable inputs only after the expensive whole-map feature
+    // preparation. The constructor is not in an executor yet, so subscribing
+    // earlier lets DDS queues accumulate while no callback can consume them.
+    const auto odom_input_qos =
+        rclcpp::QoS(rclcpp::KeepLast(20)).reliable();
+    const auto latest_cloud_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
+    sub_baselink2odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        "Odometry_loc", odom_input_qos,
+        std::bind(&GloabalLocalization::CallbackBaselink2Odom, this,
+                  std::placeholders::_1));
+    sub_scan_cur_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        "cloud_registered_1", latest_cloud_qos,
+        std::bind(&GloabalLocalization::CallbackScan, this,
+                  std::placeholders::_1));
     RCLCPP_WARN(this->get_logger(), "initialize finished");
 
     br_odom2map_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
@@ -1812,6 +1815,11 @@ void GloabalLocalization::LocalizationInitialize()
             used_global_initialization ? "global" : "local",
             consecutive_successes, required_confirmations,
             fitness, inlier_rmse, ransac_fitness);
+        if (used_global_initialization)
+        {
+            std::this_thread::sleep_for(std::chrono::duration<double>(
+                global_retry_interval_sec_));
+        }
     }
 }
 

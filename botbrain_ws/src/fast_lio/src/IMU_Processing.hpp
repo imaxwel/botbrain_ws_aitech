@@ -47,6 +47,7 @@ class ImuProcess
   void Reset();
   // void Reset(double start_timestamp, const sensor_msgs::ImuConstPtr &lastimu);
   void Reset(double start_timestamp, const sensor_msgs::msg::Imu::ConstSharedPtr &lastimu);
+  bool RebaseAfterGap(const MeasureGroup &meas, const state_ikfom &state);
   void set_extrinsic(const V3D &transl, const M3D &rot);
   void set_extrinsic(const V3D &transl);
   void set_extrinsic(const MD(4,4) &T);
@@ -130,6 +131,66 @@ void ImuProcess::RestorePropagationCheckpoint(
   acc_s_last = checkpoint.acc_s_last;
   last_lidar_end_time_ = checkpoint.last_lidar_end_time;
   IMUpose.clear();
+}
+
+bool ImuProcess::RebaseAfterGap(const MeasureGroup &meas, const state_ikfom &state)
+{
+  if (meas.imu.empty() || !std::isfinite(meas.lidar_end_time))
+  {
+    return false;
+  }
+
+  const auto &latest_imu = meas.imu.back();
+  if (latest_imu == nullptr)
+  {
+    return false;
+  }
+  const double latest_imu_time = rclcpp::Time(latest_imu->header.stamp).seconds();
+  const double imu_lag_at_scan_end = meas.lidar_end_time - latest_imu_time;
+  if (!std::isfinite(latest_imu_time) ||
+      !std::isfinite(imu_lag_at_scan_end) ||
+      imu_lag_at_scan_end < -1e-3 || imu_lag_at_scan_end > 0.10)
+  {
+    return false;
+  }
+  V3D latest_gyro(
+      latest_imu->angular_velocity.x,
+      latest_imu->angular_velocity.y,
+      latest_imu->angular_velocity.z);
+  V3D latest_acc(
+      latest_imu->linear_acceleration.x,
+      latest_imu->linear_acceleration.y,
+      latest_imu->linear_acceleration.z);
+  const double mean_acc_norm = mean_acc.norm();
+  if (!latest_gyro.allFinite() || !latest_acc.allFinite() ||
+      !std::isfinite(mean_acc_norm) || mean_acc_norm < 1e-6)
+  {
+    return false;
+  }
+
+  latest_acc *= G_m_s2 / mean_acc_norm;
+  const V3D rebased_angvel = latest_gyro - state.bg;
+  V3D rebased_acc = state.rot * (latest_acc - state.ba);
+  for (int axis = 0; axis < 3; ++axis)
+  {
+    rebased_acc[axis] += state.grav[axis];
+  }
+  if (!rebased_angvel.allFinite() || !rebased_acc.allFinite())
+  {
+    return false;
+  }
+
+  last_imu_ = latest_imu;
+  last_lidar_end_time_ = meas.lidar_end_time;
+  angvel_last = rebased_angvel;
+  acc_s_last = rebased_acc;
+  v_imu_.clear();
+  IMUpose.clear();
+  if (cur_pcl_un_ != nullptr)
+  {
+    cur_pcl_un_->clear();
+  }
+  return true;
 }
 
 void ImuProcess::Reset() 

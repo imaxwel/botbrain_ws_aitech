@@ -67,7 +67,7 @@ global_localization_node:
     global_min_ransac_fitness: 0.0
     global_min_fitness: 0.65
     global_max_inlier_rmse: 0.30
-    global_retry_interval_sec: 1.0
+    global_retry_interval_sec: 2.0
     global_initialization_confirmations: 3
     global_candidate_consistency_translation: 0.35
     global_candidate_consistency_rotation_deg: 5.0

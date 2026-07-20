@@ -65,7 +65,7 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     source = _read("docker-compose.yaml")
 
     assert "/botbrain_ws/start_localization.sh" not in source
-    assert "sleep 30" in source
+    assert "LOCALIZATION_START_DELAY_SEC" in source
     assert "source /opt/ros/humble/setup.bash" in source
     assert "source /botbrain_ws/install/setup.bash" in source
     assert "exec ros2 launch g1_pkg localization_3d.launch.py" in source
@@ -75,6 +75,16 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     assert compose["services"]["localization"]["environment"]["MAP_SCENE"] == (
         "${MAP_SCENE:-ug}"
     )
+    localization_env = compose["services"]["localization"]["environment"]
+    assert localization_env["OMP_NUM_THREADS"] == "2"
+    assert localization_env["OMP_DYNAMIC"] == "FALSE"
+    assert localization_env["OPENBLAS_NUM_THREADS"] == "1"
+    assert localization_env["LOCALIZATION_START_DELAY_SEC"] == (
+        "${LOCALIZATION_START_DELAY_SEC:-30}"
+    )
+    assert compose["services"]["fast_lio"]["environment"][
+        "FAST_LIO_START_DELAY_SEC"
+    ] == "${FAST_LIO_START_DELAY_SEC:-25}"
     localization_command = compose["services"]["localization"]["command"][-1]
     assert localization_command.count("MAP_SCENE") == 1
     assert 'map_scene:="$${MAP_SCENE}"' in localization_command
@@ -88,21 +98,45 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     selector = _read("tools/nav/select_map_scene.sh")
     compact_runbook = _read("建图导航指令.md")
 
-    assert 'MAP_SCENE="$scene" docker compose --profile navigation' in selector
+    assert 'MAP_SCENE="$scene" LOCALIZATION_START_DELAY_SEC=0' in selector
+    assert "FAST_LIO_START_DELAY_SEC=0" in selector
     assert "docker compose rm -f navigation localization" in selector
     assert "--force-recreate --no-deps localization" in selector
     assert "docker inspect g1_robot_localization" in selector
     assert 'expected_log="Map selection: scene=$scene "' in selector
     assert "ros2 param get /global_localization_node path_map" in selector
     assert "ros2 param get /map_server yaml_filename" in selector
-    assert 'ros2 topic info /pcd_map' in selector
-    assert 'Publisher count: 1' in selector
-    assert "docker compose up -d --force-recreate foxglove" in selector
+    assert "topic_publisher_count" in selector
+    assert "Unable to parse publisher count" in selector
+    assert "map_publishers" in selector
+    assert "unable to query old map publishers" in selector
+    assert "legacy container g1_robot_mapping is running" in selector
+    assert "docker compose up -d --force-recreate foxglove" not in selector
+    assert "Foxglove connection was preserved" in selector
     assert "--restart-fast-lio" in selector
+    assert "--wait-ready" in selector
+    assert "--ready-timeout" in selector
+    assert "navigation_preflight.py" in selector
+    assert "localization is ready for navigation" in selector
+    assert "flock -n 9" in selector
     assert 'grep -Fq "IMU Initial Done"' in selector
+    assert "latest_timing" in selector
+    assert "timing_count" in selector
+    assert "ros2 topic echo /Odometry_loc --once" in selector
+    assert "ros2 topic echo /cloud_registered_1 --once" in selector
+    assert "docker compose ps -aq --all localization" in selector
+    assert "old map publishers are still visible" in selector
     assert "botbrain_ws/install/fast_lio/share/fast_lio/config/mid360.yaml" in selector
     assert "pcd_save_en:" in selector
     assert 'bash tools/nav/select_map_scene.sh "$scene"' in compact_runbook
+
+    publisher_count_body = selector.split(
+        "topic_publisher_count() {", 1)[1].split("wait_for_restarted_fast_lio() {", 1)[0]
+    ros_setup = publisher_count_body.index(
+        "source /opt/ros/humble/setup.bash")
+    nounset = publisher_count_body.index("set -u", ros_setup)
+    assert ros_setup < nounset
+    assert "set +u" in publisher_count_body[:ros_setup]
 
 
 def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
@@ -176,7 +210,7 @@ def test_compact_map_review_keeps_live_fast_lio_topics_available():
 
     assert "docker compose up -d bringup state_machine" in review
     assert (
-        'bash tools/nav/select_map_scene.sh "$scene" --restart-fast-lio'
+        'bash tools/nav/select_map_scene.sh "$scene" --restart-fast-lio --wait-ready'
         in review
     )
     assert "docker compose up fast_lio localization" not in source
@@ -206,6 +240,30 @@ def test_fast_lio_guard_recovers_early_or_stops_unconfirmed_outputs():
     )
     assert "output latched unhealthy after %d consecutive" in source
     assert "guard_failure_latched = true;" in source
+
+
+def test_fast_lio_rebases_before_processing_an_imu_timing_gap():
+    source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
+    imu_source = _read("botbrain_ws/src/fast_lio/src/IMU_Processing.hpp")
+    params = yaml.safe_load(_read(
+        "botbrain_ws/src/fast_lio/config/mid360.yaml"
+    ))["/**"]["ros__parameters"]
+
+    timing_guard = source.index(
+        "if (!timing_ok)", source.index("void timer_callback()"))
+    imu_process = source.index("p_imu->Process(Measures, kf, feats_undistort)")
+    assert timing_guard < imu_process
+    assert "dropping this scan before IMU propagation" in source
+    assert "p_imu->RebaseAfterGap(Measures, state_before_gap)" in source
+    assert "DropBufferedSensorData();" in source
+    assert "suppress_unconfirmed_odometry_after_timing_gap = true;" in source
+    assert "!suppress_unconfirmed_odometry_after_timing_gap" in source
+    assert "last_lidar_end_time_ = meas.lidar_end_time;" in imu_source
+    assert "last_imu_ = latest_imu;" in imu_source
+    assert "imu_lag_at_scan_end > 0.10" in imu_source
+    assert "rejected an invalid IMU rebase baseline" in source
+    assert params["common"]["imu_queue_depth"] <= 400
+    assert params["common"]["lidar_queue_depth"] <= 20
 
 
 def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():
@@ -266,6 +324,12 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert int(params["global_scan_window_size"]) >= 10
     assert float(params["global_min_ransac_fitness"]) == 0.0
     assert "ransac_fitness <= global_min_ransac_fitness_" in source
+    subscription = source.index(
+        "sub_baselink2odom_ = this->create_subscription")
+    assert subscription > source.index("if (enable_global_initialization_)")
+    assert subscription < source.index("\n    StartLoc();", subscription)
+    assert "global_retry_interval_sec_));" in source
+    assert "'global_retry_interval_sec':  2.0" in launch
     assert "last_localization_pose" not in source
     assert "last_localization_pose" not in launch
 

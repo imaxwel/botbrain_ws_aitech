@@ -7,7 +7,7 @@
     filter_size_map: 0.3   # 匹配参考
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/aitech_scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
       lid_topic: "/livox/lidar"
@@ -15,8 +15,10 @@
       # upside-down R_x(pi) correction internally to avoid relay latency.
       imu_topic: "/livox/imu"
       imu_flip_yz: true
-      imu_queue_depth: 2000
-      lidar_queue_depth: 100
+      # Keep at most about two seconds of input. Longer reliable queues turn a
+      # temporary CPU stall into stale odometry and a large IMU integration gap.
+      imu_queue_depth: 400
+      lidar_queue_depth: 20
       time_sync_en: false # ONLY turn on when external time synchronization is really not possible
       time_offset_lidar_to_imu:
         0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).

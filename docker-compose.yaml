@@ -122,7 +122,9 @@ services:
   fast_lio:
     extends: nav3d
     container_name: g1_robot_fast_lio
-    command: ["bash", "-lc", "sleep 25 && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch --noninteractive g1_pkg fast_lio.launch.py"]
+    environment:
+      FAST_LIO_START_DELAY_SEC: ${FAST_LIO_START_DELAY_SEC:-25}
+    command: ["bash", "-lc", "sleep \"$${FAST_LIO_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch --noninteractive g1_pkg fast_lio.launch.py"]
     stop_signal: SIGINT
     stop_grace_period: 180s
     restart: always
@@ -133,7 +135,14 @@ services:
     profiles: ["navigation"]
     environment:
       MAP_SCENE: ${MAP_SCENE:-ug}
-    command: ["bash", "-lc", "sleep 30 && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_pkg localization_3d.launch.py map_scene:=\"$${MAP_SCENE}\""]
+      # Keep global FPFH/RANSAC from starving the real-time FAST-LIO process.
+      OMP_NUM_THREADS: "2"
+      OMP_DYNAMIC: "FALSE"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OMP_WAIT_POLICY: PASSIVE
+      LOCALIZATION_START_DELAY_SEC: ${LOCALIZATION_START_DELAY_SEC:-30}
+    command: ["bash", "-lc", "sleep \"$${LOCALIZATION_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_pkg localization_3d.launch.py map_scene:=\"$${MAP_SCENE}\""]
     # Localization is map-specific and must be started explicitly after
     # FAST-LIO. A profile does not prevent an already-created container with
     # restart: always from auto-starting after a robot/Docker reboot.
