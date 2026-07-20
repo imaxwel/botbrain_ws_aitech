@@ -42,7 +42,9 @@ class NavigationPreflight(Node):
             'confidence_topic', '/localization_3d_confidence')
         self.declare_parameter('twist_odom_topic', '/g1_robot/odom')
         self.declare_parameter('pose_odom_topic', '/Odometry_loc')
-        self.declare_parameter('allow_pose_derived_twist', True)
+        # Navigation normally requires the robot's measured twist. FAST-LIO
+        # pose differencing remains available only as an explicit diagnostic.
+        self.declare_parameter('allow_pose_derived_twist', False)
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'g1_robot/base_footprint')
         self.declare_parameter('timeout_sec', 300.0)
@@ -125,6 +127,10 @@ class NavigationPreflight(Node):
             Odometry, self.twist_odom_topic, self._twist_odom_callback, 10)
         self.create_subscription(
             Odometry, self.pose_odom_topic, self._pose_odom_callback, 20)
+        self.get_logger().info(
+            f'Navigation requires fresh Unitree twist on '
+            f'{self.twist_odom_topic}; pose-derived fallback='
+            f'{self.allow_pose_derived_twist}')
 
     def _ros_now(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -314,6 +320,8 @@ class NavigationPreflight(Node):
                     'Waiting for navigation inputs: '
                     f'scan={scan_ok} twist_odom={twist_odom_ok} '
                     f'twist_source={twist_source} '
+                    f'unitree_twist={unitree_twist_ok} '
+                    f'pose_fallback_allowed={self.allow_pose_derived_twist} '
                     f'ready={self._localization_ready} '
                     f'confidence={self._confidence:.3f}/'
                     f'{self.min_confidence:.3f} '

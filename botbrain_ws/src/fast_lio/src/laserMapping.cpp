@@ -85,6 +85,7 @@ std::size_t last_saved_point_count = std::numeric_limits<std::size_t>::max();
 bool imu_flip_yz = false;
 bool lidar_update_guard_enable = true;
 int imu_queue_depth = 400, lidar_queue_depth = 20;
+double max_imu_gap = 0.02;
 int guard_min_effective_points = 100, consecutive_guard_rejections = 0;
 int guard_recovery_min_rejections = 5, guard_recovery_min_effective_points = 60;
 int guard_max_unconfirmed_odometry_frames = 3, guard_max_consecutive_rejections = 30;
@@ -192,10 +193,12 @@ void RefreshStateOutputs()
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
-void DropBufferedSensorData()
+void DropBufferedLidarData()
 {
     lock_guard<mutex> lock(mtx_buffer);
-    imu_buffer.clear();
+    // sync_packages() has already consumed the IMU samples belonging to the
+    // rejected scan. Keep the remaining, strictly newer samples so the next
+    // scan can resume from the rebase baseline instead of creating another gap.
     lidar_buffer.clear();
     time_buffer.clear();
     lidar_pushed = false;
@@ -944,6 +947,7 @@ public:
         this->declare_parameter<bool>("common.imu_flip_yz", false);
         this->declare_parameter<int>("common.imu_queue_depth", 400);
         this->declare_parameter<int>("common.lidar_queue_depth", 20);
+        this->declare_parameter<double>("common.max_imu_gap", 0.02);
         this->declare_parameter<double>("filter_size_corner", 0.5);
         this->declare_parameter<double>("filter_size_surf", 0.5);
         this->declare_parameter<double>("filter_size_map", 0.5);
@@ -1000,6 +1004,7 @@ public:
         this->get_parameter_or<bool>("common.imu_flip_yz", imu_flip_yz, false);
         this->get_parameter_or<int>("common.imu_queue_depth", imu_queue_depth, 400);
         this->get_parameter_or<int>("common.lidar_queue_depth", lidar_queue_depth, 20);
+        this->get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.02);
         this->get_parameter_or<double>("filter_size_corner", filter_size_corner_min, 0.5);
         this->get_parameter_or<double>("filter_size_surf", filter_size_surf_min, 0.5);
         this->get_parameter_or<double>("filter_size_map", filter_size_map_min, 0.5);
@@ -1043,6 +1048,7 @@ public:
 
         imu_queue_depth = std::max(10, imu_queue_depth);
         lidar_queue_depth = std::max(5, lidar_queue_depth);
+        max_imu_gap = std::max(0.005, std::min(0.10, max_imu_gap));
         guard_min_effective_points = std::max(1, guard_min_effective_points);
         guard_min_effective_ratio = std::max(0.0, std::min(1.0, guard_min_effective_ratio));
         guard_recovery_min_rejections = std::max(1, guard_recovery_min_rejections);
@@ -1073,9 +1079,10 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
         RCLCPP_INFO(this->get_logger(),
-                    "FAST-LIO input: imu=%s flip_yz=%s imu_q=%d lidar_q=%d guard=%s",
+                    "FAST-LIO input: imu=%s flip_yz=%s imu_q=%d lidar_q=%d max_imu_gap=%.4fs guard=%s",
                     imu_topic.c_str(), imu_flip_yz ? "true" : "false", imu_queue_depth,
-                    lidar_queue_depth, lidar_update_guard_enable ? "true" : "false");
+                    lidar_queue_depth, max_imu_gap,
+                    lidar_update_guard_enable ? "true" : "false");
         RCLCPP_INFO(
             this->get_logger(),
             "[FAST_LIO_GUARD] recovery_points=%d unconfirmed_odom_frames=%d "
@@ -1194,7 +1201,7 @@ private:
             // prediction are untrustworthy and must not be written into the map.
             double imu_first_time = std::numeric_limits<double>::quiet_NaN();
             double imu_last_time = std::numeric_limits<double>::quiet_NaN();
-            double max_imu_gap = 0.0;
+            double observed_max_imu_gap = 0.0;
             bool imu_timestamps_valid = true;
             if (!Measures.imu.empty())
             {
@@ -1212,8 +1219,8 @@ private:
                     imu_timestamps_valid =
                         imu_timestamps_valid && std::isfinite(previous_frame_imu_time) &&
                         imu_first_time + 1e-6 >= previous_frame_imu_time;
-                    max_imu_gap = std::max(
-                        max_imu_gap, imu_first_time - previous_frame_imu_time);
+                    observed_max_imu_gap = std::max(
+                        observed_max_imu_gap, imu_first_time - previous_frame_imu_time);
                 }
                 for (const auto &imu : Measures.imu)
                 {
@@ -1221,7 +1228,8 @@ private:
                     imu_timestamps_valid =
                         imu_timestamps_valid && std::isfinite(current_imu_time) &&
                         current_imu_time + 1e-6 >= previous_imu_time;
-                    max_imu_gap = std::max(max_imu_gap, current_imu_time - previous_imu_time);
+                    observed_max_imu_gap = std::max(
+                        observed_max_imu_gap, current_imu_time - previous_imu_time);
                     previous_imu_time = current_imu_time;
                     imu_last_time = current_imu_time;
                 }
@@ -1232,7 +1240,7 @@ private:
             const bool timing_ok =
                 Measures.imu.size() >= 5 &&
                 imu_timestamps_valid &&
-                max_imu_gap <= 0.02 &&
+                observed_max_imu_gap <= max_imu_gap &&
                 scan_duration >= 0.05 && scan_duration <= 0.15 &&
                 std::isfinite(lidar_end_minus_last_imu) &&
                 lidar_end_minus_last_imu >= -1e-3 &&
@@ -1242,10 +1250,10 @@ private:
                 Measures.lidar_end_time - last_timing_log_time >= 2.0)
             {
                 RCLCPP_INFO(this->get_logger(),
-                            "[FAST_LIO_TIMING] ok=%s scan=%.4fs imu_count=%zu imu_first=%.6f imu_last=%.6f max_gap=%.4fs end_minus_last_imu=%.4fs imu_buffer=%zu lidar_buffer=%zu",
+                            "[FAST_LIO_TIMING] ok=%s scan=%.4fs imu_count=%zu imu_first=%.6f imu_last=%.6f max_gap=%.4fs limit=%.4fs end_minus_last_imu=%.4fs imu_buffer=%zu lidar_buffer=%zu",
                             timing_ok ? "true" : "false", scan_duration,
                             Measures.imu.size(), imu_first_time, imu_last_time,
-                            max_imu_gap, lidar_end_minus_last_imu,
+                            observed_max_imu_gap, max_imu_gap, lidar_end_minus_last_imu,
                             imu_buffer.size(), lidar_buffer.size());
                 if (!timing_ok)
                 {
@@ -1281,7 +1289,7 @@ private:
                 const bool has_imu_baseline = !Measures.imu.empty();
                 const bool rebased = has_imu_baseline &&
                     p_imu->RebaseAfterGap(Measures, state_before_gap);
-                DropBufferedSensorData();
+                DropBufferedLidarData();
                 Measures.imu.clear();
                 feats_undistort->clear();
                 suppress_unconfirmed_odometry_after_timing_gap = true;
@@ -1305,9 +1313,10 @@ private:
 
                 RCLCPP_WARN(
                     this->get_logger(),
-                    "[FAST_LIO_TIMING] discarded buffered sensor data and rebased "
-                    "IMU propagation after a timing discontinuity (max_gap=%.4fs)",
-                    max_imu_gap);
+                    "[FAST_LIO_TIMING] discarded buffered LiDAR data, preserved future "
+                    "IMU samples, and rebased IMU propagation after a timing "
+                    "discontinuity (max_gap=%.4fs)",
+                    observed_max_imu_gap);
                 return;
             }
 

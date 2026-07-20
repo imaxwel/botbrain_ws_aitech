@@ -48,7 +48,9 @@ class NavOdomRelay(Node):
         self.declare_parameter('output_frame', 'g1_robot/odom')
         self.declare_parameter('child_frame', 'g1_robot/base_footprint')
         self.declare_parameter('twist_timeout_sec', 0.5)
-        self.declare_parameter('derive_twist_from_pose', True)
+        # Pose differencing is useful for diagnostics, but FAST-LIO corrections
+        # are not a stable closed-loop velocity source for Nav2.
+        self.declare_parameter('derive_twist_from_pose', False)
         self.declare_parameter('derived_twist_min_dt_sec', 0.02)
         self.declare_parameter('derived_twist_max_dt_sec', 0.5)
         self.declare_parameter('max_derived_linear_speed', 2.0)
@@ -87,7 +89,8 @@ class NavOdomRelay(Node):
         self.create_subscription(Odometry, pose_topic, self._pose_callback, 20)
         self.get_logger().info(
             f'Nav odom relay: pose={pose_topic} twist={twist_topic} '
-            f'output={output_topic}')
+            f'output={output_topic} '
+            f'pose_twist_fallback={self.derive_twist_from_pose}')
 
     def _announce_twist_source(self, source):
         if source == self._twist_source:

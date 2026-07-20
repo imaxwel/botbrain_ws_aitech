@@ -21,7 +21,9 @@
     odom_topic: /<prefix>nav_odom
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.10   # 0.5→0.10: 配合vy_max=0.20，有效横向速度区间0.10~0.20
+    # Keep measured lateral motion visible to the Omni controller. A 0.10 m/s
+    # deadband discarded most of the configured +/-0.15 m/s lateral range.
+    min_y_velocity_threshold: 0.01
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
@@ -35,10 +37,12 @@
       required_movement_radius: 0.15
       movement_time_allowance: 40.0
     general_goal_checker:
-      stateful: False                # True→False: 同时校验xy+yaw，避免旋转修正后横漂死循环
+      # Once XY is reached, finish the yaw check without re-entering a lateral
+      # micro-correction loop. The tolerances match repeatable G1 stopping error.
+      stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.15        # planner + goal-checker error stays near 0.25 m worst-case
-      yaw_goal_tolerance: 0.25       # retain the robot-side precision setting
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.35
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       # MPPI requires model_dt >= controller period. At 12 Hz the period is
@@ -59,7 +63,9 @@
       vy_max: 0.15   # 恢复横向速度
       vy_min: -0.15
       wz_max: 0.8    # 1.2→0.8: 进一步限制旋转速度，旋转过快是ICP丢失的主因
-      iteration_count: 2             # 1→2: 每控制周期双次优化，消除转弯停顿
+      # One MPPI optimization per 12 Hz cycle keeps control output timely while
+      # localization and costmaps share the Jetson GPU/CPU budget.
+      iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 1.0
       temperature: 0.3

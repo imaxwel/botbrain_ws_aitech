@@ -13,7 +13,9 @@
         priority: 5
       navigation:
         topic   : cmd_vel_nav
-        timeout : 0.2
+        # Allow up to three missed 12 Hz controller cycles without injecting a
+        # zero-velocity gap, while still stopping promptly on a real outage.
+        timeout : 0.3
         priority: 10
       manipulation:
         topic   : manipulation_vel

@@ -118,6 +118,24 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     assert "--ready-timeout" in selector
     assert "navigation_preflight.py" in selector
     assert "localization is ready for navigation" in selector
+    assert "wait_for_consecutive_icp_accepts" in selector
+    assert "3 consecutive accepted ICP updates" in selector
+    assert "ICP: accepted=true" in selector
+    assert "Rejecting ICP|Skipping ICP|ICP: accepted=false" in selector
+    assert "fitness_value <= 0.50" in selector
+    assert "rmse_value > 0.30" in selector
+    assert "ICP accepted: %s %s" in selector
+    assert 'docker logs --since "$localization_started_at"' in selector
+    assert 'current_container_id" != "$localization_container_id' in selector
+    assert "Latest ICP decisions from the current localization container" in selector
+    assert "verify_navigation_topic_publishers" in selector
+    assert "print_unitree_twist_diagnostics" in selector
+    assert "ros2 lifecycle get /g1_robot/robot_read_node" in selector
+    assert "ros2 topic hz /lf/odommodestate" in selector
+    assert "ros2 topic hz /g1_robot/odom" in selector
+    assert "/Odometry_loc" in selector
+    assert "/cloud_registered_body_1" in selector
+    assert "navigation topics must each have exactly 1 publisher" in selector
     assert "flock -n 9" in selector
     assert 'grep -Fq "IMU Initial Done"' in selector
     assert "latest_timing" in selector
@@ -137,6 +155,15 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     nounset = publisher_count_body.index("set -u", ros_setup)
     assert ros_setup < nounset
     assert "set +u" in publisher_count_body[:ros_setup]
+
+    readiness_body = selector.split(
+        "wait_for_localization_ready() {", 1)[1].split("\nmaps=", 1)[0]
+    assert readiness_body.index("wait_for_localization_preflight") < (
+        readiness_body.index("wait_for_consecutive_icp_accepts")
+    )
+    assert readiness_body.index("wait_for_consecutive_icp_accepts") < (
+        readiness_body.index("verify_navigation_topic_publishers")
+    )
 
 
 def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
@@ -174,7 +201,7 @@ def test_g1_laserscan_filters_body_cloud_for_navigation_obstacles():
     assert 1.20 <= float(scan_params["max_height"]) <= 1.50
     assert float(scan_params["range_min"]) >= 0.40
     assert float(scan_params["range_max"]) >= 3.0
-    assert float(scan_params["transform_tolerance"]) >= 0.10
+    assert float(scan_params["transform_tolerance"]) == 0.0
     assert scan_params["use_inf"] is True
     assert int(scan_params["queue_size"]) >= 5
     assert "concurrency_level" not in scan_params
@@ -255,7 +282,7 @@ def test_fast_lio_rebases_before_processing_an_imu_timing_gap():
     assert timing_guard < imu_process
     assert "dropping this scan before IMU propagation" in source
     assert "p_imu->RebaseAfterGap(Measures, state_before_gap)" in source
-    assert "DropBufferedSensorData();" in source
+    assert "DropBufferedLidarData();" in source
     assert "suppress_unconfirmed_odometry_after_timing_gap = true;" in source
     assert "!suppress_unconfirmed_odometry_after_timing_gap" in source
     assert "last_lidar_end_time_ = meas.lidar_end_time;" in imu_source
@@ -451,6 +478,10 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
     assert "No fresh {scan_topic} received" in navigator
     assert "cancel_goal_async" not in navigator
     assert "status != GoalStatus.STATUS_SUCCEEDED" in navigator
+    assert "feedback.number_of_recoveries" in navigator
+    assert "feedback.navigation_time" in navigator
+    assert "yaw_error=" in navigator
+    assert "if rclpy.ok():" in navigator
     assert "sys.exit(1)" in navigator
     assert "Stopping waypoint sequence after navigation failure." in navigator
     for waypoint in waypoints.values():
@@ -480,6 +511,7 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
     assert "output.pose.pose.position.z = 0.0" in relay
     assert "output.twist = copy.deepcopy(self._last_twist)" in relay
     assert "derive_twist_from_pose" in relay
+    assert "declare_parameter('derive_twist_from_pose', False)" in relay
     assert "def _derive_pose_twist(" in relay
     assert "fast_lio_pose" in relay
     assert "max_derived_linear_speed" in relay
@@ -487,9 +519,11 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
     assert "Navigation preflight passed" in preflight
     assert "pose_odom_topic" in preflight
     assert "allow_pose_derived_twist" in preflight
+    assert "declare_parameter('allow_pose_derived_twist', False)" in preflight
     assert "max_derived_linear_speed" in preflight
     assert "max_derived_angular_speed" in preflight
     assert "twist_source={twist_source}" in preflight
+    assert "unitree_twist={unitree_twist_ok}" in preflight
     assert "qos_profile_sensor_data" in robot_read
     assert "SportModeState, '/lf/odommodestate'" in robot_read
     assert "max_base_tilt_deg" in preflight
@@ -517,8 +551,13 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     cmake = _read("botbrain_ws/src/bot_navigation/CMakeLists.txt")
 
     assert float(planner["tolerance"]) <= 0.10
-    assert float(controller["general_goal_checker"]["xy_goal_tolerance"]) <= 0.15
+    goal_checker = controller["general_goal_checker"]
+    assert goal_checker["stateful"] is True
+    assert 0.20 <= float(goal_checker["xy_goal_tolerance"]) <= 0.30
+    assert 0.30 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.40
     assert float(controller["progress_checker"]["required_movement_radius"]) <= 0.15
+    assert float(controller["min_y_velocity_threshold"]) <= 0.01
+    assert int(controller["FollowPath"]["iteration_count"]) == 1
     assert int(bt["bt_loop_duration"]) >= 20
     assert int(bt["default_server_timeout"]) >= 200
     assert int(bt["wait_for_service_timeout"]) >= 1000
@@ -531,6 +570,12 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert "behavior_trees" in cmake
     assert "file(REMOVE" in cmake
     assert "goal_pose_bridge.py" in cmake
+    twist_mux = yaml.safe_load(_read(
+        "botbrain_ws/src/bot_bringup/config/twist_mux.yaml"))
+    mux_params = twist_mux["/**"]["ros__parameters"]
+    navigation_timeout = float(mux_params["topics"]["navigation"]["timeout"])
+    assert 0.25 <= navigation_timeout <= 0.35
+    assert navigation_timeout < float(mux_params["twist_watchdog_timeout"])
 
 
 def test_state_machine_does_not_manage_nav2_utils_as_lifecycle_node():

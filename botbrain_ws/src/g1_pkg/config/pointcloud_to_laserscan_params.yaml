@@ -4,8 +4,9 @@ pointcloud_to_laserscan_node:
     # height filtering. Filtering in body would let normal gait roll/pitch make
     # the floor look sloped and leak into the obstacle band.
     target_frame: "g1_robot/base_footprint"
-    # Allow one or two FAST-LIO/TF update intervals before dropping a cloud.
-    transform_tolerance: 0.20
+    # The planar TF is published for the cloud's own timestamp. A positive
+    # tolerance asks tf2 for a future transform and adds avoidable scan latency.
+    transform_tolerance: 0.0
     min_height: 0.20
     max_height: 1.35
     angle_min: -3.1415926

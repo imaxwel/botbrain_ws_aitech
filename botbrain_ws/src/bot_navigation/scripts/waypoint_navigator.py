@@ -31,15 +31,24 @@ def _default_file() -> Path:
 DEFAULT_FILE = _default_file()
 
 
+def _quaternion_yaw(x: float, y: float, z: float, w: float) -> float:
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
+def _angle_error(target: float, current: float) -> float:
+    delta = target - current
+    return math.atan2(math.sin(delta), math.cos(delta))
+
+
 def _planar_quaternion(wp: dict):
     x = float(wp.get('qx', 0.0))
     y = float(wp.get('qy', 0.0))
     z = float(wp.get('qz', 0.0))
     w = float(wp.get('qw', 1.0))
-    yaw = math.atan2(
-        2.0 * (w * z + x * y),
-        1.0 - 2.0 * (y * y + z * z),
-    )
+    yaw = _quaternion_yaw(x, y, z, w)
     return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
 
 
@@ -111,7 +120,8 @@ def navigate(
     if not client.wait_for_server(timeout_sec=60.0):
         node.get_logger().error('NavigateToPose server not available (60 s timeout)')
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
         return False
 
     def go_to(name: str) -> bool:
@@ -128,21 +138,52 @@ def navigate(
         goal.pose.pose.orientation.y = qy
         goal.pose.pose.orientation.z = qz
         goal.pose.pose.orientation.w = qw
+        target_yaw = _quaternion_yaw(qx, qy, qz, qw)
 
         last_distance = [None]
+        last_path_remaining = [None]
+        last_yaw_error = [None]
+        last_recoveries = [0]
+        last_navigation_time = [0.0]
+        reported_recoveries = [0]
         last_feedback_log = [0.0]
 
         def feedback_cb(fb):
-            current = fb.feedback.current_pose.pose.position
+            feedback = fb.feedback
+            current = feedback.current_pose.pose.position
             dx = current.x - float(wp['x'])
             dy = current.y - float(wp['y'])
             last_distance[0] = math.hypot(dx, dy)
+            orientation = feedback.current_pose.pose.orientation
+            current_yaw = _quaternion_yaw(
+                orientation.x,
+                orientation.y,
+                orientation.z,
+                orientation.w,
+            )
+            last_yaw_error[0] = abs(_angle_error(target_yaw, current_yaw))
+            last_path_remaining[0] = float(feedback.distance_remaining)
+            last_recoveries[0] = int(feedback.number_of_recoveries)
+            duration = feedback.navigation_time
+            last_navigation_time[0] = duration.sec + duration.nanosec * 1e-9
+
+            if last_recoveries[0] > reported_recoveries[0]:
+                reported_recoveries[0] = last_recoveries[0]
+                print(
+                    f'  ! Nav2 recovery triggered '
+                    f'(count={last_recoveries[0]}, '
+                    f'distance={last_distance[0]:.2f} m)'
+                )
+
             now = node.get_clock().now().nanoseconds * 1e-9
             if now - last_feedback_log[0] >= 1.0:
                 last_feedback_log[0] = now
                 print(
                     f'  distance={last_distance[0]:.2f} m, '
-                    f'path_remaining={fb.feedback.distance_remaining:.2f} m'
+                    f'path_remaining={last_path_remaining[0]:.2f} m, '
+                    f'yaw_error={math.degrees(last_yaw_error[0]):.1f} deg, '
+                    f'recoveries={last_recoveries[0]}, '
+                    f'elapsed={last_navigation_time[0]:.1f} s'
                 )
 
         if not wait_for_fresh_scan():
@@ -172,10 +213,17 @@ def navigate(
             GoalStatus.STATUS_ABORTED: 'ABORTED',
         }
         final_distance = last_distance[0]
-        final_text = (
-            f', final_distance={final_distance:.2f} m'
-            if final_distance is not None else ''
-        )
+        final_details = []
+        if final_distance is not None:
+            final_details.append(f'distance={final_distance:.2f} m')
+        if last_path_remaining[0] is not None:
+            final_details.append(f'path_remaining={last_path_remaining[0]:.2f} m')
+        if last_yaw_error[0] is not None:
+            final_details.append(
+                f'yaw_error={math.degrees(last_yaw_error[0]):.1f} deg')
+        final_details.append(f'recoveries={last_recoveries[0]}')
+        final_details.append(f'elapsed={last_navigation_time[0]:.1f} s')
+        final_text = f', {", ".join(final_details)}'
         if status != GoalStatus.STATUS_SUCCEEDED:
             status_name = status_names.get(status, str(status))
             print(f'  ✗ Failed to reach "{name}" ({status_name}{final_text})')
@@ -211,7 +259,8 @@ def navigate(
     finally:
         node.destroy_subscription(scan_subscription)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
     return completed
 
 

@@ -157,19 +157,210 @@ wait_for_restarted_fast_lio() {
     return 1
 }
 
+localization_active_logs() {
+    local current_container_id
+    if ! current_container_id=$(docker inspect -f '{{.Id}}' \
+            g1_robot_localization 2>/dev/null); then
+        echo "ERROR: localization container is no longer available" >&2
+        return 1
+    fi
+    if [ "$current_container_id" != "$localization_container_id" ]; then
+        echo "ERROR: localization container changed while readiness was being checked" >&2
+        return 1
+    fi
+    docker logs --since "$localization_started_at" \
+        "$localization_container_id" 2>&1
+}
+
+trailing_accepted_icp_streak() {
+    awk '
+        function reset_streak() {
+            count = 0
+            first = second = third = ""
+        }
+        BEGIN {
+            number_pattern = "^[-+]?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$"
+        }
+        /Rejecting ICP|Skipping ICP|ICP: accepted=false/ {
+            reset_streak()
+            next
+        }
+        /ICP: accepted=true/ {
+            fitness_text = rmse_text = ""
+            for (field = 1; field <= NF; field++) {
+                if ($field ~ /^fitness=/)
+                    fitness_text = substr($field, length("fitness=") + 1)
+                if ($field ~ /^rmse=/)
+                    rmse_text = substr($field, length("rmse=") + 1)
+            }
+            if (fitness_text !~ number_pattern || rmse_text !~ number_pattern) {
+                reset_streak()
+                next
+            }
+            fitness_value = fitness_text + 0
+            rmse_value = rmse_text + 0
+            if (fitness_value <= 0.50 || rmse_value > 0.30) {
+                reset_streak()
+                next
+            }
+            if (count == 0) first = $0
+            else if (count == 1) second = $0
+            else if (count == 2) third = $0
+            else {
+                first = second
+                second = third
+                third = $0
+            }
+            if (count < 3) count++
+        }
+        END {
+            print count + 0
+            if (count == 3) {
+                print first
+                print second
+                print third
+            }
+        }
+    '
+}
+
+verify_navigation_topic_publishers() {
+    local topics=(
+        /Odometry_loc
+        /cloud_registered_1
+        /cloud_registered_body_1
+        /scan
+    )
+    local counts=()
+    local errors=()
+    local all_unique=true
+    local result
+    local topic
+
+    for topic in "${topics[@]}"; do
+        if result=$(topic_publisher_count \
+                g1_robot_localization "$topic" 2>&1); then
+            counts+=("$result")
+            if [ "$result" -ne 1 ]; then
+                all_unique=false
+            fi
+        else
+            counts+=("unknown")
+            errors+=("$topic: $result")
+            all_unique=false
+        fi
+    done
+
+    if [ "$all_unique" = true ]; then
+        echo "Navigation topic publishers are unique."
+        return 0
+    fi
+
+    echo "ERROR: navigation topics must each have exactly 1 publisher" >&2
+    for index in "${!topics[@]}"; do
+        echo "${topics[$index]} publishers: ${counts[$index]}" >&2
+    done
+    if [ "${#errors[@]}" -gt 0 ]; then
+        printf 'publisher query error: %s\n' "${errors[@]}" >&2
+    fi
+    return 1
+}
+
+print_icp_quality() {
+    awk '
+        {
+            fitness = ""
+            rmse = ""
+            for (field = 1; field <= NF; field++) {
+                if ($field ~ /^fitness=/) fitness = $field
+                if ($field ~ /^rmse=/) rmse = $field
+            }
+            if (fitness != "" && rmse != "")
+                printf "  ICP accepted: %s %s\n", fitness, rmse
+        }
+    '
+}
+
+print_unitree_twist_diagnostics() {
+    echo "Unitree odometry diagnostics:" >&2
+    if ! docker inspect -f '{{.State.Running}}' g1_robot_bringup 2>/dev/null |
+            grep -qx true; then
+        echo "  g1_robot_bringup is not running" >&2
+        return
+    fi
+    docker exec g1_robot_bringup bash -lc '
+        source /opt/ros/humble/setup.bash
+        source /botbrain_ws/install/setup.bash
+        ros2 lifecycle get /g1_robot/robot_read_node 2>&1 || true
+        ros2 topic info /lf/odommodestate 2>&1 || true
+        timeout 5 ros2 topic hz /lf/odommodestate 2>&1 || true
+        ros2 topic info /g1_robot/odom 2>&1 || true
+        timeout 5 ros2 topic hz /g1_robot/odom 2>&1 || true
+    ' >&2 || true
+}
+
 wait_for_localization_preflight() {
-    local command_timeout=$((ready_timeout + 15))
-    echo "Waiting up to ${ready_timeout}s for automatic localization and navigation inputs"
+    local ready_deadline=$1
+    local remaining=$((ready_deadline - SECONDS))
+    if [ "$remaining" -le 0 ]; then
+        echo "ERROR: --ready-timeout expired before navigation preflight" >&2
+        return 1
+    fi
+    local command_timeout=$((remaining + 15))
     if ! docker exec g1_robot_localization bash -lc "
         source /opt/ros/humble/setup.bash
         source /botbrain_ws/install/setup.bash
         timeout ${command_timeout} ros2 run bot_navigation navigation_preflight.py \\
-            --ros-args -p timeout_sec:=${ready_timeout}.0
+            --ros-args -p timeout_sec:=${remaining}.0
     "; then
         echo "ERROR: scene '$scene' loaded but automatic localization did not become ready" >&2
+        print_unitree_twist_diagnostics
         docker compose logs --no-color --tail 200 localization >&2 || true
         return 1
     fi
+}
+
+wait_for_consecutive_icp_accepts() {
+    local ready_deadline=$1
+    local localization_logs=""
+    local recent_icp=""
+    local streak=""
+    local streak_count=0
+
+    echo "Navigation inputs are ready; waiting for 3 consecutive accepted ICP updates"
+    while [ "$SECONDS" -lt "$ready_deadline" ]; do
+        if ! localization_logs=$(localization_active_logs); then
+            return 1
+        fi
+        streak=$(trailing_accepted_icp_streak <<<"$localization_logs")
+        streak_count=$(sed -n '1p' <<<"$streak")
+        if [ "$streak_count" -eq 3 ]; then
+            echo "Localization ICP is stable:"
+            tail -n 3 <<<"$streak" | print_icp_quality
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "ERROR: localization did not produce 3 consecutive accepted ICP updates before --ready-timeout ${ready_timeout}s expired" >&2
+    recent_icp=$(grep -E \
+        'ICP: accepted=(true|false)|Rejecting ICP|Skipping ICP' \
+        <<<"$localization_logs" | tail -n 12 || true)
+    if [ -n "$recent_icp" ]; then
+        echo "Latest ICP decisions from the current localization container:" >&2
+        printf '%s\n' "$recent_icp" >&2
+    else
+        echo "No ICP decision was logged by the current localization container." >&2
+    fi
+    return 1
+}
+
+wait_for_localization_ready() {
+    local ready_deadline=$((SECONDS + ready_timeout))
+    echo "Waiting up to ${ready_timeout}s for navigation inputs and stable localization"
+    wait_for_localization_preflight "$ready_deadline" || return 1
+    wait_for_consecutive_icp_accepts "$ready_deadline" || return 1
+    verify_navigation_topic_publishers || return 1
     echo "Scene '$scene' localization is ready for navigation."
 }
 
@@ -297,6 +488,21 @@ MAP_SCENE="$scene" LOCALIZATION_START_DELAY_SEC=0 \
     docker compose --profile navigation \
     up -d --force-recreate --no-deps localization
 
+localization_container_id=$(docker inspect -f '{{.Id}}' \
+    g1_robot_localization)
+localization_started_at=$(docker inspect -f \
+    '{{if .State.Running}}{{.State.StartedAt}}{{end}}' \
+    "$localization_container_id")
+if [ -z "$localization_container_id" ] || [ -z "$localization_started_at" ]; then
+    echo "ERROR: unable to identify the current localization startup" >&2
+    exit 1
+fi
+# Whole-second RFC3339 is accepted by older Docker versions as well. The
+# immutable container ID still limits the query to this startup cycle.
+case "$localization_started_at" in
+    *.*Z) localization_started_at="${localization_started_at%%.*}Z" ;;
+esac
+
 actual_scene=$(docker inspect g1_robot_localization \
     --format '{{range .Config.Env}}{{println .}}{{end}}' |
     sed -n 's/^MAP_SCENE=//p' | tail -n 1)
@@ -375,7 +581,7 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             echo "Scene '$scene' loaded. Foxglove was started without forced recreation."
         fi
         if [ "$wait_ready" = true ]; then
-            wait_for_localization_preflight
+            wait_for_localization_ready
         else
             echo "Wait for 'Localization ready' before starting navigation."
         fi
