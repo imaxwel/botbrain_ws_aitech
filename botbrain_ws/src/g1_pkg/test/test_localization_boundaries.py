@@ -146,6 +146,26 @@ def test_mapping_disables_unbounded_laser_map_publication():
     assert params["publish"]["map_en"] is False
     assert params["pcd_save"]["pcd_save_en"] is False
     assert "/Laser_map_1" not in bridge_params["topic_whitelist"]
+    assert "/localization_ready" in bridge_params["topic_whitelist"]
+
+
+def test_compact_map_review_keeps_live_fast_lio_topics_available():
+    source = _read("建图导航指令.md")
+    review = source.split("步骤 6：建图完成后查看效果", 1)[1].split("---", 1)[0]
+
+    assert "docker compose up -d bringup state_machine" in review
+    start_fast_lio = "docker compose up -d --force-recreate fast_lio"
+    start_localization = (
+        "docker compose --profile navigation up -d --force-recreate localization"
+    )
+    assert start_fast_lio in review
+    assert start_localization in review
+    assert review.index(start_fast_lio) < review.index(start_localization)
+    assert "docker compose up fast_lio localization" not in source
+    assert "/cloud_registered_1" in review
+    assert "/cloud_registered_body_1" in review
+    assert "/path_1" in review
+    assert "/scan" in review
 
 
 def test_fast_lio_guard_recovers_early_or_stops_unconfirmed_outputs():

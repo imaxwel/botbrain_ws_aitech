@@ -27,6 +27,7 @@
       - "/localization_3d"
       - "/localization_3d_confidence"
       - "/localization_3d_delay_ms"
+      - "/localization_ready"
       - "/pcd_map"
       - "/scan2map"
       - "/submap"
