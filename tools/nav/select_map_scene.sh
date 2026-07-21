@@ -909,13 +909,8 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             echo "Wait for 'Localization ready' before starting navigation."
         fi
 
-        if docker inspect -f '{{.State.Running}}' g1_robot_foxglove 2>/dev/null |
-                grep -qx true; then
-            echo "Scene '$scene' loaded. Foxglove connection was preserved."
-        else
-            docker compose up -d foxglove >/dev/null
-            echo "Scene '$scene' loaded. Foxglove was started without forced recreation."
-        fi
+        # RViz2 on the workstation is the visualization entry point through Zenoh.
+        echo "Scene '$scene' loaded. Connect workstation RViz2 through Zenoh."
 
         # All containers mount botbrain_ws at /botbrain_ws. Keep one atomic,
         # shared scene marker so waypoint commands can select the matching

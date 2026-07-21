@@ -131,7 +131,7 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     assert "unable to query old map publishers" in selector
     assert "legacy container g1_robot_mapping is running" in selector
     assert "docker compose up -d --force-recreate foxglove" not in selector
-    assert "Foxglove connection was preserved" in selector
+    assert "Connect workstation RViz2 through Zenoh." in selector
     assert "--restart-fast-lio" in selector
     assert "--wait-ready" in selector
     assert "--ready-timeout" in selector
@@ -328,14 +328,14 @@ def test_compact_map_review_keeps_live_fast_lio_topics_available():
     source = _read("建图导航指令.md")
     review = source.split("步骤 6：建图完成后查看效果", 1)[1].split("---", 1)[0]
 
-    assert "docker compose up -d bringup state_machine" in review
+    assert "docker compose up -d zenoh bringup state_machine" in review
     assert (
         'bash tools/nav/select_map_scene.sh "$scene" --restart-fast-lio --wait-ready'
         in review
     )
     assert "docker compose up fast_lio localization" not in source
     assert "/cloud_registered_1" in review
-    assert "/cloud_registered_body_1" in review
+    assert "/pcd_map" in review
     assert "/path_1" in review
     assert "/scan" in review
 
@@ -487,7 +487,7 @@ def test_initialpose_relay_rejects_non_map_frames():
 
     assert "frame_id = msg.header.frame_id.lstrip('/')" in source
     assert "if frame_id != 'map':" in source
-    assert "set Foxglove Fixed Frame to 'map'" in source
+    assert "set the visualization Fixed Frame to 'map'" in source
 
 
 def test_g1_mppi_period_matches_controller_and_preserves_horizon():

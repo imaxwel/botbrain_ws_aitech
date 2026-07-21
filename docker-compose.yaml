@@ -113,14 +113,6 @@ services:
     command: ["bash", "-lc", "source install/setup.bash && ros2 launch bot_bringup bringup.launch.py"]
     restart: always
 
-
-  foxglove:
-    extends: base
-    container_name: g1_robot_foxglove
-    command: ["bash", "-lc", "source install/setup.bash && ros2 run foxglove_bridge foxglove_bridge --ros-args --params-file src/bot_bringup/config/foxglove_bridge_params.yaml"]
-    restart: always
-
-
   fast_lio:
     extends: nav3d
     container_name: g1_robot_fast_lio

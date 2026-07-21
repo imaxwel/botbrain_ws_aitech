@@ -131,7 +131,7 @@ def generate_launch_description():
 
     IMU_HEIGHT = 1.247  # MID360 离地高度(m)，odom z=0 对应此高度
 
-    # Relay: /initialpose(z=0 from Foxglove/RViz 2D tool) → z corrected → /initialpose_corrected
+    # Relay: /initialpose(z=0 from a 2D visualization tool) → z corrected → /initialpose_corrected
     initialpose_z_fix = Node(
         package='g1_pkg',
         executable='initialpose_z_fix.py',

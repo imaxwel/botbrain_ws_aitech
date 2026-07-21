@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Relay: /initialpose -> z correction -> /initialpose_corrected
-Foxglove/RViz 2D tools send z=0; this node replaces z with ref_z (default 1.247).
+Foxglove/RViz2 2D tools send z=0; this node replaces z with ref_z (default 1.247).
 """
 import rclpy
 from rclpy.node import Node
@@ -22,7 +22,7 @@ class InitialPoseZFix(Node):
         if frame_id != 'map':
             self.get_logger().warning(
                 f"ignoring /initialpose in frame '{msg.header.frame_id}'; "
-                "set Foxglove Fixed Frame to 'map'")
+                "set the visualization Fixed Frame to 'map'")
             return
         if abs(msg.pose.pose.position.z) < 0.5:   # 2D tool sent z≈0
             msg.pose.pose.position.z = self._ref_z

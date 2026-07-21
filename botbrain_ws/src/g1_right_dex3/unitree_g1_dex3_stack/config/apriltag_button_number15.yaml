@@ -10,7 +10,7 @@ v4l2_apriltag_trigger:
     tag_family: "tag36h11"
     tag_size: 0.05
     target_tag_id: 0
-    offset_xyz: [-0.075, 0.22, -0.03]
+    offset_xyz: [0.096 , -0.02, 0.052]
     decision_margin_min: 25.0
     quad_decimate: 1.0
     detect_scale: 1.0
@@ -74,16 +74,18 @@ apriltag_button_press_node:
     dry_run: false
   
 ik_fcl_ompl_planner:
+
   ros__parameters:
     tcp_offset_x: 0.22
     tcp_offset_y: -0.025
-    tcp_offset_z: -0.012
+    tcp_offset_z: 0.04
     adaptive_orientation_enabled: false
     collision_detection_enabled: false
-    velocity_scale: 0.03
+    velocity_scale: 0.01
     fallback_enabled: true
     fallback_max_retraction: 0.05
     fallback_step: 0.005
     ik_timeout: 0.1
+    
     ik_random_seed_tries: 3
     fallback_total_timeout_s: 2.0

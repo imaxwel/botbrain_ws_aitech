@@ -7,7 +7,7 @@
     filter_size_map: 0.3   # 匹配参考
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/floor4_scans.pcd"
 
     common:
       lid_topic: "/livox/lidar"
