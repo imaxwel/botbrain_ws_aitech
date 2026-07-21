@@ -13,14 +13,18 @@
         priority: 5
       navigation:
         topic   : cmd_vel_nav
-        # Allow up to three missed 12 Hz controller cycles without injecting a
-        # zero-velocity gap, while still stopping promptly on a real outage.
-        timeout : 0.3
+        # Bridge a short controller/costmap wait without injecting a zero-speed
+        # command; the independent 0.5 s watchdog still bounds stale motion.
+        timeout : 0.45
         priority: 10
       manipulation:
         topic   : manipulation_vel
         timeout : 0.5
         priority: 50
+      navigation_safety:
+        topic   : cmd_vel_nav_safety
+        timeout : 0.5
+        priority: 90
       nipple:
         topic   : cmd_vel_nipple
         timeout : 0.2

@@ -40,7 +40,7 @@ class NavigationPreflight(Node):
         self.declare_parameter('ready_topic', '/localization_ready')
         self.declare_parameter(
             'confidence_topic', '/localization_3d_confidence')
-        self.declare_parameter('twist_odom_topic', '/g1_robot/odom')
+        self.declare_parameter('twist_odom_topic', '/g1_robot/nav_odom')
         self.declare_parameter('pose_odom_topic', '/Odometry_loc')
         # Navigation normally requires the robot's measured twist. FAST-LIO
         # pose differencing remains available only as an explicit diagnostic.
@@ -51,11 +51,15 @@ class NavigationPreflight(Node):
         self.declare_parameter('max_scan_age_sec', 1.0)
         self.declare_parameter('max_confidence_age_sec', 1.0)
         self.declare_parameter('max_twist_odom_age_sec', 0.5)
+        self.declare_parameter('max_twist_variance', 100.0)
         self.declare_parameter('max_pose_odom_age_sec', 0.5)
         self.declare_parameter('derived_twist_min_dt_sec', 0.02)
         self.declare_parameter('max_derived_linear_speed', 2.0)
         self.declare_parameter('max_derived_angular_speed', 3.0)
-        self.declare_parameter('min_confidence', 0.55)
+        # Keep the launch gate aligned with selector ICP acceptance (>0.50).
+        # The selector still requires a strict accepted=true ICP streak and
+        # rmse bound before navigation is started.
+        self.declare_parameter('min_confidence', 0.50)
         self.declare_parameter('max_base_height_error', 0.20)
         self.declare_parameter('max_base_tilt_deg', 5.0)
 
@@ -81,6 +85,8 @@ class NavigationPreflight(Node):
             0.1, float(self.get_parameter('max_confidence_age_sec').value))
         self.max_twist_odom_age = max(
             0.1, float(self.get_parameter('max_twist_odom_age_sec').value))
+        self.max_twist_variance = max(
+            0.0, float(self.get_parameter('max_twist_variance').value))
         self.max_pose_odom_age = max(
             0.1, float(self.get_parameter('max_pose_odom_age_sec').value))
         self.derived_twist_min_dt = max(
@@ -149,11 +155,20 @@ class NavigationPreflight(Node):
 
     def _twist_odom_callback(self, msg):
         twist = msg.twist.twist
+        covariance = msg.twist.covariance
+        planar_variances = (
+            covariance[0], covariance[7], covariance[35]
+        )
         self._twist_odom_valid = (
             msg.child_frame_id.lstrip('/') == self.base_frame and
             all(math.isfinite(value) for value in (
                 twist.linear.x, twist.linear.y, twist.angular.z
-            ))
+            )) and
+            all(
+                math.isfinite(value) and
+                0.0 <= value < self.max_twist_variance
+                for value in planar_variances
+            )
         )
         self._last_twist_odom_receive = time.monotonic()
         self._last_twist_odom_stamp = (
@@ -237,7 +252,7 @@ class NavigationPreflight(Node):
             self._last_confidence_receive is not None and
             monotonic_now - self._last_confidence_receive <=
             self.max_confidence_age and
-            self._confidence >= self.min_confidence
+            self._confidence > self.min_confidence
         )
 
     def _twist_odom_is_fresh(self, monotonic_now, ros_now):

@@ -233,6 +233,24 @@ def generate_launch_description():
         ],
     )
 
+    # Publish the exact odometry stream consumed by Nav2 before Navigation is
+    # allowed to start. Pose follows FAST-LIO/TF; twist comes from Unitree.
+    nav_odom_relay = Node(
+        package='bot_navigation',
+        executable='nav_odom_relay.py',
+        name='nav_odom_relay',
+        namespace='g1_robot',
+        output='screen',
+        parameters=[{
+            'pose_topic': '/Odometry_loc',
+            'twist_topic': '/g1_robot/odom',
+            'output_topic': '/g1_robot/nav_odom',
+            'output_frame': 'g1_robot/odom',
+            'child_frame': 'g1_robot/base_footprint',
+            'derive_twist_from_pose': False,
+        }],
+    )
+
     # Static TFs required by fast_lio + open3d_loc:
     #   odom  →  camera_init  (FAST_LIO world frame alias)
     #   base_link  →  imu_link
@@ -307,6 +325,7 @@ def generate_launch_description():
         ),
         initialpose_z_fix,
         global_localization,
+        nav_odom_relay,
         static_tf_camera_init,
         static_tf_imu2base,
         static_tf_motion2base,

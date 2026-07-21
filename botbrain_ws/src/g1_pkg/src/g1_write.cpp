@@ -264,8 +264,16 @@ void G1Write::cmd_vel_subscription_callback(const geometry_msgs::msg::Twist::Sha
 
     if (g1_driver_) 
     {
-        g1_driver_->move(static_cast<float>(vx), static_cast<float>(vy), static_cast<float>(wz),  
-            false);   
+        const int result = g1_driver_->move(
+            static_cast<float>(vx), static_cast<float>(vy),
+            static_cast<float>(wz), false);
+        if (result != 0)
+        {
+            RCLCPP_ERROR_THROTTLE(
+                this->get_logger(), *this->get_clock(), 2000,
+                "[G1Write] locomotion Move failed: code=%d command=%.3f/%.3f/%.3f",
+                result, vx, vy, wz);
+        }
     }
 }
 

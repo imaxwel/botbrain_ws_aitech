@@ -108,6 +108,8 @@ services:
   bringup:
     extends: base
     container_name: g1_robot_bringup
+    environment:
+      UNITREE_VELOCITY_FRAME: ${UNITREE_VELOCITY_FRAME:-odom}
     command: ["bash", "-lc", "source install/setup.bash && ros2 launch bot_bringup bringup.launch.py"]
     restart: always
 
@@ -152,7 +154,7 @@ services:
     extends: base
     container_name: g1_robot_navigation
     profiles: ["navigation"]
-    command: ["bash", "-lc", "sleep 30 && source install/setup.bash && ros2 run bot_navigation navigation_preflight.py --ros-args -p timeout_sec:=300.0 && exec ros2 launch bot_navigation navigation.launch.py"]
+    command: ["bash", "-lc", "sleep 30 && source install/setup.bash && ros2 run bot_navigation navigation_preflight.py --ros-args -p timeout_sec:=300.0 -p min_confidence:=0.50 -p allow_pose_derived_twist:=false && exec ros2 launch bot_navigation navigation.launch.py"]
     # Nav2 must not come up on a stale scan or an uninitialized map transform.
     restart: "no"
 

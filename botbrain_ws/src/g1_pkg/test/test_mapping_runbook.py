@@ -65,7 +65,10 @@ def test_mapping_runbook_documents_safe_save_and_editor_semantics():
     assert "^/g1_robot/navigate_to_pose " in source
     assert "Nav2 readiness check failed after 90s" in source
     assert "g1_robot_mapping" in source
-    assert "open3d_loc g1_pkg bot_navigation bot_state_machine" in source
+    assert (
+        "open3d_loc g1_pkg bot_navigation bot_bringup bot_state_machine"
+        in source
+    )
     assert "python3 /botbrain_ws/tools/mapping/shift_pcd_z.py $PCD" not in legacy_save
     assert 'RAW_PCD="${PCD%.pcd}_raw.pcd"' in legacy_save
     assert "shift $PCD exactly once" in legacy_save

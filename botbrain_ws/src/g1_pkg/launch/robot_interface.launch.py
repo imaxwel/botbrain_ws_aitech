@@ -27,6 +27,7 @@ def generate_launch_description():
     
     robot_name = config['robot_name']
     prefix = robot_name + '/' if robot_name != '' else ''
+    velocity_frame = os.environ.get('UNITREE_VELOCITY_FRAME', 'odom')
     sdk_root = os.environ.get("UNITREE_SDK2_ROOT", "/usr/local")
     sdk_lib_dir = os.path.join(sdk_root, "lib")
 
@@ -51,7 +52,13 @@ def generate_launch_description():
     g1_read_node = LifecycleNode(
         package = 'g1_pkg',
         executable = 'g1_read.py',
-        parameters=[{'prefix': (prefix), 'publish_tf': False}],
+        parameters=[{
+            'prefix': prefix,
+            'publish_tf': False,
+            # Unitree's official ROS2 read_motion_state example documents
+            # SportModeState.velocity in the odometry frame.
+            'velocity_frame': velocity_frame,
+        }],
         name='robot_read_node',
         namespace=robot_name,
     )

@@ -8,14 +8,24 @@ Usage:
   waypoint_recorder.py delete <name>   # remove a waypoint
 
 Options:
-  --file PATH     waypoints YAML file (default: ~/.ros/nav_waypoints.yaml)
+  --file PATH     waypoints YAML file
+  --scene NAME    override the scene selected by select_map_scene.sh
   --robot NAME    robot namespace      (default: g1_robot)
 """
 import sys
 import math
-import yaml
 import argparse
 from pathlib import Path
+
+from bot_navigation.waypoint_store import (
+    DEFAULT_SCENE_FILE,
+    current_scene,
+    live_map_scene,
+    load_database,
+    save_database,
+    scene_waypoints,
+)
+
 
 def _default_file() -> Path:
     try:
@@ -23,9 +33,12 @@ def _default_file() -> Path:
         share = Path(get_package_share_directory('bot_navigation'))
         # install layout: <ws>/install/bot_navigation/share/bot_navigation/
         # parents[3] = <ws>/
-        return share.parents[3] / 'src' / 'bot_navigation' / 'nav_waypoints.yaml'
+        return (
+            share.parents[3] / 'src' / 'bot_navigation' / 'nav_waypoints.yaml'
+        )
     except Exception:
         return Path.home() / '.ros' / 'nav_waypoints.yaml'
+
 
 DEFAULT_FILE = _default_file()
 
@@ -38,18 +51,7 @@ def _yaw_quaternion(x: float, y: float, z: float, w: float):
     return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
 
 
-def _load(path: Path) -> dict:
-    if path.exists():
-        return (yaml.safe_load(path.read_text()) or {}).get('waypoints', {})
-    return {}
-
-
-def _save(path: Path, waypoints: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.dump({'waypoints': waypoints}, default_flow_style=False))
-
-
-def cmd_record(name: str, file: Path, robot: str) -> None:
+def cmd_record(name: str, file: Path, robot: str, scene: str) -> None:
     import rclpy
     from rclpy.node import Node
     from tf2_ros import Buffer, TransformListener
@@ -71,62 +73,120 @@ def cmd_record(name: str, file: Path, robot: str) -> None:
             break
         except Exception:
             if node.get_clock().now().nanoseconds > deadline:
-                node.get_logger().error('TF lookup timed out (5 s). Is FAST-LIO running?')
-                node.destroy_node(); rclpy.shutdown(); sys.exit(1)
+                node.get_logger().error(
+                    'TF lookup timed out (5 s). Is FAST-LIO running?'
+                )
+                node.destroy_node()
+                rclpy.shutdown()
+                sys.exit(1)
 
     t, r = tf.transform.translation, tf.transform.rotation
     qx, qy, qz, qw = _yaw_quaternion(r.x, r.y, r.z, r.w)
-    waypoints = _load(file)
+    try:
+        actual_scene = live_map_scene(node)
+    except (RuntimeError, ValueError) as error:
+        node.get_logger().error(
+            f'Cannot verify the active map scene: {error}. '
+            'Waypoint was not saved.'
+        )
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(1)
+    if actual_scene != scene:
+        node.get_logger().error(
+            f'Active map scene is {actual_scene!r}, but waypoint storage '
+            'selected '
+            f'{scene!r}. Run select_map_scene.sh before recording.'
+        )
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(1)
+
+    database = load_database(file, missing_ok=True, legacy_scene=scene)
+    legacy_format = database.get('_legacy_format', False)
+    waypoints = scene_waypoints(database, scene, create=True)
     waypoints[name] = dict(
         x=round(t.x, 4), y=round(t.y, 4), z=0.0,
         qx=qx, qy=qy, qz=round(qz, 6), qw=round(qw, 6),
         frame=map_frame,
     )
-    _save(file, waypoints)
-    print(f"✓ Saved '{name}': x={t.x:.3f}, y={t.y:.3f}, frame={map_frame}")
-    node.destroy_node(); rclpy.shutdown()
+    save_database(file, database)
+    if legacy_format:
+        print(f"Migrated legacy waypoints into scene '{scene}'.")
+    print(
+        f"✓ Saved '{name}' in scene '{scene}': "
+        f'x={t.x:.3f}, y={t.y:.3f}, frame={map_frame}'
+    )
+    node.destroy_node()
+    rclpy.shutdown()
 
 
-def cmd_list(file: Path) -> None:
-    waypoints = _load(file)
+def cmd_list(file: Path, scene: str) -> None:
+    database = load_database(file, missing_ok=True, legacy_scene=scene)
+    waypoints = scene_waypoints(database, scene)
+    if database.get('_legacy_format', False):
+        print(
+            f"Legacy waypoint format: treating existing points as scene "
+            f"'{scene}'. The next record/delete will migrate the file."
+        )
     if not waypoints:
-        print('No waypoints saved.')
+        print(f"No waypoints saved for scene '{scene}'.")
         return
+    print(f"Scene: {scene}")
     print(f"{'NAME':<20} {'X':>8} {'Y':>8}  FRAME")
     print('-' * 55)
     for name, wp in sorted(waypoints.items()):
-        print(f"{name:<20} {wp['x']:>8.3f} {wp['y']:>8.3f}  {wp.get('frame', 'map')}")
+        frame = wp.get('frame', 'map')
+        print(f"{name:<20} {wp['x']:>8.3f} {wp['y']:>8.3f}  {frame}")
 
 
-def cmd_delete(name: str, file: Path) -> None:
-    waypoints = _load(file)
+def cmd_delete(name: str, file: Path, scene: str) -> None:
+    database = load_database(file, missing_ok=True, legacy_scene=scene)
+    legacy_format = database.get('_legacy_format', False)
+    waypoints = scene_waypoints(database, scene)
     if name not in waypoints:
-        print(f"Waypoint '{name}' not found. Available: {list(waypoints)}")
+        print(
+            f"Waypoint '{name}' not found in scene '{scene}'. "
+            f'Available: {list(waypoints)}'
+        )
         sys.exit(1)
     del waypoints[name]
-    _save(file, waypoints)
-    print(f"Deleted '{name}'")
+    save_database(file, database)
+    if legacy_format:
+        print(f"Migrated legacy waypoints into scene '{scene}'.")
+    print(f"Deleted '{name}' from scene '{scene}'")
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument('command', choices=['record', 'list', 'delete'])
     p.add_argument('name', nargs='?', help='Waypoint name')
     p.add_argument('--file', type=Path, default=DEFAULT_FILE)
+    p.add_argument('--scene', help='Override the currently selected map scene')
+    p.add_argument('--scene-file', type=Path, default=DEFAULT_SCENE_FILE,
+                   help=argparse.SUPPRESS)
     p.add_argument('--robot', default='g1_robot')
     args = p.parse_args()
+    args.file = args.file.expanduser().resolve()
+    scene, scene_source = current_scene(args.scene, args.scene_file)
+    print(f'Waypoints file: {args.file}')
+    print(f"Map scene: {scene} ({scene_source})")
 
     if args.command == 'record':
         if not args.name:
             p.error('record requires a waypoint name')
-        cmd_record(args.name, args.file, args.robot)
+        cmd_record(args.name, args.file, args.robot, scene)
     elif args.command == 'list':
-        cmd_list(args.file)
+        cmd_list(args.file, scene)
     elif args.command == 'delete':
         if not args.name:
             p.error('delete requires a waypoint name')
-        cmd_delete(args.name, args.file)
+        cmd_delete(args.name, args.file, scene)
 
 
 if __name__ == '__main__':

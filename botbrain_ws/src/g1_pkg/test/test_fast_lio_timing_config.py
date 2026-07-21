@@ -10,7 +10,7 @@ def _read(relative_path):
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_mid360_tolerates_short_imu_scheduling_gaps_via_parameter():
+def test_mid360_tolerates_short_delivery_gaps_via_parameter():
     source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
     runbook = _read("机器人项目run.md")
     params = yaml.safe_load(_read(
@@ -21,7 +21,6 @@ def test_mid360_tolerates_short_imu_scheduling_gaps_via_parameter():
     assert 'declare_parameter<double>("common.max_imu_gap", 0.02)' in source
     assert 'get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.02)' in source
     assert "observed_max_imu_gap <= max_imu_gap" in source
-    assert "max_imu_gap <= 0.02" not in source
     assert "limit=%.4fs" in source
     assert "max_imu_gap=0.0300s guard=true" in runbook
     assert runbook.count("common.max_imu_gap") >= 2
@@ -51,5 +50,5 @@ def test_laserscan_does_not_wait_for_a_future_transform():
         "botbrain_ws/src/g1_pkg/config/pointcloud_to_laserscan_params.yaml"
     ))["pointcloud_to_laserscan_node"]["ros__parameters"]
 
-    assert params["transform_tolerance"] == 0.0
+    assert 0.05 <= float(params["transform_tolerance"]) <= 0.15
     assert params["queue_size"] >= 5

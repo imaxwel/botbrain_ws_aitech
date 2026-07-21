@@ -8,7 +8,13 @@
       use_astar: true
       motion_model_for_search: "VON_NEUMANN"
       downsample_costmap: false
-      tolerance: 0.10         # keep the path endpoint close to the requested pose
+      # Keep the endpoint close to a free recorded goal. The controller accepts
+      # a 0.25 m stopping envelope, while the planner only relaxes by 0.15 m
+      # when the requested cell is genuinely occupied or unreachable.
+      tolerance: 0.15
+      # Use the direction of the final path segment instead of forcing a
+      # recorded waypoint yaw that can make the robot oscillate at the goal.
+      use_final_approach_orientation: true
       max_iterations: 500000
       cost_travel_multiplier: 15.0   # 20.0→15.0: 降低高代价区域惩罚，避免迭代耗尽
 
@@ -19,22 +25,26 @@
     # Pose follows the same FAST-LIO state as odom->base TF; twist is copied
     # from Unitree odometry by nav_odom_relay.
     odom_topic: /<prefix>nav_odom
-    costmap_update_timeout: 0.30
+    costmap_update_timeout: 0.40
     min_x_velocity_threshold: 0.001
     # Keep measured lateral motion visible to the Omni controller. A 0.10 m/s
     # deadband discarded most of the configured +/-0.15 m/s lateral range.
     min_y_velocity_threshold: 0.01
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # Tolerate one short Jetson/TF/costmap hiccup without turning a persistent
+    # controller failure into repeated multi-second stationary periods.
+    failure_tolerance: 1.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
     use_realtime_priority: false
     speed_limit_topic: "speed_limit"
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
-      # Count slow but real progress on smooth floors without masking a stall.
+      plugin: "nav2_controller::PoseProgressChecker"
+      # Count a genuine in-place yaw correction, but do not let a small
+      # near-goal oscillation reset the 40 s stuck timer indefinitely.
       required_movement_radius: 0.15
+      required_movement_angle: 0.20
       movement_time_allowance: 40.0
     general_goal_checker:
       # Once XY is reached, finish the yaw check without re-entering a lateral
@@ -42,7 +52,7 @@
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.35
+      yaw_goal_tolerance: 0.50
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       # MPPI requires model_dt >= controller period. At 12 Hz the period is
@@ -50,18 +60,12 @@
       time_steps: 30
       model_dt: 0.08333333333333333
       batch_size: 1800               # 2000→1800: 减少15%采样数，缓解控制周期超时
-      ax_max: 0.4
-      ax_min: -0.5
-      ay_max: 0.20   # 恢复横向加速度
-      ay_min: -0.20
-      az_max: 2.5
       vx_std: 0.6
       vy_std: 0.08   # 恢复横向速度采样
       wz_std: 0.6
       vx_max: 0.3
       vx_min: -0.3
       vy_max: 0.15   # 恢复横向速度
-      vy_min: -0.15
       wz_max: 0.8    # 1.2→0.8: 进一步限制旋转速度，旋转过快是ICP丢失的主因
       # One MPPI optimization per 12 Hz cycle keeps control output timely while
       # localization and costmaps share the Jetson GPU/CPU budget.
@@ -72,13 +76,10 @@
       gamma: 0.015
       motion_model: "Omni"    # DiffDrive→Omni: 恢复全向，配合12Hz控制频率消除停顿
       visualize: false              # Disable the large sampled-trajectory debug cloud.
-      publish_optimal_trajectory: true
       regenerate_noises: true
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3
-      AckermannConstraints:
-        min_turning_r: 0.2
       critics:
         [
           "ConstraintCritic",
@@ -168,8 +169,10 @@
       rolling_window: false
       resolution: 0.05
 
-      footprint: "[[0.175, 0.255], [0.175, -0.255], [-0.175, -0.255], [-0.175, 0.255]]"
-      footprint_padding: 0.02   
+      footprint: "[[0.175, 0.225], [0.175, -0.225], [-0.175, -0.225], [-0.175, 0.225]]"
+      # Use the measured footprint without an extra global margin; local
+      # control retains the larger padding below for dynamic-obstacle safety.
+      footprint_padding: 0.0
 
       # Keep global planning aware of nearby dynamic obstacles, but use the
       # filtered /scan source with explicit clearing instead of raw PointCloud2.
@@ -212,10 +215,11 @@
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Cover the padded footprint's ~0.34 m circumscribed radius so SmacPlanner
-        # can perform reliable non-circular footprint collision checks.
-        inflation_radius: 0.35
-        cost_scaling_factor: 15.0  # faster decay narrows soft cost without shrinking collision radius
+        # Cover the unpadded footprint's ~0.285 m circumscribed radius. The
+        # higher scaling factor narrows the soft cost halo without reducing
+        # the hard footprint collision envelope.
+        inflation_radius: 0.29
+        cost_scaling_factor: 60.0
 
 /**/local_costmap:
   local_costmap:

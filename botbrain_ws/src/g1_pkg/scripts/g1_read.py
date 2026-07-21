@@ -11,7 +11,16 @@ from sensor_msgs.msg import BatteryState, JointState, Imu
 from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
 import numpy as np
-from math import atan2
+from math import atan2, cos, sin
+
+
+def world_velocity_to_body(vx_world, vy_world, yaw):
+    """Rotate Unitree odometry-frame velocity into the ROS body frame."""
+    return (
+        cos(yaw) * vx_world + sin(yaw) * vy_world,
+        -sin(yaw) * vx_world + cos(yaw) * vy_world,
+    )
+
 
 """
     Lifecycle node responsible for reading low-level robot states (BMS, low state,
@@ -30,8 +39,10 @@ class RobotRead(LifecycleNode):
 
         self.declare_parameter('prefix', '')
         self.declare_parameter('publish_tf', True)
+        self.declare_parameter('velocity_frame', 'odom')
         self.prefix = '' 
         self.nav_base_frame = 'base_footprint'
+        self.velocity_frame = 'odom'
 
         # Initialize all ROS communicators to None.
         self.low_bms_state_subscriber = None
@@ -55,7 +66,18 @@ class RobotRead(LifecycleNode):
         # Get the parameter 
         self.prefix = self.get_parameter('prefix').value
         self.publish_tf_ = self.get_parameter('publish_tf').value if self.has_parameter('publish_tf') else True
-        self.get_logger().info(f"Using frame/joint prefix: '{self.prefix}', publish_tf: {self.publish_tf_}")
+        self.velocity_frame = str(
+            self.get_parameter('velocity_frame').value).strip().lower()
+        if self.velocity_frame not in ('odom', 'body'):
+            self.get_logger().error(
+                "velocity_frame must be either 'odom' or 'body'"
+            )
+            return TransitionCallbackReturn.FAILURE
+        self.get_logger().info(
+            f"Using frame/joint prefix: '{self.prefix}', "
+            f'publish_tf: {self.publish_tf_}, '
+            f'Unitree velocity_frame: {self.velocity_frame}'
+        )
 
         self.get_logger().info("Node configured successfully.")
         return TransitionCallbackReturn.SUCCESS
@@ -237,9 +259,17 @@ class RobotRead(LifecycleNode):
         odom.pose.pose.orientation.y = nav_quaternion[2]
         odom.pose.pose.orientation.z = nav_quaternion[3]
 
-        # Linear velocities
-        odom.twist.twist.linear.x = float(msg.velocity[0])
-        odom.twist.twist.linear.y = float(msg.velocity[1])
+        # SportModeState velocity is expressed in the odometry frame, while a
+        # nav_msgs/Odometry twist is expressed in child_frame_id. Convert it to
+        # base_footprint before Nav2 consumes the feedback.
+        if self.velocity_frame == 'odom':
+            velocity_body_x, velocity_body_y = world_velocity_to_body(
+                float(msg.velocity[0]), float(msg.velocity[1]), yaw)
+        else:
+            velocity_body_x = float(msg.velocity[0])
+            velocity_body_y = float(msg.velocity[1])
+        odom.twist.twist.linear.x = velocity_body_x
+        odom.twist.twist.linear.y = velocity_body_y
         odom.twist.twist.linear.z = float(msg.velocity[2])
 
         # Angular velocity around Z (yaw rate)

@@ -2,6 +2,8 @@ import ast
 import re
 import json
 import math
+import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import yaml
@@ -12,6 +14,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 def _read(relative_path):
     return (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def _run_selector_filter(function_name, next_function_name, log_text):
+    selector = _read("tools/nav/select_map_scene.sh")
+    start = selector.index(f"{function_name}() {{")
+    end = selector.index(f"\n{next_function_name}() {{", start)
+    definition = selector[start:end]
+    result = subprocess.run(
+        ["bash", "-c", f"{definition}\n{function_name}"],
+        input=log_text,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout.splitlines()
 
 
 def test_open3d_directory_is_an_overridable_cache_default():
@@ -91,7 +108,9 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     assert "map_file:=" not in localization_command
     assert "grid_map_file:=" not in localization_command
     assert compose["services"]["navigation"]["restart"] == "no"
-    assert "navigation_preflight.py" in compose["services"]["navigation"]["command"][-1]
+    navigation_command = compose["services"]["navigation"]["command"][-1]
+    assert "navigation_preflight.py" in navigation_command
+    assert "allow_pose_derived_twist:=false" in navigation_command
 
 
 def test_map_scene_selector_recreates_and_verifies_localization_container():
@@ -122,23 +141,63 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     assert "3 consecutive accepted ICP updates" in selector
     assert "ICP: accepted=true" in selector
     assert "Rejecting ICP|Skipping ICP|ICP: accepted=false" in selector
-    assert "fitness_value <= 0.50" in selector
-    assert "rmse_value > 0.30" in selector
+    assert "fitness_value <= min_fitness" in selector
+    assert "rmse_value > max_rmse" in selector
+    assert "ICP_MIN_FITNESS=0.50" in selector
+    assert "ICP_MAX_RMSE=0.30" in selector
     assert "ICP accepted: %s %s" in selector
-    assert 'docker logs --since "$localization_started_at"' in selector
+    assert 'docker logs --since "$since"' in selector
+    assert "localization_active_logs 15s" in selector
     assert 'current_container_id" != "$localization_container_id' in selector
     assert "Latest ICP decisions from the current localization container" in selector
+    assert "ICP stability progress: ${streak_count}/3" in selector
+    assert "ICP stability progress reset:" in selector
+    assert "Localization matching update:" in selector
     assert "verify_navigation_topic_publishers" in selector
     assert "print_unitree_twist_diagnostics" in selector
+    assert "verify_navigation_install_matches_source" in selector
+    assert "navigation install space is missing or stale" in selector
+    assert (
+        "bot_navigation/lib/bot_navigation/localization_monitor.py"
+    ) in selector
+    assert (
+        "bot_navigation/share/bot_navigation/launch/nav_utils.launch.py"
+    ) in selector
+    assert (
+        "g1_pkg/share/g1_pkg/launch/robot_interface.launch.py"
+    ) in selector
+    assert (
+        "g1_pkg/share/g1_pkg/config/pointcloud_to_laserscan_params.yaml"
+    ) in selector
+    assert (
+        "bot_bringup/share/bot_bringup/config/twist_mux.yaml"
+    ) in selector
+    assert (
+        "Rebuild fast_lio, open3d_loc, g1_pkg, bot_navigation and "
+        "bot_bringup before using --wait-ready."
+    ) in selector
+    assert "global_localization_node" in selector
+    assert "fast_lio/lib/fast_lio/fastlio_mapping" in selector
+    assert "g1_write_node" in selector
+    assert "allow_pose_derived_twist:=false" in selector
+    assert 'grep -Fq "twist_source=unitree"' in selector
     assert "ros2 lifecycle get /g1_robot/robot_read_node" in selector
     assert "ros2 topic hz /lf/odommodestate" in selector
     assert "ros2 topic hz /g1_robot/odom" in selector
     assert "/Odometry_loc" in selector
     assert "/cloud_registered_body_1" in selector
+    assert "/g1_robot/odom" in selector
     assert "navigation topics must each have exactly 1 publisher" in selector
+    assert "Navigation topic publisher check ${stable_rounds}/${required_rounds}" in selector
+    assert "readonly PUBLISHER_STABLE_ROUNDS=3" in selector
+    assert "restore_previous_runtime" in selector
+    assert "arm_switch_rollback" in selector
+    assert "Previous runtime restored" in selector
+    assert "trap 'handle_selector_exit" in selector
     assert "flock -n 9" in selector
     assert 'grep -Fq "IMU Initial Done"' in selector
-    assert "latest_timing" in selector
+    assert "stable_fast_lio_timing_streak" in selector
+    assert "timing discontinuity" in selector
     assert "timing_count" in selector
     assert "ros2 topic echo /Odometry_loc --once" in selector
     assert "ros2 topic echo /cloud_registered_1 --once" in selector
@@ -161,9 +220,43 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     assert readiness_body.index("wait_for_localization_preflight") < (
         readiness_body.index("wait_for_consecutive_icp_accepts")
     )
+    assert readiness_body.rindex("wait_for_localization_preflight") > (
+        readiness_body.index("wait_for_consecutive_icp_accepts")
+    )
     assert readiness_body.index("wait_for_consecutive_icp_accepts") < (
         readiness_body.index("verify_navigation_topic_publishers")
     )
+
+
+def test_fast_lio_timing_streak_resets_after_a_discontinuity():
+    output = _run_selector_filter(
+        "stable_fast_lio_timing_streak",
+        "verify_fast_lio_topics",
+        """[FAST_LIO_TIMING] ok=true sample=1
+[FAST_LIO_TIMING] ok=true sample=2
+[FAST_LIO_TIMING] discarded buffered LiDAR data after a timing discontinuity
+[FAST_LIO_TIMING] ok=true sample=3
+[FAST_LIO_TIMING] ok=true sample=4
+""",
+    )
+    assert output == ["2"]
+
+
+def test_icp_streak_requires_three_decisions_after_the_last_rejection():
+    output = _run_selector_filter(
+        "trailing_accepted_icp_streak",
+        "verify_navigation_topic_publishers",
+        """ICP: accepted=true fitness=0.900 rmse=0.100
+ICP: accepted=true fitness=0.910 rmse=0.090
+ICP: accepted=false fitness=0.400 rmse=0.350
+ICP: accepted=true fitness=0.800 rmse=0.120
+ICP: accepted=true fitness=0.820 rmse=0.110
+ICP: accepted=true fitness=0.830 rmse=0.100
+""",
+    )
+    assert output[0] == "3"
+    assert len(output) == 4
+    assert all("accepted=true" in line for line in output[1:])
 
 
 def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
@@ -201,7 +294,7 @@ def test_g1_laserscan_filters_body_cloud_for_navigation_obstacles():
     assert 1.20 <= float(scan_params["max_height"]) <= 1.50
     assert float(scan_params["range_min"]) >= 0.40
     assert float(scan_params["range_max"]) >= 3.0
-    assert float(scan_params["transform_tolerance"]) == 0.0
+    assert 0.05 <= float(scan_params["transform_tolerance"]) <= 0.15
     assert scan_params["use_inf"] is True
     assert int(scan_params["queue_size"]) >= 5
     assert "concurrency_level" not in scan_params
@@ -407,7 +500,11 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert float(mppi["model_dt"]) >= (1.0 / frequency) - 1e-12
     assert 2.0 <= float(mppi["model_dt"]) * int(mppi["time_steps"]) <= 3.0
     assert mppi["visualize"] is False
-    assert mppi["publish_optimal_trajectory"] is True
+    assert "publish_optimal_trajectory" not in mppi
+    for ignored_parameter in (
+            "ax_max", "ax_min", "ay_max", "ay_min", "az_max", "vy_min"):
+        assert ignored_parameter not in mppi
+    assert "AckermannConstraints" not in mppi
     assert controller["odom_topic"] == "/<prefix>nav_odom"
     local_costmap = params["/**/local_costmap"]["local_costmap"]["ros__parameters"]
     assert local_costmap["global_frame"] == "<prefix>odom"
@@ -431,13 +528,19 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert global_scan["inf_is_valid"] is True
     assert 0.5 <= float(global_scan["expected_update_rate"]) <= 1.0
     assert global_costmap["denoise_layer"]["minimal_group_size"] == 2
-    assert float(global_costmap["inflation_layer"]["cost_scaling_factor"]) >= 15.0
+    assert float(global_costmap["inflation_layer"]["cost_scaling_factor"]) >= 60.0
     global_footprint = ast.literal_eval(global_costmap["footprint"])
     global_padding = float(global_costmap["footprint_padding"])
+    assert math.isclose(global_padding, 0.0, abs_tol=1e-9)
     global_circumscribed_radius = max(
         math.hypot(abs(x) + global_padding, abs(y) + global_padding)
         for x, y in global_footprint)
     assert global_costmap["inflation_layer"]["inflation_radius"] >= global_circumscribed_radius
+    assert math.isclose(
+        float(global_costmap["inflation_layer"]["inflation_radius"]),
+        0.29,
+        abs_tol=1e-9,
+    )
     assert local_costmap["plugins"] == [
         "obstacle_layer", "denoise_layer", "inflation_layer"]
     assert float(local_costmap["width"]) >= 8.0
@@ -452,10 +555,18 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert local_costmap["denoise_layer"]["minimal_group_size"] == 2
     local_footprint = ast.literal_eval(local_costmap["footprint"])
     local_padding = float(local_costmap["footprint_padding"])
+    assert math.isclose(local_padding, 0.02, abs_tol=1e-9)
     local_circumscribed_radius = max(
         math.hypot(abs(x) + local_padding, abs(y) + local_padding)
         for x, y in local_footprint)
     assert local_costmap["inflation_layer"]["inflation_radius"] >= local_circumscribed_radius
+    assert math.isclose(
+        float(local_costmap["inflation_layer"]["inflation_radius"]),
+        0.35,
+        abs_tol=1e-9,
+    )
+    assert global_footprint == local_footprint
+    assert global_padding < local_padding
 
 
 def test_waypoints_are_planar_and_never_reanchor_localization():
@@ -464,8 +575,13 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
     navigator = _read(
         "botbrain_ws/src/bot_navigation/scripts/waypoint_navigator.py")
     compact_runbook = _read("建图导航指令.md")
-    waypoints = yaml.safe_load(_read(
-        "botbrain_ws/src/bot_navigation/nav_waypoints.yaml"))["waypoints"]
+    waypoint_database = yaml.safe_load(_read(
+        "botbrain_ws/src/bot_navigation/nav_waypoints.yaml"))
+    waypoints = {
+        name: waypoint
+        for scene_data in waypoint_database["scenes"].values()
+        for name, waypoint in scene_data["waypoints"].items()
+    }
 
     assert "choices=['record', 'list', 'delete']" in recorder
     assert "waypoint_recorder.py delete floor1_old" in compact_runbook
@@ -476,7 +592,8 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
     assert "goal.pose.pose.position.z = 0.0" in navigator
     assert "wait_for_server(timeout_sec=60.0)" in navigator
     assert "No fresh {scan_topic} received" in navigator
-    assert "cancel_goal_async" not in navigator
+    assert "cancel_goal_async" in navigator
+    assert "SignalHandlerOptions.NO" in navigator
     assert "status != GoalStatus.STATUS_SUCCEEDED" in navigator
     assert "feedback.number_of_recoveries" in navigator
     assert "feedback.navigation_time" in navigator
@@ -484,6 +601,10 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
     assert "if rclpy.ok():" in navigator
     assert "sys.exit(1)" in navigator
     assert "Stopping waypoint sequence after navigation failure." in navigator
+    assert "Waypoints file:" in navigator
+    assert "live_map_scene" in navigator
+    assert "goal_grid_occupancy" in navigator
+    assert waypoint_database["format_version"] == 2
     for waypoint in waypoints.values():
         assert float(waypoint["z"]) == 0.0
         assert float(waypoint["qx"]) == 0.0
@@ -500,13 +621,22 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
         "botbrain_ws/src/bot_navigation/scripts/navigation_preflight.py")
     monitor = _read(
         "botbrain_ws/src/bot_navigation/scripts/localization_monitor.py")
+    nav_utils_launch = _read(
+        "botbrain_ws/src/bot_navigation/launch/nav_utils.launch.py")
     robot_read = _read("botbrain_ws/src/g1_pkg/scripts/g1_read.py")
+    robot_interface_launch = _read(
+        "botbrain_ws/src/g1_pkg/launch/robot_interface.launch.py")
+    compose = yaml.safe_load(_read("docker-compose.yaml"))
 
     assert "scripts/nav_odom_relay.py" in cmake
     assert "scripts/navigation_preflight.py" in cmake
     assert "scripts/costmap_center_check.py" in cmake
-    assert "executable='nav_odom_relay.py'" in launch
-    assert "pose_topic': '/Odometry_loc'" in launch
+    localization_launch = _read(
+        "botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py")
+    assert "executable='nav_odom_relay.py'" not in launch
+    assert "executable='nav_odom_relay.py'" in localization_launch
+    assert "'pose_topic': '/Odometry_loc'" in localization_launch
+    assert "'derive_twist_from_pose': False" in localization_launch
     assert "nav_odom" in relay
     assert "output.pose.pose.position.z = 0.0" in relay
     assert "output.twist = copy.deepcopy(self._last_twist)" in relay
@@ -524,8 +654,29 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
     assert "max_derived_angular_speed" in preflight
     assert "twist_source={twist_source}" in preflight
     assert "unitree_twist={unitree_twist_ok}" in preflight
+    assert "declare_parameter('twist_odom_topic', '/g1_robot/nav_odom')" in preflight
+    assert "max_twist_variance" in preflight
+    assert "declare_parameter('min_confidence', 0.50)" in preflight
+    assert "self._confidence > self.min_confidence" in preflight
     assert "qos_profile_sensor_data" in robot_read
     assert "SportModeState, '/lf/odommodestate'" in robot_read
+    assert "world_velocity_to_body" in robot_read
+    assert "declare_parameter('velocity_frame', 'odom')" in robot_read
+    assert "self.velocity_frame == 'odom'" in robot_read
+    assert "UNITREE_VELOCITY_FRAME" in robot_interface_launch
+    assert "'velocity_frame': velocity_frame" in robot_interface_launch
+    assert compose["services"]["bringup"]["environment"][
+        "UNITREE_VELOCITY_FRAME"] == "${UNITREE_VELOCITY_FRAME:-odom}"
+    assert "min_confidence:=0.50" in compose["services"]["navigation"][
+        "command"][-1]
+    robot_write = _read("botbrain_ws/src/g1_pkg/src/g1_write.cpp")
+    assert "locomotion Move failed" in robot_write
+    assert "const int result = g1_driver_->move" in robot_write
+    localization_source = _read(
+        "botbrain_ws/src/open3d_loc/src/global_localization.cpp")
+    icp_log_prefix = localization_source.split('"ICP: accepted=%s', 1)[0][-250:]
+    assert "RCLCPP_INFO(" in icp_log_prefix
+    assert "RCLCPP_INFO_THROTTLE" not in icp_log_prefix
     assert "max_base_tilt_deg" in preflight
     assert "twist_odom_topic" in preflight
     assert "_twist_odom_is_fresh" in preflight
@@ -537,6 +688,33 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
     assert "math.cos(yaw) * half_width" in center_check
     assert "PoseWithCovarianceStamped" not in monitor
     assert "auto_anchor" not in monitor
+    assert "Odometry, self.nav_odom_topic" in monitor
+    assert "LaserScan, self.scan_topic" in monitor
+    assert "qos_profile_sensor_data" in monitor
+    assert "scan_healthy" in monitor
+    assert "_stamp_is_fresh" in monitor
+    assert "waiting_for_initial_inputs" in monitor
+    assert "confidence_timeout_sec" in monitor
+    assert "cancel_after_sec" in monitor
+    assert "fault_duration >= self.cancel_after" in monitor
+    assert "_cancel_requested_for_episode" in monitor
+    assert "remove_pending_request" in monitor
+    assert "_confidence_stream_unhealthy" in monitor
+    assert "max_twist_variance" in monitor
+    assert "not math.isfinite(confidence)" in monitor
+    assert "low_duration >= self.low_confidence_duration" in monitor
+    assert "Navigation cancel requested due to" in monitor
+    assert "Trigger.Request()" in monitor
+    assert "_poll_cancel_result" in monitor
+    assert "Navigation safety stop engaged" in monitor
+    assert "executable='localization_monitor.py'" in nav_utils_launch
+    assert "'auto_cancel': False" in nav_utils_launch
+    assert "'low_confidence_duration_sec': 5.0" in nav_utils_launch
+    assert "'publish_safety_stop': True" in nav_utils_launch
+    assert "'scan_topic': '/scan'" in nav_utils_launch
+    assert "'startup_grace_sec': 2.0" in nav_utils_launch
+    assert "'confidence_timeout_sec': 2.0" in nav_utils_launch
+    assert "'cancel_after_sec': 3.0" in nav_utils_launch
 
 
 def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
@@ -550,19 +728,43 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     launch = _read("botbrain_ws/src/bot_navigation/launch/nav2.launch.py")
     cmake = _read("botbrain_ws/src/bot_navigation/CMakeLists.txt")
 
-    assert float(planner["tolerance"]) <= 0.10
+    assert 0.15 <= float(planner["tolerance"]) <= 0.25
     goal_checker = controller["general_goal_checker"]
     assert goal_checker["stateful"] is True
     assert 0.20 <= float(goal_checker["xy_goal_tolerance"]) <= 0.30
-    assert 0.30 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.40
+    assert 0.45 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.55
     assert float(controller["progress_checker"]["required_movement_radius"]) <= 0.15
+    assert controller["progress_checker"]["plugin"] == (
+        "nav2_controller::PoseProgressChecker")
+    assert math.isclose(
+        float(controller["progress_checker"]["required_movement_angle"]),
+        0.20,
+        abs_tol=1e-9,
+    )
+    assert planner["use_final_approach_orientation"] is True
+    assert math.isclose(float(controller["failure_tolerance"]), 1.0)
     assert float(controller["min_y_velocity_threshold"]) <= 0.01
     assert int(controller["FollowPath"]["iteration_count"]) == 1
     assert int(bt["bt_loop_duration"]) >= 20
     assert int(bt["default_server_timeout"]) >= 200
     assert int(bt["wait_for_service_timeout"]) >= 1000
     assert bt["default_nav_to_pose_bt_xml"] == "<nav_to_pose_bt_xml>"
-    assert "<IsPathValid path=\"{path}\"/>" in tree
+    assert "<IsPathValid" in tree
+    assert "ClearAndReplanAfterFollowPathFailure" in tree
+    assert tree.count("<ComputePathToPose") >= 3
+    tree_root = ET.fromstring(tree)
+    follow_recovery = next(
+        node for node in tree_root.iter("RecoveryNode")
+        if node.attrib.get("name") == "FollowPathRecovery"
+    )
+    follow_children = list(follow_recovery)
+    assert [node.tag for node in follow_children] == ["FollowPath", "Sequence"]
+    recovery_steps = list(follow_children[1])
+    assert [node.tag for node in recovery_steps] == [
+        "ClearEntireCostmap", "ClearEntireCostmap", "ComputePathToPose"]
+    assert recovery_steps[-1].attrib["planner_id"] == "GridBased"
+    assert '<RateController hz="0.5"' in tree
+    assert 'number_of_retries="4"' in tree
     assert "goal_checker_id=\"general_goal_checker\"" in tree
     assert "<Spin" not in tree
     assert "<BackUp" not in tree
@@ -574,8 +776,36 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
         "botbrain_ws/src/bot_bringup/config/twist_mux.yaml"))
     mux_params = twist_mux["/**"]["ros__parameters"]
     navigation_timeout = float(mux_params["topics"]["navigation"]["timeout"])
-    assert 0.25 <= navigation_timeout <= 0.35
+    safety_topic = mux_params["topics"]["navigation_safety"]
+    assert 0.40 <= navigation_timeout < 0.50
+    assert float(controller["costmap_update_timeout"]) < navigation_timeout
     assert navigation_timeout < float(mux_params["twist_watchdog_timeout"])
+    assert safety_topic["topic"] == "cmd_vel_nav_safety"
+    assert float(safety_topic["timeout"]) >= 0.5
+    assert int(safety_topic["priority"]) > int(
+        mux_params["topics"]["navigation"]["priority"])
+
+
+def test_unitree_world_velocity_is_rotated_into_body_frame():
+    source = _read("botbrain_ws/src/g1_pkg/scripts/g1_read.py")
+    module = ast.parse(source)
+    function = next(
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and
+        node.name == "world_velocity_to_body"
+    )
+    namespace = {"cos": math.cos, "sin": math.sin}
+    exec(compile(ast.Module(body=[function], type_ignores=[]),
+                 "g1_read.py", "exec"), namespace)
+    convert = namespace["world_velocity_to_body"]
+
+    assert convert(1.0, 0.0, 0.0) == (1.0, 0.0)
+    vx, vy = convert(0.0, 1.0, math.pi / 2.0)
+    assert math.isclose(vx, 1.0, abs_tol=1e-9)
+    assert math.isclose(vy, 0.0, abs_tol=1e-9)
+    vx, vy = convert(1.0, 0.0, math.pi)
+    assert math.isclose(vx, -1.0, abs_tol=1e-9)
+    assert math.isclose(vy, 0.0, abs_tol=1e-9)
 
 
 def test_state_machine_does_not_manage_nav2_utils_as_lifecycle_node():

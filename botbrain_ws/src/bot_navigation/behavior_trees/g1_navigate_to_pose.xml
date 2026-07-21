@@ -31,9 +31,18 @@
             path="{path}"
             controller_id="FollowPath"
             goal_checker_id="general_goal_checker"/>
-          <ClearEntireCostmap
-            name="ClearLocalCostmapContext"
-            service_name="local_costmap/clear_entirely_local_costmap"/>
+          <Sequence name="ClearAndReplanAfterFollowPathFailure">
+            <ClearEntireCostmap
+              name="ClearLocalCostmapContext"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap
+              name="ClearGlobalCostmapContextAfterFollowPath"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ComputePathToPose
+              goal="{goal}"
+              path="{path}"
+              planner_id="GridBased"/>
+          </Sequence>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
@@ -46,6 +55,10 @@
             <ClearEntireCostmap
               name="ClearGlobalCostmap"
               service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ComputePathToPose
+              goal="{goal}"
+              path="{path}"
+              planner_id="GridBased"/>
           </Sequence>
           <Wait wait_duration="2"/>
         </RoundRobin>

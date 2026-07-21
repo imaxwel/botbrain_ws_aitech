@@ -19,8 +19,8 @@
       # temporary CPU stall into stale odometry and a large IMU integration gap.
       imu_queue_depth: 400
       lidar_queue_depth: 20
-      # The MID360 IMU is normally much faster than this. Allow a short
-      # scheduling hiccup without rebasing, while still rejecting real dropouts.
+      # The robot logs show occasional 20-30 ms delivery gaps under load. Keep
+      # those short gaps continuous; large discontinuities are still rebased.
       max_imu_gap: 0.03
       time_sync_en: false # ONLY turn on when external time synchronization is really not possible
       time_offset_lidar_to_imu:

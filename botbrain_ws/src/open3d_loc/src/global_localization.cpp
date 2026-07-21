@@ -2236,8 +2236,8 @@ void GloabalLocalization::Localization()
             std::chrono::steady_clock::now() - loc_start).count();
         const Eigen::Vector2d roll_pitch_deg = RollPitchDegrees(
             candidate_odom2map.block<3, 3>(0, 0));
-        RCLCPP_INFO_THROTTLE(
-            this->get_logger(), *this->get_clock(), 2000,
+        RCLCPP_INFO(
+            this->get_logger(),
             "ICP: accepted=%s fitness=%.3f rmse=%.3f correction=%.3f m/%.2f deg map_odom_z=%.3f map_odom_rp=%.2f/%.2f deg cost=%.1f ms",
             accepted ? "true" : "false", fitness, inlier_rmse,
             translation_step, rotation_step_deg,
