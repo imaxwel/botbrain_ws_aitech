@@ -40,7 +40,9 @@
 #include <cerrno>
 #include <chrono>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -85,7 +87,7 @@ std::size_t last_saved_point_count = std::numeric_limits<std::size_t>::max();
 bool imu_flip_yz = false;
 bool lidar_update_guard_enable = true;
 int imu_queue_depth = 400, lidar_queue_depth = 20;
-double max_imu_gap = 0.02;
+double max_imu_gap = 0.02, preprocess_max_range = 0.0;
 int guard_min_effective_points = 100, consecutive_guard_rejections = 0;
 int guard_recovery_min_rejections = 5, guard_recovery_min_effective_points = 60;
 int guard_max_unconfirmed_odometry_frames = 3, guard_max_consecutive_rejections = 30;
@@ -976,6 +978,7 @@ public:
         this->declare_parameter<double>("mapping.guard_max_abs_z", 5.0);
         this->declare_parameter<double>("mapping.guard_max_velocity_norm", 20.0);
         this->declare_parameter<double>("preprocess.blind", 0.01);
+        this->declare_parameter<double>("preprocess.max_range", 0.0);
         this->declare_parameter<int>("preprocess.lidar_type", AVIA);
         this->declare_parameter<int>("preprocess.scan_line", 16);
         this->declare_parameter<int>("preprocess.timestamp_unit", US);
@@ -1033,6 +1036,7 @@ public:
         this->get_parameter_or<double>("mapping.guard_max_abs_z", guard_max_abs_z, 5.0);
         this->get_parameter_or<double>("mapping.guard_max_velocity_norm", guard_max_velocity_norm, 20.0);
         this->get_parameter_or<double>("preprocess.blind", p_pre->blind, 0.01);
+        this->get_parameter_or<double>("preprocess.max_range", preprocess_max_range, 0.0);
         this->get_parameter_or<int>("preprocess.lidar_type", p_pre->lidar_type, AVIA);
         this->get_parameter_or<int>("preprocess.scan_line", p_pre->N_SCANS, 16);
         this->get_parameter_or<int>("preprocess.timestamp_unit", p_pre->time_unit, US);
@@ -1049,6 +1053,8 @@ public:
         imu_queue_depth = std::max(10, imu_queue_depth);
         lidar_queue_depth = std::max(5, lidar_queue_depth);
         max_imu_gap = std::max(0.005, std::min(0.10, max_imu_gap));
+        if (!std::isfinite(preprocess_max_range) || preprocess_max_range < 0.0)
+            preprocess_max_range = 0.0;
         guard_min_effective_points = std::max(1, guard_min_effective_points);
         guard_min_effective_ratio = std::max(0.0, std::min(1.0, guard_min_effective_ratio));
         guard_recovery_min_rejections = std::max(1, guard_recovery_min_rejections);
@@ -1079,9 +1085,9 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
         RCLCPP_INFO(this->get_logger(),
-                    "FAST-LIO input: imu=%s flip_yz=%s imu_q=%d lidar_q=%d max_imu_gap=%.4fs guard=%s",
+                    "FAST-LIO input: imu=%s flip_yz=%s imu_q=%d lidar_q=%d max_imu_gap=%.4fs max_range=%.1fm guard=%s",
                     imu_topic.c_str(), imu_flip_yz ? "true" : "false", imu_queue_depth,
-                    lidar_queue_depth, max_imu_gap,
+                    lidar_queue_depth, max_imu_gap, preprocess_max_range,
                     lidar_update_guard_enable ? "true" : "false");
         RCLCPP_INFO(
             this->get_logger(),
@@ -1366,6 +1372,46 @@ private:
             {
                 RCLCPP_WARN(this->get_logger(), "No point, skip this scan!\n");
                 return;
+            }
+
+            // Keep the complete raw scan through IMU deskew so scan-end timing
+            // remains unchanged. Limit range only before voxel filtering and
+            // scan-to-map matching, where distant corridor walls can dominate
+            // a weakly observable translation direction.
+            if (preprocess_max_range > 0.0)
+            {
+                const double max_range_sq =
+                    preprocess_max_range * preprocess_max_range;
+                auto &points = feats_undistort->points;
+                const std::size_t input_size = points.size();
+                std::size_t output_size = 0;
+                for (std::size_t i = 0; i < input_size; ++i)
+                {
+                    const PointType point = points[i];
+                    const double point_range_sq =
+                        point.x * point.x + point.y * point.y + point.z * point.z;
+                    if (std::isfinite(point_range_sq) &&
+                            point_range_sq <= max_range_sq)
+                    {
+                        points[output_size++] = point;
+                    }
+                }
+                points.resize(output_size);
+                feats_undistort->width = static_cast<std::uint32_t>(output_size);
+                feats_undistort->height = 1;
+                feats_undistort->is_dense = true;
+                RCLCPP_INFO_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 5000,
+                    "[FAST_LIO_RANGE] max=%.1fm kept=%zu/%zu",
+                    preprocess_max_range, output_size, input_size);
+                if (feats_undistort->empty())
+                {
+                    RCLCPP_WARN_THROTTLE(
+                        this->get_logger(), *this->get_clock(), 2000,
+                        "No points within preprocess.max_range=%.1fm",
+                        preprocess_max_range);
+                    return;
+                }
             }
 
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? false : true;

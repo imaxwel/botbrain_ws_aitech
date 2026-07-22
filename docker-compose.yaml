@@ -118,6 +118,7 @@ services:
     container_name: g1_robot_fast_lio
     environment:
       FAST_LIO_START_DELAY_SEC: ${FAST_LIO_START_DELAY_SEC:-25}
+      FAST_LIO_MAPPING_PROFILE: ${FAST_LIO_MAPPING_PROFILE:-default}
     command: ["bash", "-lc", "sleep \"$${FAST_LIO_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch --noninteractive g1_pkg fast_lio.launch.py"]
     stop_signal: SIGINT
     stop_grace_period: 180s

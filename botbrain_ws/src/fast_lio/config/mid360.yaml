@@ -31,6 +31,9 @@
       lidar_type: 1 # 1 for Livox serials LiDAR
       scan_line: 4
       blind: 0.5
+      # 0 disables the upper range filter. The corridor launch profile
+      # overrides this to reduce weakly constrained far-wall matches.
+      max_range: 0.0
       timestamp_unit: 3
       scan_rate: 10
 

@@ -119,6 +119,7 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
 
     assert 'MAP_SCENE="$scene" LOCALIZATION_START_DELAY_SEC=0' in selector
     assert "FAST_LIO_START_DELAY_SEC=0" in selector
+    assert "FAST_LIO_MAPPING_PROFILE=default" in selector
     assert "docker compose rm -f navigation localization" in selector
     assert "--force-recreate --no-deps localization" in selector
     assert "docker inspect g1_robot_localization" in selector
@@ -277,6 +278,110 @@ def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
     assert "sigkill_timeout='20'" in source
     assert "'--rate',           '2.0'" in source
     assert "'--debug-clouds'" not in source
+
+
+def test_fast_lio_corridor_profile_is_explicit_and_preserves_defaults():
+    launch = _read("botbrain_ws/src/g1_pkg/launch/fast_lio.launch.py")
+    compose = yaml.safe_load(_read("docker-compose.yaml"))
+
+    fast_lio_env = compose["services"]["fast_lio"]["environment"]
+    assert fast_lio_env["FAST_LIO_MAPPING_PROFILE"] == (
+        "${FAST_LIO_MAPPING_PROFILE:-default}"
+    )
+    assert "'default': {}" in launch
+    assert "'corridor':" in launch
+    assert "'point_filter_num': 2" in launch
+    assert "'filter_size_surf': 0.25" in launch
+    assert "'filter_size_map': 0.25" in launch
+    assert "'preprocess.max_range': 20.0" in launch
+    assert "Unsupported FAST_LIO_MAPPING_PROFILE" in launch
+    assert "FAST-LIO mapping profile:" in launch
+
+    config = yaml.safe_load(
+        _read("botbrain_ws/src/fast_lio/config/mid360.yaml")
+    )["/**"]["ros__parameters"]
+    source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
+    assert config["preprocess"]["max_range"] == 0.0
+    assert 'declare_parameter<double>("preprocess.max_range", 0.0)' in source
+    assert 'get_parameter_or<double>("preprocess.max_range", preprocess_max_range, 0.0)' in source
+    assert "std::isfinite(preprocess_max_range)" in source
+    assert source.index("p_imu->Process(Measures, kf, feats_undistort)") < (
+        source.index("point_range_sq <= max_range_sq")
+    )
+    assert source.index("point_range_sq <= max_range_sq") < (
+        source.index("downSizeFilterSurf.setInputCloud(feats_undistort)")
+    )
+    assert "[FAST_LIO_RANGE] max=%.1fm kept=%zu/%zu" in source
+
+
+def test_rviz_presets_match_runtime_topics_and_bound_mapping_history():
+    mapping = yaml.safe_load(_read("configs/g1_mapping_rviz2.rviz"))
+    navigation = yaml.safe_load(_read("configs/g1_nav_loc_rviz2.rviz"))
+
+    mapping_manager = mapping["Visualization Manager"]
+    nav_manager = navigation["Visualization Manager"]
+    assert mapping_manager["Global Options"]["Fixed Frame"] == "camera_init"
+    assert nav_manager["Global Options"]["Fixed Frame"] == "map"
+
+    mapping_displays = {
+        display["Name"]: display for display in mapping_manager["Displays"]
+    }
+    nav_displays = {
+        display["Name"]: display for display in nav_manager["Displays"]
+    }
+    mapping_cloud = mapping_displays["registered_world_map"]
+    assert mapping_cloud["Topic"]["Value"] == "/cloud_registered_1"
+    assert mapping_cloud["Topic"]["Depth"] == 1
+    assert mapping_cloud["Topic"]["Reliability Policy"] == "Best Effort"
+    assert 0 < float(mapping_cloud["Decay Time"]) <= 30
+    assert nav_displays["Map"]["Topic"]["Value"] == "/map"
+    assert nav_displays["Map"]["Update Topic"]["Value"] == "/map_updates"
+    assert nav_displays["Path (Nav2 /g1_robot/plan)"]["Topic"]["Value"] == (
+        "/g1_robot/plan"
+    )
+    assert nav_displays["Odometry"]["Topic"]["Value"] == "/g1_robot/nav_odom"
+    nav_cloud = nav_displays["registered cloud (FAST-LIO)"]
+    assert nav_cloud["Topic"]["Depth"] == 1
+    assert nav_cloud["Topic"]["Reliability Policy"] == "Best Effort"
+    static_pcd = nav_displays["map (scans.pcd)"]
+    assert static_pcd["Topic"]["Reliability Policy"] == "Reliable"
+    assert static_pcd["Topic"]["Durability Policy"] == "Transient Local"
+    assert float(static_pcd["Alpha"]) >= 0.10
+
+    nav_tools = {
+        tool["Class"]: tool for tool in nav_manager["Tools"]
+    }
+    assert nav_tools["rviz_default_plugins/SetInitialPose"]["Topic"]["Value"] == (
+        "/initialpose"
+    )
+    assert nav_tools["rviz_default_plugins/SetGoal"]["Topic"]["Value"] == (
+        "/g1_robot/goal_pose"
+    )
+
+
+def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
+    mapping = _read("tools/host_side/mapping_rviz2.sh")
+    navigation = _read("tools/host_side/g1_nav_loc_rviz2.sh")
+    compact = _read("建图导航指令.md")
+
+    for source, preset in (
+        (mapping, "configs/g1_mapping_rviz2.rviz"),
+        (navigation, "configs/g1_nav_loc_rviz2.rviz"),
+    ):
+        assert 'REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"' in source
+        assert preset in source
+        assert "set -euo pipefail" not in source
+        assert "source /opt/ros/humble/setup.bash" in source
+        assert "install ros-humble-rviz2" in source
+        assert 'tcp://${G1_IP}:7448' in source
+        assert "cannot reach Zenoh at ${G1_IP}:7448" in source
+        assert "ros2 daemon stop" in source
+        assert 'exec rviz2 -d "$RVIZ_CFG"' in source
+
+    assert "bash tools/host_side/mapping_rviz2.sh 192.168.100.30" in compact
+    assert "bash tools/host_side/g1_nav_loc_rviz2.sh 192.168.100.30" in compact
+    assert "FAST_LIO_MAPPING_PROFILE=default" in compact
+    assert "FAST_LIO_MAPPING_PROFILE=corridor" in compact
 
 
 def test_g1_laserscan_filters_body_cloud_for_navigation_obstacles():

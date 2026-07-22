@@ -719,7 +719,10 @@ if [ "$restart_fast_lio" = true ]; then
     arm_switch_rollback
     docker compose stop navigation localization fast_lio
     docker compose rm -f navigation localization fast_lio
-    FAST_LIO_START_DELAY_SEC=0 docker compose up -d --force-recreate fast_lio
+    # Mapping-only corridor overrides must not carry into localization and
+    # navigation, where predictable real-time timing takes priority.
+    FAST_LIO_START_DELAY_SEC=0 FAST_LIO_MAPPING_PROFILE=default \
+        docker compose up -d --force-recreate fast_lio
 
     wait_for_restarted_fast_lio
 else

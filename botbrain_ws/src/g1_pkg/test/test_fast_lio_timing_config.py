@@ -22,7 +22,7 @@ def test_mid360_tolerates_short_delivery_gaps_via_parameter():
     assert 'get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.02)' in source
     assert "observed_max_imu_gap <= max_imu_gap" in source
     assert "limit=%.4fs" in source
-    assert "max_imu_gap=0.0300s guard=true" in runbook
+    assert "max_imu_gap=0.0300s max_range=0.0m guard=true" in runbook
     assert runbook.count("common.max_imu_gap") >= 2
 
 

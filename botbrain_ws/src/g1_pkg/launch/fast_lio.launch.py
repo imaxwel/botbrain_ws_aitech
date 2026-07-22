@@ -2,8 +2,23 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess
+from launch.actions import ExecuteProcess, LogInfo
 from launch_ros.actions import Node
+
+
+MAPPING_PROFILES = {
+    'default': {},
+    # Preserve more doorway/corner geometry and reduce the influence of
+    # distant parallel corridor walls. This mitigates corridor degeneracy but
+    # is not a pose-graph loop-closure backend.
+    'corridor': {
+        'point_filter_num': 2,
+        'max_iteration': 5,
+        'filter_size_surf': 0.25,
+        'filter_size_map': 0.25,
+        'preprocess.max_range': 20.0,
+    },
+}
 
 
 def generate_launch_description():
@@ -15,16 +30,35 @@ def generate_launch_description():
         mid360 = yaml.safe_load(f)
     pcd_save_en = mid360.get('/**', {}).get('ros__parameters', {}).get('pcd_save', {}).get('pcd_save_en', False)
 
+    mapping_profile = os.environ.get(
+        'FAST_LIO_MAPPING_PROFILE', 'default'
+    ).strip().lower()
+    if mapping_profile not in MAPPING_PROFILES:
+        supported = ', '.join(sorted(MAPPING_PROFILES))
+        raise RuntimeError(
+            f"Unsupported FAST_LIO_MAPPING_PROFILE={mapping_profile!r}; "
+            f"expected one of: {supported}"
+        )
+    profile_parameters = MAPPING_PROFILES[mapping_profile]
+
     # FAST-LIO subscribes directly to /livox/imu and applies the upside-down
     # MID360 Y/Z sign correction in C++. Do not also launch imu_flip.py, or the
     # IMU will be transformed twice.
     actions = [
+        LogInfo(msg=(
+            f"FAST-LIO mapping profile: {mapping_profile}; "
+            f"overrides={profile_parameters or 'none'}"
+        )),
         Node(
             package='fast_lio',
             executable='fastlio_mapping',
             name='fast_lio',
             output='screen',
-            parameters=[pkg_config, {'use_sim_time': False}],
+            parameters=[
+                pkg_config,
+                {'use_sim_time': False},
+                profile_parameters,
+            ],
             # A large PCD can take well over the launch default of 5 seconds to
             # flush. Keep Docker's grace period longer than these two timeouts.
             sigterm_timeout='150',
