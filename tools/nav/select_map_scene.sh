@@ -318,7 +318,8 @@ verify_fast_lio_topics() {
         source /opt/ros/humble/setup.bash
         source /botbrain_ws/install/setup.bash
         timeout 10 ros2 topic echo /Odometry_loc --once >/dev/null
-        timeout 10 ros2 topic echo /cloud_registered_1 --once >/dev/null
+        timeout 10 ros2 topic echo /cloud_registered_1 \
+            --qos-reliability best_effort --once >/dev/null
     ' >/dev/null 2>&1
 }
 
@@ -481,8 +482,13 @@ verify_navigation_topic_publishers() {
     local result
     local topic
 
+    # A full round starts six ROS graph queries. On Zenoh the first healthy
+    # round can finish close to the discovery deadline; once a valid streak
+    # has started, let it reach 3/3 (or reset) instead of rejecting six
+    # already-unique publishers merely because the wall-clock deadline passed.
     while [ "$stable_rounds" -lt "$required_rounds" ] &&
-            [ "$SECONDS" -lt "$deadline" ]; do
+            { [ "$SECONDS" -lt "$deadline" ] ||
+              [ "$stable_rounds" -gt 0 ]; }; do
         counts=()
         errors=()
         all_unique=true
@@ -759,7 +765,11 @@ publisher_query_error=""
 publisher_query_succeeded=false
 map_publishers=unknown
 pcd_publishers=unknown
-while [ "$SECONDS" -lt "$old_publisher_deadline" ]; do
+# A publisher query includes two ROS graph lookups and can consume most of the
+# 30-second discovery window on a slow DDS graph. Once a zero-publisher streak
+# has started, always let it finish (or reset) instead of timing out at 2/3.
+while [ "$SECONDS" -lt "$old_publisher_deadline" ] ||
+        [ "$old_publisher_zero_rounds" -gt 0 ]; do
     if ! map_publisher_result=$(topic_publisher_count \
             g1_robot_fast_lio /map 2>&1); then
         publisher_query_error=$map_publisher_result

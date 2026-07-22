@@ -17,6 +17,8 @@ find_package(bot_custom_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_srvs REQUIRED) 
 find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 set(_default_unitree_sdk2_root "${CMAKE_CURRENT_SOURCE_DIR}/third_party/unitree_sdk2")
 set(UNITREE_SDK2_ROOT "$ENV{UNITREE_SDK2_ROOT}" CACHE PATH
@@ -119,7 +121,11 @@ add_executable(g1_write_node
                src/g1_write.cpp
 )
 
-install(TARGETS g1_write_node
+add_executable(g1_state_bridge_node
+               src/g1_state_bridge.cpp
+)
+
+install(TARGETS g1_write_node g1_state_bridge_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -129,6 +135,13 @@ ament_target_dependencies(g1_write_node
               bot_custom_interfaces
               geometry_msgs
               std_srvs)
+
+ament_target_dependencies(g1_state_bridge_node
+              rclcpp
+              rclcpp_lifecycle
+              nav_msgs
+              sensor_msgs
+              std_msgs)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -161,7 +174,19 @@ target_link_libraries(g1_write_node
   pthread
 )
 
+target_link_libraries(g1_state_bridge_node
+  ${UNITREE_SDK2}
+  ${DDSCXX}
+  ${DDSC}
+  pthread
+)
+
 set_target_properties(g1_write_node PROPERTIES
+  BUILD_RPATH "${UNITREE_SDK2_LIB_DIR};${DDSCXX_LIB_DIR};${DDSC_LIB_DIR};/opt/ros/humble/lib;/opt/ros/humble/lib/aarch64-linux-gnu"
+  INSTALL_RPATH "${UNITREE_SDK2_LIB_DIR};${DDSCXX_LIB_DIR};${DDSC_LIB_DIR};/opt/ros/humble/lib;/opt/ros/humble/lib/aarch64-linux-gnu"
+)
+
+set_target_properties(g1_state_bridge_node PROPERTIES
   BUILD_RPATH "${UNITREE_SDK2_LIB_DIR};${DDSCXX_LIB_DIR};${DDSC_LIB_DIR};/opt/ros/humble/lib;/opt/ros/humble/lib/aarch64-linux-gnu"
   INSTALL_RPATH "${UNITREE_SDK2_LIB_DIR};${DDSCXX_LIB_DIR};${DDSC_LIB_DIR};/opt/ros/humble/lib;/opt/ros/humble/lib/aarch64-linux-gnu"
 )

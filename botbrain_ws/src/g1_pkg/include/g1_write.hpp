@@ -37,6 +37,7 @@ private:
     // Locomotion configuration parameters
     int speed_mode_{0}; // speed profile index
     bool keep_move_{false}; // // continuous gait flag
+    std::string network_interface_{"enP8p1s0"};
 
     // G1 driver instance
     std::shared_ptr<G1Driver> g1_driver_; 

@@ -1160,9 +1160,17 @@ public:
         }
         auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(imu_queue_depth)).reliable();
         sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(imu_topic, imu_qos, imu_cbk);
-        pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_1", 20);
-        pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_body_1", 20);
-        pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("cloud_effected_1", 20);
+        // Point clouds are large and are consumed as live visualization/scan
+        // data.  Keep only the newest frame and use BEST_EFFORT so a slow
+        // Zenoh/RViz subscriber cannot build a backlog of stale clouds.
+        const auto latest_cloud_qos =
+            rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
+        pubLaserCloudFull_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+            "cloud_registered_1", latest_cloud_qos);
+        pubLaserCloudFull_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+            "cloud_registered_body_1", latest_cloud_qos);
+        pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+            "cloud_effected_1", latest_cloud_qos);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("Laser_map_1", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("Odometry_loc", 20);
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("path_1", 20);

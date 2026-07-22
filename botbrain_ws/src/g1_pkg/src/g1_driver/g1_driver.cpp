@@ -4,14 +4,15 @@
 
 #include "g1_driver.hpp"
 
-G1Driver::G1Driver()
+G1Driver::G1Driver(const std::string& network_interface)
 {
     // Initialize Unitree DDS ChannelFactory only once
     static std::once_flag unitree_dds_once;
-    std::call_once(unitree_dds_once, []()
+    std::call_once(unitree_dds_once, [&network_interface]()
     {
-        std::cerr << "[G1Driver] ChannelFactory Init(0)\n";
-        unitree::robot::ChannelFactory::Instance()->Init(0);  
+        std::cerr << "[G1Driver] ChannelFactory Init(0, "
+                  << network_interface << ")\n";
+        unitree::robot::ChannelFactory::Instance()->Init(0, network_interface);
     });
 }
 

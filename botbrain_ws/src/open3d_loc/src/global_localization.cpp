@@ -838,8 +838,11 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     // earlier lets DDS queues accumulate while no callback can consume them.
     const auto odom_input_qos =
         rclcpp::QoS(rclcpp::KeepLast(20)).reliable();
+    // FAST-LIO publishes live clouds as BEST_EFFORT depth-1.  Matching that
+    // profile prevents Zenoh/RViz backlogs and lets localization consume the
+    // newest cloud after a temporary transport delay.
     const auto latest_cloud_qos =
-        rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
+        rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
     sub_baselink2odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "Odometry_loc", odom_input_qos,
         std::bind(&GloabalLocalization::CallbackBaselink2Odom, this,
@@ -1711,9 +1714,18 @@ void GloabalLocalization::LocalizationInitialize()
         }
 
         const auto candidate_time = std::chrono::steady_clock::now();
+        // Candidate freshness is meant to reject a paused input stream, not a
+        // slow but healthy ICP calculation.  On the full G1 map one local ICP
+        // iteration can take several seconds, so comparing two completion
+        // timestamps directly against the 1 s sensor-gap limit makes every
+        // manual initialization reset to 1/2 forever.  Discount the current
+        // iteration's compute time while preserving the configured maximum
+        // gap between distinct incoming scan windows.
+        const double candidate_processing_sec = std::chrono::duration<double>(
+            candidate_time - loc_start).count();
         const double candidate_max_age = used_global_initialization
             ? global_candidate_max_age_sec_
-            : icp_candidate_max_age_sec_;
+            : icp_candidate_max_age_sec_ + candidate_processing_sec;
         const double candidate_consistency_translation = used_global_initialization
             ? global_candidate_consistency_translation_
             : icp_candidate_consistency_translation_;
@@ -2119,11 +2131,16 @@ void GloabalLocalization::Localization()
         if (valid_result && fitness_ok && within_step_gate && !immediate_step)
         {
             const auto candidate_time = std::chrono::steady_clock::now();
+            // As during initialization, allow the configured inter-scan gap
+            // plus the time spent computing the current ICP result.  Otherwise
+            // a CPU-heavy but live update can never confirm a medium correction.
+            const double candidate_processing_sec =
+                std::chrono::duration<double>(candidate_time - loc_start).count();
             const bool pending_is_fresh =
                 pending_large_correction_count > 0 &&
                 pending_large_candidate_time != std::chrono::steady_clock::time_point::min() &&
                 std::chrono::duration<double>(candidate_time - pending_large_candidate_time).count() <=
-                    icp_candidate_max_age_sec_;
+                    icp_candidate_max_age_sec_ + candidate_processing_sec;
             bool consistent_with_pending = false;
             if (pending_is_fresh && IsRigidTransform(pending_large_candidate))
             {

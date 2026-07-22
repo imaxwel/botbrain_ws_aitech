@@ -26,6 +26,7 @@ def generate_launch_description():
         config = yaml.safe_load(f)['robot_configuration']
     
     robot_name = config['robot_name']
+    network_interface = config['network_interface']
     prefix = robot_name + '/' if robot_name != '' else ''
     velocity_frame = os.environ.get('UNITREE_VELOCITY_FRAME', 'odom')
     sdk_root = os.environ.get("UNITREE_SDK2_ROOT", "/usr/local")
@@ -37,7 +38,10 @@ def generate_launch_description():
     g1_write_node = LifecycleNode(
         package = 'g1_pkg',
         executable = 'g1_write_node',
-        parameters=[params_file, {'prefix': (prefix)}],
+        parameters=[params_file, {
+            'prefix': prefix,
+            'network_interface': network_interface,
+        }],
         name='robot_write_node',
         namespace=robot_name,
         output='screen',
@@ -51,16 +55,23 @@ def generate_launch_description():
 
     g1_read_node = LifecycleNode(
         package = 'g1_pkg',
-        executable = 'g1_read.py',
+        executable = 'g1_state_bridge_node',
         parameters=[{
             'prefix': prefix,
-            'publish_tf': False,
+            'network_interface': network_interface,
             # Unitree's official ROS2 read_motion_state example documents
             # SportModeState.velocity in the odometry frame.
             'velocity_frame': velocity_frame,
         }],
         name='robot_read_node',
         namespace=robot_name,
+        output='screen',
+        additional_env={
+            "LD_LIBRARY_PATH": sdk_lib_dir + ":/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:"
+                              + os.environ.get("LD_LIBRARY_PATH", ""),
+            "LD_PRELOAD": os.path.join(sdk_lib_dir, "libddsc.so.0") + ":" +
+                          os.path.join(sdk_lib_dir, "libddscxx.so.0"),
+        },
     )
 
     g1_controller_commands_node = LifecycleNode(

@@ -204,6 +204,8 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     assert "ros2 topic echo /cloud_registered_1 --once" in selector
     assert "docker compose ps -aq --all localization" in selector
     assert "old map publishers are still visible" in selector
+    assert '[ "$SECONDS" -lt "$old_publisher_deadline" ] ||' in selector
+    assert '[ "$old_publisher_zero_rounds" -gt 0 ]' in selector
     assert "botbrain_ws/install/fast_lio/share/fast_lio/config/mid360.yaml" in selector
     assert "pcd_save_en:" in selector
     assert 'bash tools/nav/select_map_scene.sh "$scene"' in compact_runbook
@@ -379,8 +381,22 @@ def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
         assert "ros2 daemon stop" in source
         assert 'exec rviz2 -d "$RVIZ_CFG"' in source
 
-    assert "bash tools/host_side/mapping_rviz2.sh 192.168.100.30" in compact
-    assert "bash tools/host_side/g1_nav_loc_rviz2.sh 192.168.100.30" in compact
+    assert "bash tools/host_side/mapping_rviz2.sh 192.168.100.3" in compact
+    assert "bash tools/host_side/g1_nav_loc_rviz2.sh 192.168.100.3" in compact
+    assert "cd ~/Workspace/g1_botbrain_greeter" in compact
+    assert (
+        'bash tools/nav/select_map_scene.sh "$scene" '
+        '--wait-ready --ready-timeout 300'
+    ) in compact
+    assert (
+        'bash tools/nav/select_map_scene.sh "$scene" '
+        '--restart-fast-lio --wait-ready --ready-timeout 300'
+    ) in compact
+    assert "只有场景选择脚本返回 0 后才执行" in compact
+    assert (
+        "docker compose --profile navigation up -d "
+        "--force-recreate navigation"
+    ) in compact
     assert "FAST_LIO_MAPPING_PROFILE=default" in compact
     assert "FAST_LIO_MAPPING_PROFILE=corridor" in compact
 

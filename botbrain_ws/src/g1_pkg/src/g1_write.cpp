@@ -67,7 +67,7 @@ G1Write::on_configure(const rclcpp_lifecycle::State & previous_state)
     }
 
     // Create driver instance 
-    g1_driver_ = std::make_shared<G1Driver>();
+    g1_driver_ = std::make_shared<G1Driver>(network_interface_);
 
     // Initialize locomotion client
     if(!g1_driver_->init_loco_client(speed_mode_, keep_move_))
@@ -580,9 +580,12 @@ void G1Write::load_parameters()
 {
     keep_move_ = this->declare_parameter<bool>("robot.keep_move", false);
     speed_mode_ = this->declare_parameter<int>("robot.speed_mode", 0);
+    network_interface_ = this->declare_parameter<std::string>(
+        "network_interface", "enP8p1s0");
 
-    RCLCPP_INFO(this->get_logger(), "[G1Write] Parameters: keep_move=%s | speed_mode=%d", 
-        keep_move_ ? "true" : "false", speed_mode_);
+    RCLCPP_INFO(this->get_logger(),
+        "[G1Write] Parameters: keep_move=%s | speed_mode=%d | interface=%s",
+        keep_move_ ? "true" : "false", speed_mode_, network_interface_.c_str());
 }
 
 std::string G1Write::get_package_dir()

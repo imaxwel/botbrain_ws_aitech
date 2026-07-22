@@ -83,7 +83,7 @@ private:
 
 public:
     // Initializes Unitree DDS ChannelFactory once.
-    G1Driver();
+    explicit G1Driver(const std::string& network_interface);
 
     // Destructor.
     ~G1Driver();
