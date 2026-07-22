@@ -49,7 +49,7 @@ if ! ros2 pkg prefix rmw_zenoh_cpp >/dev/null 2>&1; then
     exit 1
 fi
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
-export ZENOH_CONFIG_OVERRIDE="mode=\"client\";connect/endpoints=[\"tcp://${G1_IP}:7448\"]"
+export ZENOH_CONFIG_OVERRIDE="mode=\"client\";connect/endpoints=[\"tcp/${G1_IP}:7448\"]"
 export ZENOH_ROUTER_CHECK_ATTEMPTS=10
 
 ros2 daemon stop  >/dev/null 2>&1 || true

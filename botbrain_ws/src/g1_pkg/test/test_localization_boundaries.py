@@ -373,7 +373,8 @@ def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
         assert "set -euo pipefail" not in source
         assert "source /opt/ros/humble/setup.bash" in source
         assert "install ros-humble-rviz2" in source
-        assert 'tcp://${G1_IP}:7448' in source
+        assert 'tcp/${G1_IP}:7448' in source
+        assert 'tcp://${G1_IP}:7448' not in source
         assert "cannot reach Zenoh at ${G1_IP}:7448" in source
         assert "ros2 daemon stop" in source
         assert 'exec rviz2 -d "$RVIZ_CFG"' in source
