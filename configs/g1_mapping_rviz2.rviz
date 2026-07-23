@@ -87,19 +87,19 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 238; 238; 236
-      Color Transformer: Intensity
-      Decay Time: 15
+      Color: 0; 255; 255
+      Color Transformer: FlatColor
+      Decay Time: 0
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Max Intensity: 155
       Min Color: 238; 238; 236
       Min Intensity: 0
-      Name: registered_world_map
+      Name: world scan (live)
       Position Transformer: XYZ
       Selectable: false
-      Size (Pixels): 3
+      Size (Pixels): 5
       Size (m): 0.05000000074505806
       Style: Points
       Topic:
@@ -110,9 +110,43 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Value: /cloud_registered_1
       Use Fixed Frame: true
-      Use rainbow: true
+      Use rainbow: false
       Value: true
-    - Alpha: 0.10000000149011612
+    - Alpha: 0.6499999761581421
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 160; 255; 255
+      Color Transformer: FlatColor
+      Decay Time: 300
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 155
+      Min Color: 238; 238; 236
+      Min Intensity: 0
+      Name: world history (5 min)
+      Position Transformer: XYZ
+      Selectable: false
+      Size (Pixels): 2
+      Size (m): 0.029999999329447746
+      Style: Points
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /cloud_registered_1
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 0.8500000238418579
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
         Max Value: 15
@@ -121,21 +155,21 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: Intensity
+      Color: 255; 170; 0
+      Color Transformer: FlatColor
       Decay Time: 0
-      Enabled: false
-      Invert Rainbow: true
+      Enabled: true
+      Invert Rainbow: false
       Max Color: 255; 255; 255
       Max Intensity: 155
       Min Color: 0; 0; 0
       Min Intensity: 0
-      Name: body_scan_debug
+      Name: body cloud (robot live scan)
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 1
-      Size (m): 0.009999999776482582
-      Style: Points
+      Size (Pixels): 4
+      Size (m): 0.03999999910593033
+      Style: Flat Squares
       Topic:
         Depth: 1
         Durability Policy: Volatile
@@ -144,8 +178,8 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Value: /cloud_registered_body_1
       Use Fixed Frame: true
-      Use rainbow: true
-      Value: false
+      Use rainbow: false
+      Value: true
     - Angle Tolerance: 0.009999999776482582
       Class: rviz_default_plugins/Odometry
       Covariance:

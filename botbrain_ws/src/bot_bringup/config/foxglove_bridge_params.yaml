@@ -18,6 +18,10 @@
       - "/map_metadata"
       - "/rosout"
       - "/parameter_events"
+      # Explicit entries document the two RViz/Foxglove parity layers. The
+      # broader /cloud_.* rule remains for optional FAST-LIO diagnostics.
+      - "/cloud_registered_1"
+      - "/cloud_registered_body_1"
       - "/cloud_.*"
       - "/livox/.*"
       - "/accumulated_grid"

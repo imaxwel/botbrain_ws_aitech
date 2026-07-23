@@ -7,7 +7,7 @@
     filter_size_map: 0.3   # 匹配参考
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/floor4_scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
       lid_topic: "/livox/lidar"
@@ -19,9 +19,9 @@
       # temporary CPU stall into stale odometry and a large IMU integration gap.
       imu_queue_depth: 400
       lidar_queue_depth: 20
-      # The robot logs show occasional 20-30 ms delivery gaps under load. Keep
-      # those short gaps continuous; large discontinuities are still rebased.
-      max_imu_gap: 0.03
+      # The Jetson logs show recurring 40-50 ms scheduling gaps under load.
+      # Preserve those short gaps; larger discontinuities are still rebased.
+      max_imu_gap: 0.06
       time_sync_en: false # ONLY turn on when external time synchronization is really not possible
       time_offset_lidar_to_imu:
         0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
@@ -48,18 +48,23 @@
       # LiDAR update is a correction to the IMU prediction, not the robot's
       # physical per-frame motion. Keep this strict so a corridor mismatch or
       # timing/extrinsic fault cannot write a 20-45 degree jump into the map.
-      guard_min_effective_points: 100
-      guard_min_effective_ratio: 0.10
+      # Long-corridor turns observed on the real G1 can temporarily leave only
+      # 5-29 effective points even while the match ratio is 0.2-0.5 and the
+      # residual is 2-5 cm.  Do not reject those useful corrections on an
+      # absolute-count gate alone; ratio, residual and correction gates remain
+      # active and still reject zero/degenerate matches.
+      guard_min_effective_points: 5
+      guard_min_effective_ratio: 0.05
       guard_max_residual: 0.15
-      guard_max_translation_correction: 0.25
-      guard_max_rotation_correction_deg: 5.0
+      guard_max_translation_correction: 0.50
+      guard_max_rotation_correction_deg: 10.0
       # 连续拒帧后允许一次“只修状态、不写地图”的高置信恢复，避免纯 IMU 越漂越远后永久锁死。
       guard_recovery_min_rejections: 5
-      guard_recovery_min_effective_points: 60
-      guard_recovery_min_effective_ratio: 0.15
+      guard_recovery_min_effective_points: 3
+      guard_recovery_min_effective_ratio: 0.05
       guard_recovery_max_residual: 0.10
-      guard_recovery_max_translation_correction: 0.75
-      guard_recovery_max_rotation_correction_deg: 15.0
+      guard_recovery_max_translation_correction: 1.50
+      guard_recovery_max_rotation_correction_deg: 30.0
       # 最多发布 3 帧未被 LiDAR 确认的纯 IMU 里程计。持续失败时停止 TF，
       # 让 localization/costmap 超时并停车，而不是继续使用发散位姿。
       guard_max_unconfirmed_odometry_frames: 3

@@ -41,12 +41,24 @@ def test_mapping_runbook_documents_safe_save_and_editor_semantics():
     assert source.index(service_save) < source.index(stop_fast_lio)
     assert "ros2 param get /fast_lio pcd_save.pcd_save_en" in source
     assert "ros2 param get /fast_lio map_file_path" in source
-    assert "test -s \"$maps/floor1_scans.pcd\"" in source
-    assert "test \"$maps/floor1_scans.pcd\" -nt \"$marker\"" in source
-    assert "建图时 localization/navigation 必须停止" in source
-    assert "关闭 `/Laser_map_1`" in source
+    assert "docker compose stop localization navigation" in source
+    assert "docker compose up -d zenoh bringup state_machine" in source
+    assert "FAST_LIO_START_DELAY_SEC=0" in source
+    assert "FAST_LIO_MAPPING_MODE=true" in source
+    assert "FAST_LIO_MAPPING_SAVE=true" in source
+    assert 'FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"' in source
+    assert "docker compose up -d --force-recreate fast_lio" in source
+    assert "docker compose ps zenoh bringup state_machine fast_lio" in source
+    assert "docker compose logs -f fast_lio" in source
+    assert 'bash tools/mapping/start_mapping_scene.sh "$scene" default' in source
+    assert "FAST_LIO_MAPPING_MODE=false" in source
+    assert "FAST_LIO_MAPPING_SAVE=false" in source
+    assert 'test -s "$maps/${scene}_scans.pcd"' in source
+    assert 'test "$maps/${scene}_scans.pcd" -nt "$marker"' in source
+    assert "现场默认不使用它" in source
+    assert "不需要手动 Add" in source
     assert "ros2 topic info -v /cloud_registered_1" in source
-    assert "sleep 1\nros2 topic info /accumulated_grid" in source
+    assert "/accumulated_grid" in source
     assert "Fixed Frame：`map`" in source
     assert "map_odom_z=1.247" in source
     assert "Map/odom height constraint: enabled=true z=1.247 m" in source

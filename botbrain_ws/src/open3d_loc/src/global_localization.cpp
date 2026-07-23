@@ -307,6 +307,8 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_scan_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_scan2map_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_submap_;
+    sensor_msgs::msg::PointCloud2 pcd_map_message_;
+    rclcpp::TimerBase::SharedPtr pcd_map_republish_timer_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_localization_3d_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_3d_confidence_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_3d_delay_ms_;
@@ -443,7 +445,13 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
 
     pub_map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("pcd_map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
     pub_submap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("submap", 1);
-    pub_scan2map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("scan2map", 1);
+    // This is a live operator preview, not durable state.  Keep only the
+    // newest frame and never let a slow/mobile-Wi-Fi RViz subscriber apply
+    // reliable backpressure to localization.
+    const auto live_cloud_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
+    pub_scan2map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+        "scan2map", live_cloud_qos);
     pub_scan_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("scan", 1);
     pub_localization_3d_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("localization_3d", 1);
     pub_localization_3d_confidence_ = this->create_publisher<std_msgs::msg::Float32>("localization_3d_confidence", 1);
@@ -776,10 +784,46 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     }
     // pcd_map_ori_->PaintUniformColor({1, 0, 0});
 
+    // Publish the operator reference cloud before preparing global FPFH
+    // features.  Feature preparation can take tens of seconds on a large map,
+    // but RViz does not need to wait for it in order to show /pcd_map and let
+    // the operator identify the robot's approximate position.
+    pcd_map_coarse_ = pcd_map_ori_->VoxelDownSample(voxelsize_coarse_);
+    pcd_map_coarse_->EstimateNormals(
+        open3d::geometry::KDTreeSearchParamHybrid(
+            voxelsize_coarse_ * 2, 30));
+
+    sensor_msgs::msg::PointCloud2 pc2_map;
+    open3d_conversions::open3dToRos(*pcd_map_coarse_, pc2_map);
+    pc2_map.header.frame_id = "map";
+    pc2_map.header.stamp = this->now();
+    pcd_map_message_ = pc2_map;
+    pub_map_->publish(pcd_map_message_);
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Published localization PCD for RViz points=%zu frame=map",
+        pcd_map_coarse_->points_.size());
+    // Keep TRANSIENT_LOCAL for normal late-joiner delivery, but also refresh
+    // the sample periodically. Some routed rmw_zenoh sessions discover the
+    // remote RViz subscription after the original sample and do not replay
+    // that history.
+    pcd_map_republish_timer_ = this->create_wall_timer(
+        std::chrono::seconds(5), [this]()
+        {
+            pcd_map_message_.header.stamp = this->now();
+            pub_map_->publish(pcd_map_message_);
+        });
+
     if (enable_global_initialization_)
     {
         for (const double voxel_size : global_voxel_sizes_)
         {
+            // The constructor is not in an executor yet, so the wall timer
+            // above cannot fire during feature preparation. Refresh the map
+            // between scales so a Zenoh RViz subscriber that joined after the
+            // first sample still receives the operator reference cloud.
+            pcd_map_message_.header.stamp = this->now();
+            pub_map_->publish(pcd_map_message_);
             auto map_for_features =
                 std::make_shared<open3d::geometry::PointCloud>(*pcd_map_ori_);
             GlobalFeatureLevel level;
@@ -802,6 +846,8 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
                 "Prepared global FPFH scale %.2fm with %zu map points",
                 voxel_size, level.map->points_.size());
             global_feature_levels_.push_back(std::move(level));
+            pcd_map_message_.header.stamp = this->now();
+            pub_map_->publish(pcd_map_message_);
         }
         if (global_feature_levels_.empty())
         {
@@ -811,16 +857,8 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
             enable_global_initialization_ = false;
         }
     }
-
-    pcd_map_coarse_ = pcd_map_ori_->VoxelDownSample(voxelsize_coarse_);
-    pcd_map_coarse_->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(voxelsize_coarse_ * 2, 30));
-
-    /// publish map, 用粗地图可视化，减少资源占用
-    sensor_msgs::msg::PointCloud2 pc2_map;
-    open3d_conversions::open3dToRos(*pcd_map_coarse_, pc2_map);
-    pc2_map.header.frame_id = "map";
-    pc2_map.header.stamp = this->now();
-    pub_map_->publish(pc2_map);
+    pcd_map_message_.header.stamp = this->now();
+    pub_map_->publish(pcd_map_message_);
 
     pcd_map_fine_ = pcd_map_ori_->VoxelDownSample(voxelsize_fine_);
     pcd_map_fine_->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(voxelsize_fine_ * 2, 30));
@@ -1444,6 +1482,26 @@ void GloabalLocalization::LocalizationInitialize()
     auto obb_scan = std::make_shared<open3d::geometry::OrientedBoundingBox>();
     obb_map->extent_ = Eigen::Vector3d(60, 60, 40);
     obb_scan->extent_ = Eigen::Vector3d(60, 60, 40);
+    const auto publish_scan_preview = [this](
+        const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+        const Eigen::Matrix4d &odom2map)
+    {
+        if (!scan || scan->IsEmpty() || !IsRigidTransform(odom2map))
+        {
+            return;
+        }
+        auto preview = scan->VoxelDownSample(voxelsize_fine_);
+        if (!preview || preview->IsEmpty())
+        {
+            return;
+        }
+        preview->Transform(odom2map);
+        sensor_msgs::msg::PointCloud2 message;
+        open3d_conversions::open3dToRos(*preview, message);
+        message.header.frame_id = "map";
+        message.header.stamp = this->now();
+        pub_scan2map_->publish(message);
+    };
 
     int consecutive_successes = 0;
     Eigen::Matrix4d pending_initialization_candidate = Eigen::Matrix4d::Identity();
@@ -1555,6 +1613,16 @@ void GloabalLocalization::LocalizationInitialize()
         const bool used_global_initialization =
             enable_global_initialization_ &&
             iteration_manual_pose_generation == 0;
+
+        // Always expose the current live scan in the map RViz, even before
+        // global registration finds a candidate.  Before initialization this
+        // uses the current (usually identity) map<-odom guess, so it is an
+        // explicitly unverified placement for visualization only.  A finite
+        // global/local candidate below replaces it later in this iteration.
+        // This keeps the robot point cloud visible so the operator can inspect
+        // the scan and place 2D Pose Estimate; it never commits map->odom.
+        publish_scan_preview(pcd_scan, current_odom2map);
+
         Eigen::Matrix4d raw_correction = Eigen::Matrix4d::Identity();
         Eigen::Matrix4d candidate_odom2map = Eigen::Matrix4d::Identity();
         double fitness = 0.0;
@@ -1666,6 +1734,16 @@ void GloabalLocalization::LocalizationInitialize()
         const bool safe_initialization_step =
             valid_result && fitness >= required_fitness &&
             inlier_rmse <= allowed_rmse && step_is_safe;
+
+        // Visualization is diagnostic, not authorization.  Publish every
+        // finite candidate in map coordinates before applying the navigation
+        // quality gate, so RViz always gives the operator a live point-cloud
+        // placement to inspect and refine with 2D Pose Estimate.  Only the
+        // gated/confirmed path below may commit map->odom or enable Nav2.
+        if (valid_result)
+        {
+            publish_scan_preview(pcd_scan, candidate_odom2map);
+        }
 
         if (!safe_initialization_step)
         {
@@ -2277,7 +2355,7 @@ void GloabalLocalization::CallbackInitialPose(
     {
         RCLCPP_WARN(
             this->get_logger(),
-            "Rejecting initial pose in frame '%s'; set Foxglove Fixed Frame to 'map'",
+            "Rejecting initial pose in frame '%s'; set RViz2 Fixed Frame to 'map'",
             initialpose->header.frame_id.c_str());
         return;
     }

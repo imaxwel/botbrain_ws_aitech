@@ -56,6 +56,7 @@ readonly PUBLISHER_STABLE_ROUNDS=3
 
 rollback_armed=false
 switch_completed=false
+localization_map_loaded=false
 previous_fast_lio_running=false
 previous_localization_running=false
 previous_navigation_running=false
@@ -248,7 +249,10 @@ restore_previous_runtime() {
 handle_selector_exit() {
     local status=$1
     trap - EXIT INT TERM
-    if [ "$status" -ne 0 ] && [ "$rollback_armed" = true ] &&
+    if [ "$status" -ne 0 ] && [ "$localization_map_loaded" = true ]; then
+        echo "Localization map remains loaded for RViz diagnosis; Navigation remains stopped." >&2
+        echo "Do not start Navigation until this selector later returns 0." >&2
+    elif [ "$status" -ne 0 ] && [ "$rollback_armed" = true ] &&
             [ "$switch_completed" != true ]; then
         restore_previous_runtime || true
     fi
@@ -283,31 +287,24 @@ fast_lio_active_logs() {
     '
 }
 
-stable_fast_lio_timing_streak() {
+fast_lio_timing_window() {
     awk '
-        /\[FAST_LIO_TIMING\] ok=false|timing discontinuity|abnormal timing|unsynchronized scan|invalid IMU rebase baseline/ {
-            count = 0
-            first = second = third = ""
-            next
-        }
-        /\[FAST_LIO_TIMING\] ok=true/ {
-            if (count == 0) first = $0
-            else if (count == 1) second = $0
-            else if (count == 2) third = $0
-            else {
-                first = second
-                second = third
-                third = $0
+        /\[FAST_LIO_TIMING\] ok=(true|false)/ {
+            if (samples < 5) {
+                samples++
+            } else {
+                for (idx = 1; idx < 5; idx++)
+                    healthy[idx] = healthy[idx + 1]
             }
-            if (count < 3) count++
+            healthy[samples] = ($0 ~ /ok=true/) ? 1 : 0
         }
         END {
-            print count + 0
-            if (count == 3) {
-                print first
-                print second
-                print third
-            }
+            good = 0
+            for (idx = 1; idx <= samples; idx++)
+                good += healthy[idx]
+            print samples + 0
+            print good + 0
+            print ((samples > 0) ? healthy[samples] + 0 : 0)
         }
     '
 }
@@ -374,12 +371,16 @@ wait_for_restarted_fast_lio() {
             return 1
         fi
 
-        timing_streak=$(stable_fast_lio_timing_streak <<<"$after_last_init")
-        timing_count=$(sed -n '1p' <<<"$timing_streak")
+        timing_window=$(fast_lio_timing_window <<<"$after_last_init")
+        timing_samples=$(sed -n '1p' <<<"$timing_window")
+        timing_healthy=$(sed -n '2p' <<<"$timing_window")
+        timing_latest_ok=$(sed -n '3p' <<<"$timing_window")
         if grep -Fq "IMU Initial Done" <<<"$logs" &&
-                [ "$timing_count" -eq 3 ] &&
+                [ "$timing_samples" -eq 5 ] &&
+                [ "$timing_healthy" -ge 4 ] &&
+                [ "$timing_latest_ok" -eq 1 ] &&
                 verify_fast_lio_topics; then
-            echo "FAST-LIO is healthy: IMU initialized, timing stable, outputs live"
+            echo "FAST-LIO is healthy: IMU initialized, 4/5 recent timing checks passed, outputs live"
             return 0
         fi
         sleep 1
@@ -660,6 +661,8 @@ wait_for_consecutive_icp_accepts() {
 
 wait_for_localization_ready() {
     local ready_deadline=$((SECONDS + ready_timeout))
+    echo "Navigation service must remain STOPPED during this check."
+    echo "The navigation_preflight process below is only a readiness checker, not the Navigation service."
     echo "Waiting up to ${ready_timeout}s for navigation inputs and stable localization"
     # Check live inputs first, collect a current ICP streak, then recheck the
     # inputs so an early match cannot mask a later sensor outage.
@@ -727,13 +730,31 @@ if [ "$restart_fast_lio" = true ]; then
     docker compose rm -f navigation localization fast_lio
     # Mapping-only corridor overrides must not carry into localization and
     # navigation, where predictable real-time timing takes priority.
-    FAST_LIO_START_DELAY_SEC=0 FAST_LIO_MAPPING_PROFILE=default \
+    FAST_LIO_START_DELAY_SEC=0 \
+    FAST_LIO_MAPPING_PROFILE=default \
+    FAST_LIO_MAPPING_MODE=false \
+    FAST_LIO_MAPPING_SAVE=false \
+    FAST_LIO_MAP_FILE= \
         docker compose up -d --force-recreate fast_lio
 
     wait_for_restarted_fast_lio
 else
     if ! fast_lio_running; then
         echo "ERROR: FAST-LIO is not running; retry with --restart-fast-lio" >&2
+        exit 1
+    fi
+    fast_lio_environment=$(docker inspect g1_robot_fast_lio \
+        --format '{{range .Config.Env}}{{println .}}{{end}}')
+    fast_lio_profile=$(sed -n 's/^FAST_LIO_MAPPING_PROFILE=//p' \
+        <<<"$fast_lio_environment" | tail -n 1)
+    fast_lio_mode=$(sed -n 's/^FAST_LIO_MAPPING_MODE=//p' \
+        <<<"$fast_lio_environment" | tail -n 1)
+    fast_lio_save=$(sed -n 's/^FAST_LIO_MAPPING_SAVE=//p' \
+        <<<"$fast_lio_environment" | tail -n 1)
+    if [ "${fast_lio_profile:-default}" != default ] || \
+            [ "${fast_lio_mode:-auto}" = true ] || \
+            [ "${fast_lio_save:-auto}" = true ]; then
+        echo "ERROR: FAST-LIO is still running in mapping mode; save/stop mapping, then retry with --restart-fast-lio" >&2
         exit 1
     fi
     current_fast_lio_logs=$(fast_lio_logs)
@@ -820,9 +841,11 @@ if [ "$old_publishers_gone" != true ]; then
     exit 1
 fi
 
+echo "Starting localization Compose service for scene '$scene'"
 MAP_SCENE="$scene" LOCALIZATION_START_DELAY_SEC=0 \
     docker compose --profile navigation \
     up -d --force-recreate --no-deps localization
+echo "Localization Compose service is running; Navigation remains stopped until localization is verified."
 
 localization_container_id=$(docker inspect -f '{{.Id}}' \
     g1_robot_localization)
@@ -856,6 +879,7 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             grep -F "$expected_log" | tail -n 1
 
         runtime_verified=false
+        rviz_pcd_announced=false
         runtime_stable_rounds=0
         runtime_deadline=$((SECONDS + 180))
         while [ "$SECONDS" -lt "$runtime_deadline" ]; do
@@ -870,6 +894,13 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             fi
             localization_logs=$(docker compose logs --no-color --tail 200 \
                 localization 2>&1)
+            if [ "$rviz_pcd_announced" != true ] &&
+                    grep -Fq "Published localization PCD for RViz" \
+                        <<<"$localization_logs"; then
+                echo "RVIZ POINT CLOUD READY: /pcd_map is publishing for scene '$scene'."
+                echo "Open tools/host_side/g1_nav_loc_rviz2.sh now; no manual Add is required."
+                rviz_pcd_announced=true
+            fi
             if ! grep -Fq "initialize finished" <<<"$localization_logs"; then
                 sleep 2
                 continue
@@ -900,6 +931,7 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
                 echo "Runtime map publisher check ${runtime_stable_rounds}/${PUBLISHER_STABLE_ROUNDS}"
                 if [ "$runtime_stable_rounds" -eq "$PUBLISHER_STABLE_ROUNDS" ]; then
                     runtime_verified=true
+                    localization_map_loaded=true
                     break
                 fi
             else
@@ -915,6 +947,12 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             echo "/pcd_map publishers: ${pcd_publishers:-unknown}" >&2
             exit 1
         fi
+
+        if [ "$rviz_pcd_announced" != true ]; then
+            echo "RVIZ POINT CLOUD READY: /pcd_map is publishing for scene '$scene'."
+            echo "Open tools/host_side/g1_nav_loc_rviz2.sh now; no manual Add is required."
+        fi
+        echo "Blue=/pcd_map. Magenta=/scan2map candidate. Green/orange live clouds appear after map TF is verified."
 
         if [ "$wait_ready" = true ]; then
             wait_for_localization_ready

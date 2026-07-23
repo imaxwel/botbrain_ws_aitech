@@ -14,6 +14,7 @@ import argparse
 import math
 import os
 import sys
+from array import array
 from collections import OrderedDict
 from threading import Lock
 
@@ -77,6 +78,7 @@ class GridAccumulator(Node):
         self.odom_topic = args.odom_topic
         self.grid_topic = args.grid_topic
         self.skip_frames = args.skip_frames
+        self.process_every = max(1, args.process_every)
         self.pre_transformed = args.pre_transformed
         self.pose_cache_size = max(1, args.pose_cache_size)
         self.map_z = args.map_z
@@ -231,6 +233,7 @@ class GridAccumulator(Node):
             f"occ_threshold={self.occupied_threshold:.2f} "
             f"obs_spread={self.obstacle_spread_radius:.3f}m "
             f"free_spread={self.free_spread_radius:.3f}m "
+            f"process_every={self.process_every} "
             f"self_filter={'on' if self.self_filter else 'off'} "
             f"raytrace={'on' if self.raytrace else 'off'}")
 
@@ -269,6 +272,11 @@ class GridAccumulator(Node):
     def cloud_cb(self, msg: PointCloud2):
         self.frames += 1
         if self.frames <= self.skip_frames:
+            return
+        # The 2D occupancy map is a visualization/save product. Processing
+        # every 10 Hz cloud competes with LiDAR/IMU as the grid grows, so keep
+        # timestamp pairing for accepted frames only and decimate this stream.
+        if (self.frames - self.skip_frames - 1) % self.process_every != 0:
             return
 
         if self.pre_transformed:
@@ -718,13 +726,18 @@ class GridAccumulator(Node):
             if self.grid is None:
                 return
             height, width = self.grid.shape
-            data = self.grid.ravel().tolist()
+            # Do not expand a million-cell int8 grid into Python integers while
+            # holding the callback lock. Copy quickly and serialize outside it.
+            grid_snapshot = np.ascontiguousarray(
+                self.grid, dtype=np.int8).copy()
             origin_x, origin_y = self.origin_x, self.origin_y
             if self.use_ground_plane and self.plane_coeffs is not None:
                 display_z = float(plane_height(
                     self.plane_coeffs, origin_x, origin_y))
             else:
                 display_z = self.map_z
+        data = array('b')
+        data.frombytes(grid_snapshot.tobytes())
 
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -799,6 +812,9 @@ def main():
     parser.add_argument("--grid-topic", default="/accumulated_grid")
     parser.add_argument("--pose-cache-size", type=int, default=30)
     parser.add_argument("--skip-frames", type=int, default=20)
+    parser.add_argument(
+        "--process-every", type=int, default=1,
+        help="process one cloud every N input frames after warmup")
     parser.add_argument("--grid-margin", type=float, default=5.0)
     parser.add_argument("--map-z", type=float, default=-1.247)
 

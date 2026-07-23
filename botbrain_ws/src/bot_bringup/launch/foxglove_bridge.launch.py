@@ -21,7 +21,7 @@ def generate_launch_description():
     foxglove_config_file = os.path.join(
         get_package_share_directory('bot_bringup'),
         'config',
-        'foxglove_bridge.yaml'
+        'foxglove_bridge_params.yaml'
     )
 
     # Launch 参数

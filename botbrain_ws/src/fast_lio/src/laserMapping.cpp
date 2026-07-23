@@ -1369,9 +1369,22 @@ private:
                 feats_undistort->clear();
                 state_point = state_before_imu;
                 RefreshStateOutputs();
-                guard_failure_latched = true;
-                RCLCPP_ERROR(this->get_logger(),
-                             "[FAST_LIO_GUARD] unsafe IMU propagation rolled back; output latched unhealthy");
+                // A single malformed/spiky IMU integration must not permanently
+                // remove all point clouds.  Restore the last finite EKF state and
+                // rebase the IMU processor at this scan boundary.  Odom/TF/map
+                // writes remain suppressed until a later LiDAR update passes the
+                // normal quality gate.
+                const bool rebased = p_imu->RebaseAfterGap(Measures, state_before_imu);
+                DropBufferedLidarData();
+                suppress_unconfirmed_odometry_after_timing_gap = true;
+                consecutive_guard_rejections = std::max(
+                    consecutive_guard_rejections,
+                    guard_max_unconfirmed_odometry_frames + 1);
+                RCLCPP_ERROR_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 2000,
+                    "[FAST_LIO_GUARD] unsafe IMU propagation rolled back; "
+                    "rebased=%s, holding odometry/TF/map writes while continuing recovery",
+                    rebased ? "true" : "false");
                 return;
             }
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
@@ -1578,14 +1591,17 @@ private:
 
                 if (consecutive_guard_rejections >= guard_max_consecutive_rejections)
                 {
-                    guard_failure_latched = true;
-                    RCLCPP_ERROR(
-                        this->get_logger(),
-                        "[FAST_LIO_GUARD] output latched unhealthy after %d consecutive "
-                        "rejected scans; suppressing odometry, TF and point clouds until "
-                        "fast_lio is restarted",
+                    // Low-feature geometry can persist for much longer than
+                    // this in a corridor. Keep rejecting map writes and world
+                    // outputs, but continue evaluating fresh scans so the
+                    // estimator can recover when useful geometry returns.
+                    // Non-finite/unsafe EKF states still use the hard latch.
+                    RCLCPP_ERROR_THROTTLE(
+                        this->get_logger(), *this->get_clock(), 2000,
+                        "[FAST_LIO_GUARD] quality remains below gate after %d "
+                        "rejected scans; holding odometry/TF/map writes while "
+                        "continuing recovery attempts",
                         consecutive_guard_rejections);
-                    return;
                 }
 
                 // Bridge only a short transient with IMU-predicted odometry. Once

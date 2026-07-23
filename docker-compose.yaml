@@ -117,8 +117,16 @@ services:
     extends: nav3d
     container_name: g1_robot_fast_lio
     environment:
-      FAST_LIO_START_DELAY_SEC: ${FAST_LIO_START_DELAY_SEC:-25}
+      # FAST-LIO already waits for LiDAR/IMU internally. Keep an opt-in delay
+      # for unusual deployments, but do not add a fixed 25-second startup wait.
+      FAST_LIO_START_DELAY_SEC: ${FAST_LIO_START_DELAY_SEC:-0}
       FAST_LIO_MAPPING_PROFILE: ${FAST_LIO_MAPPING_PROFILE:-default}
+      # "auto" preserves the YAML defaults.  The mapping scene launcher sets
+      # these explicitly so navigation can never save/overwrite a PCD by
+      # merely selecting the default algorithm profile.
+      FAST_LIO_MAPPING_MODE: ${FAST_LIO_MAPPING_MODE:-auto}
+      FAST_LIO_MAPPING_SAVE: ${FAST_LIO_MAPPING_SAVE:-auto}
+      FAST_LIO_MAP_FILE: ${FAST_LIO_MAP_FILE:-}
     command: ["bash", "-lc", "sleep \"$${FAST_LIO_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch --noninteractive g1_pkg fast_lio.launch.py"]
     stop_signal: SIGINT
     stop_grace_period: 180s
@@ -136,7 +144,9 @@ services:
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
       OMP_WAIT_POLICY: PASSIVE
-      LOCALIZATION_START_DELAY_SEC: ${LOCALIZATION_START_DELAY_SEC:-30}
+      # Scene selection enforces the FAST-LIO-before-localization order.
+      # A second fixed delay only postpones /pcd_map visibility.
+      LOCALIZATION_START_DELAY_SEC: ${LOCALIZATION_START_DELAY_SEC:-0}
     command: ["bash", "-lc", "sleep \"$${LOCALIZATION_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_pkg localization_3d.launch.py map_scene:=\"$${MAP_SCENE}\""]
     # Localization is map-specific and must be started explicitly after
     # FAST-LIO. A profile does not prevent an already-created container with
@@ -147,7 +157,12 @@ services:
     extends: base
     container_name: g1_robot_navigation
     profiles: ["navigation"]
-    command: ["bash", "-lc", "sleep 30 && source install/setup.bash && ros2 run bot_navigation navigation_preflight.py --ros-args -p timeout_sec:=300.0 -p min_confidence:=0.50 -p allow_pose_derived_twist:=false && exec ros2 launch bot_navigation navigation.launch.py"]
+    environment:
+      # The scene selector performs the full readiness check first. Keep a
+      # short independent gate here for direct starts, without a blind sleep.
+      NAVIGATION_START_DELAY_SEC: ${NAVIGATION_START_DELAY_SEC:-0}
+      NAVIGATION_PREFLIGHT_TIMEOUT_SEC: ${NAVIGATION_PREFLIGHT_TIMEOUT_SEC:-60}
+    command: ["bash", "-lc", "sleep \"$${NAVIGATION_START_DELAY_SEC}\" && source install/setup.bash && ros2 run bot_navigation navigation_preflight.py --ros-args -p timeout_sec:=\"$${NAVIGATION_PREFLIGHT_TIMEOUT_SEC}.0\" -p min_confidence:=0.50 -p allow_pose_derived_twist:=false && exec ros2 launch bot_navigation navigation.launch.py"]
     # Nav2 must not come up on a stale scan or an uninitialized map transform.
     restart: "no"
 

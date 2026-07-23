@@ -97,11 +97,11 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     assert localization_env["OMP_DYNAMIC"] == "FALSE"
     assert localization_env["OPENBLAS_NUM_THREADS"] == "1"
     assert localization_env["LOCALIZATION_START_DELAY_SEC"] == (
-        "${LOCALIZATION_START_DELAY_SEC:-30}"
+        "${LOCALIZATION_START_DELAY_SEC:-0}"
     )
     assert compose["services"]["fast_lio"]["environment"][
         "FAST_LIO_START_DELAY_SEC"
-    ] == "${FAST_LIO_START_DELAY_SEC:-25}"
+    ] == "${FAST_LIO_START_DELAY_SEC:-0}"
     localization_command = compose["services"]["localization"]["command"][-1]
     assert localization_command.count("MAP_SCENE") == 1
     assert 'map_scene:="$${MAP_SCENE}"' in localization_command
@@ -111,6 +111,14 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     navigation_command = compose["services"]["navigation"]["command"][-1]
     assert "navigation_preflight.py" in navigation_command
     assert "allow_pose_derived_twist:=false" in navigation_command
+    navigation_env = compose["services"]["navigation"]["environment"]
+    assert navigation_env["NAVIGATION_START_DELAY_SEC"] == (
+        "${NAVIGATION_START_DELAY_SEC:-0}"
+    )
+    assert navigation_env["NAVIGATION_PREFLIGHT_TIMEOUT_SEC"] == (
+        "${NAVIGATION_PREFLIGHT_TIMEOUT_SEC:-60}"
+    )
+    assert "sleep 30" not in navigation_command
 
 
 def test_map_scene_selector_recreates_and_verifies_localization_container():
@@ -190,6 +198,7 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     assert "/g1_robot/odom" in selector
     assert "navigation topics must each have exactly 1 publisher" in selector
     assert "Navigation topic publisher check ${stable_rounds}/${required_rounds}" in selector
+    assert '[ "$stable_rounds" -gt 0 ]' in selector
     assert "readonly PUBLISHER_STABLE_ROUNDS=3" in selector
     assert "restore_previous_runtime" in selector
     assert "arm_switch_rollback" in selector
@@ -197,11 +206,12 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     assert "trap 'handle_selector_exit" in selector
     assert "flock -n 9" in selector
     assert 'grep -Fq "IMU Initial Done"' in selector
-    assert "stable_fast_lio_timing_streak" in selector
-    assert "timing discontinuity" in selector
-    assert "timing_count" in selector
+    assert "fast_lio_timing_window" in selector
+    assert 'timing_healthy" -ge 4' in selector
+    assert 'timing_latest_ok" -eq 1' in selector
     assert "ros2 topic echo /Odometry_loc --once" in selector
-    assert "ros2 topic echo /cloud_registered_1 --once" in selector
+    assert "ros2 topic echo /cloud_registered_1" in selector
+    assert "--qos-reliability best_effort --once" in selector
     assert "docker compose ps -aq --all localization" in selector
     assert "old map publishers are still visible" in selector
     assert '[ "$SECONDS" -lt "$old_publisher_deadline" ] ||' in selector
@@ -231,18 +241,18 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     )
 
 
-def test_fast_lio_timing_streak_resets_after_a_discontinuity():
+def test_fast_lio_timing_window_allows_one_safely_dropped_scan():
     output = _run_selector_filter(
-        "stable_fast_lio_timing_streak",
+        "fast_lio_timing_window",
         "verify_fast_lio_topics",
         """[FAST_LIO_TIMING] ok=true sample=1
 [FAST_LIO_TIMING] ok=true sample=2
-[FAST_LIO_TIMING] discarded buffered LiDAR data after a timing discontinuity
-[FAST_LIO_TIMING] ok=true sample=3
+[FAST_LIO_TIMING] ok=false sample=3
 [FAST_LIO_TIMING] ok=true sample=4
+[FAST_LIO_TIMING] ok=true sample=5
 """,
     )
-    assert output == ["2"]
+    assert output == ["5", "4", "1"]
 
 
 def test_icp_streak_requires_three_decisions_after_the_last_rejection():
@@ -271,6 +281,14 @@ def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
     assert "stop_grace_period: 180s" in source
     assert compose["services"]["localization"]["profiles"] == ["navigation"]
     assert compose["services"]["navigation"]["profiles"] == ["navigation"]
+    fast_lio_env = compose["services"]["fast_lio"]["environment"]
+    assert fast_lio_env["FAST_LIO_MAPPING_MODE"] == (
+        "${FAST_LIO_MAPPING_MODE:-auto}"
+    )
+    assert fast_lio_env["FAST_LIO_MAPPING_SAVE"] == (
+        "${FAST_LIO_MAPPING_SAVE:-auto}"
+    )
+    assert fast_lio_env["FAST_LIO_MAP_FILE"] == "${FAST_LIO_MAP_FILE:-}"
 
 
 def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
@@ -278,8 +296,34 @@ def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
 
     assert "sigterm_timeout='150'" in source
     assert "sigkill_timeout='20'" in source
-    assert "'--rate',           '2.0'" in source
+    assert "'--rate',           '0.5'" in source
+    assert "'--process-every',  '3'" in source
     assert "'--debug-clouds'" not in source
+    assert "FAST_LIO_MAPPING_MODE" in source
+    assert "FAST_LIO_MAPPING_SAVE" in source
+    assert "FAST_LIO_MAP_FILE" in source
+    assert "if mapping_mode:" in source
+    assert "'pcd_save.pcd_save_en': mapping_save_en" in source
+
+
+def test_mapping_scene_launcher_enables_save_grid_and_readiness_gate():
+    source = _read("tools/mapping/start_mapping_scene.sh")
+
+    assert "docker compose stop localization navigation" in source
+    assert "FAST_LIO_MAPPING_MODE=true" in source
+    assert "FAST_LIO_MAPPING_SAVE=true" in source
+    assert 'FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"' in source
+    assert "--overwrite" in source
+    assert 'touch "$maps/.${scene}_mapping_started"' in source
+    assert "IMU Initial Done" in source
+    for topic in (
+        "/cloud_registered_1",
+        "/cloud_registered_body_1",
+        "/accumulated_grid",
+    ):
+        assert topic in source
+    assert "tf2_echo camera_init body" in source
+    assert "MAPPING READY" in source
 
 
 def test_fast_lio_corridor_profile_is_explicit_and_preserves_defaults():
@@ -316,7 +360,7 @@ def test_fast_lio_corridor_profile_is_explicit_and_preserves_defaults():
     assert "[FAST_LIO_RANGE] max=%.1fm kept=%zu/%zu" in source
 
 
-def test_rviz_presets_match_runtime_topics_and_bound_mapping_history():
+def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     mapping = yaml.safe_load(_read("configs/g1_mapping_rviz2.rviz"))
     navigation = yaml.safe_load(_read("configs/g1_nav_loc_rviz2.rviz"))
 
@@ -331,11 +375,26 @@ def test_rviz_presets_match_runtime_topics_and_bound_mapping_history():
     nav_displays = {
         display["Name"]: display for display in nav_manager["Displays"]
     }
-    mapping_cloud = mapping_displays["registered_world_map"]
-    assert mapping_cloud["Topic"]["Value"] == "/cloud_registered_1"
-    assert mapping_cloud["Topic"]["Depth"] == 1
-    assert mapping_cloud["Topic"]["Reliability Policy"] == "Best Effort"
-    assert 0 < float(mapping_cloud["Decay Time"]) <= 30
+    mapping_live = mapping_displays["world scan (live)"]
+    assert mapping_live["Topic"]["Value"] == "/cloud_registered_1"
+    assert mapping_live["Topic"]["Depth"] == 1
+    assert mapping_live["Topic"]["Reliability Policy"] == "Best Effort"
+    assert float(mapping_live["Decay Time"]) == 0
+    assert mapping_live["Enabled"] is True
+    assert mapping_live["Color Transformer"] == "FlatColor"
+    mapping_history = mapping_displays["world history (5 min)"]
+    assert mapping_history["Topic"]["Value"] == "/cloud_registered_1"
+    assert mapping_history["Topic"]["Depth"] == 1
+    assert mapping_history["Topic"]["Reliability Policy"] == "Best Effort"
+    assert 60 <= float(mapping_history["Decay Time"]) <= 600
+    assert mapping_history["Enabled"] is True
+    assert mapping_history["Value"] is True
+    mapping_body = mapping_displays["body cloud (robot live scan)"]
+    assert mapping_body["Topic"]["Value"] == "/cloud_registered_body_1"
+    assert mapping_body["Topic"]["Depth"] == 1
+    assert mapping_body["Topic"]["Reliability Policy"] == "Best Effort"
+    assert mapping_body["Enabled"] is True
+    assert mapping_body["Value"] is True
     assert nav_displays["Map"]["Topic"]["Value"] == "/map"
     assert nav_displays["Map"]["Update Topic"]["Value"] == "/map_updates"
     assert nav_displays["Path (Nav2 /g1_robot/plan)"]["Topic"]["Value"] == (
@@ -345,10 +404,29 @@ def test_rviz_presets_match_runtime_topics_and_bound_mapping_history():
     nav_cloud = nav_displays["registered cloud (FAST-LIO)"]
     assert nav_cloud["Topic"]["Depth"] == 1
     assert nav_cloud["Topic"]["Reliability Policy"] == "Best Effort"
+    body_cloud = nav_displays["body cloud (robot live scan)"]
+    assert body_cloud["Topic"]["Value"] == "/cloud_registered_body_1"
+    assert body_cloud["Topic"]["Depth"] == 1
+    assert body_cloud["Topic"]["Reliability Policy"] == "Best Effort"
     static_pcd = nav_displays["map (scans.pcd)"]
     assert static_pcd["Topic"]["Reliability Policy"] == "Reliable"
     assert static_pcd["Topic"]["Durability Policy"] == "Transient Local"
-    assert float(static_pcd["Alpha"]) >= 0.10
+    assert float(static_pcd["Alpha"]) >= 0.80
+    assert static_pcd["Color Transformer"] == "FlatColor"
+    candidate_cloud = nav_displays["live/candidate scan preview (scan2map)"]
+    assert candidate_cloud["Topic"]["Value"] == "/scan2map"
+    assert candidate_cloud["Enabled"] is True
+    assert candidate_cloud["Value"] is True
+    assert not any(
+        display.get("Class") == "rviz_default_plugins/RobotModel"
+        for display in nav_manager["Displays"]
+    )
+    assert nav_displays["Global Costmap (optional)"]["Topic"]["Value"] == (
+        "/g1_robot/global_costmap/costmap"
+    )
+    assert nav_displays["Local Costmap (optional)"]["Topic"]["Value"] == (
+        "/g1_robot/local_costmap/costmap"
+    )
 
     nav_tools = {
         tool["Class"]: tool for tool in nav_manager["Tools"]
@@ -378,8 +456,16 @@ def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
         assert 'tcp/${G1_IP}:7448' in source
         assert 'tcp://${G1_IP}:7448' not in source
         assert "cannot reach Zenoh at ${G1_IP}:7448" in source
-        assert "ros2 daemon stop" in source
+        assert "--no-daemon" in source
+        assert "ros2 daemon stop" not in source
+        assert "No manual Add is required" in source
+        assert "RVIZ_RENDERING" in source
         assert 'exec rviz2 -d "$RVIZ_CFG"' in source
+
+    assert "ros2 topic echo /cloud_registered_1 --once --field header" in mapping
+    assert "ros2 topic echo /cloud_registered_body_1 --once --field header" in mapping
+    assert "ros2 topic echo /pcd_map --once --field header" in navigation
+    assert "requires the localization Compose service" in navigation
 
     assert "bash tools/host_side/mapping_rviz2.sh 192.168.100.3" in compact
     assert "bash tools/host_side/g1_nav_loc_rviz2.sh 192.168.100.3" in compact
@@ -397,8 +483,49 @@ def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
         "docker compose --profile navigation up -d "
         "--force-recreate navigation"
     ) in compact
-    assert "FAST_LIO_MAPPING_PROFILE=default" in compact
-    assert "FAST_LIO_MAPPING_PROFILE=corridor" in compact
+    assert "docker compose stop localization navigation" in compact
+    assert "docker compose up -d zenoh bringup state_machine" in compact
+    assert "FAST_LIO_START_DELAY_SEC=0" in compact
+    assert "FAST_LIO_MAPPING_MODE=true" in compact
+    assert "FAST_LIO_MAPPING_SAVE=true" in compact
+    assert "docker compose up -d --force-recreate fast_lio" in compact
+    assert "docker compose ps zenoh bringup state_machine fast_lio" in compact
+    assert "docker compose logs -f fast_lio" in compact
+    assert 'bash tools/mapping/start_mapping_scene.sh "$scene" default' in compact
+    assert 'bash tools/mapping/start_mapping_scene.sh "$scene" corridor' in compact
+
+
+def test_navigation_restart_explicitly_disables_mapping_outputs():
+    source = _read("tools/nav/select_map_scene.sh")
+    assert "FAST_LIO_MAPPING_PROFILE=default" in source
+    assert "FAST_LIO_MAPPING_MODE=false" in source
+    assert "FAST_LIO_MAPPING_SAVE=false" in source
+    assert "FAST_LIO_MAP_FILE=" in source
+    assert "FAST-LIO is still running in mapping mode" in source
+    assert "RVIZ POINT CLOUD READY" in source
+    assert "Navigation service must remain STOPPED" in source
+    assert "navigation_preflight process below is only a readiness checker" in source
+    assert "localization_map_loaded=true" in source
+    assert "Starting localization Compose service" in source
+    assert "Navigation remains stopped until localization is verified" in source
+
+
+def test_localization_republishes_static_pcd_and_publishes_candidate_preview():
+    source = _read("botbrain_ws/src/open3d_loc/src/global_localization.cpp")
+    assert "pcd_map_republish_timer_" in source
+    assert "std::chrono::seconds(5)" in source
+    assert "Published localization PCD for RViz" in source
+    assert source.index("Published localization PCD for RViz") < source.index(
+        "Prepared global FPFH scale"
+    )
+    assert "Refresh the map\n            // between scales" in source
+    assert 'message.header.frame_id = "map"' in source
+    assert "pub_scan2map_->publish(message)" in source
+    assert "publish_scan_preview(pcd_scan, current_odom2map);" in source
+    assert "publish_scan_preview(pcd_scan, candidate_odom2map);" in source
+    preview = source.index("Visualization is diagnostic, not authorization")
+    quality_rejection = source.index("if (!safe_initialization_step)")
+    assert preview < quality_rejection
 
 
 def test_g1_laserscan_filters_body_cloud_for_navigation_obstacles():
@@ -444,6 +571,11 @@ def test_mapping_disables_unbounded_laser_map_publication():
     assert params["pcd_save"]["pcd_save_en"] is False
     assert "/Laser_map_1" not in bridge_params["topic_whitelist"]
     assert "/localization_ready" in bridge_params["topic_whitelist"]
+    assert "/cloud_registered_1" in bridge_params["topic_whitelist"]
+    assert "/cloud_registered_body_1" in bridge_params["topic_whitelist"]
+    launch = _read("botbrain_ws/src/bot_bringup/launch/foxglove_bridge.launch.py")
+    assert "foxglove_bridge_params.yaml" in launch
+    assert "'foxglove_bridge.yaml'" not in launch
 
 
 def test_compact_map_review_keeps_live_fast_lio_topics_available():
@@ -480,8 +612,37 @@ def test_fast_lio_guard_recovers_early_or_stops_unconfirmed_outputs():
         "consecutive_guard_rejections <= "
         "guard_max_unconfirmed_odometry_frames" in source
     )
-    assert "output latched unhealthy after %d consecutive" in source
+    rejection_limit = source.split(
+        "if (consecutive_guard_rejections >= "
+        "guard_max_consecutive_rejections)", 1
+    )[1].split("// Bridge only a short transient", 1)[0]
+    assert "quality remains below gate after %d" in rejection_limit
+    assert "guard_failure_latched = true;" not in rejection_limit
     assert "guard_failure_latched = true;" in source
+
+
+def test_fast_lio_corridor_guard_uses_ratio_and_residual_with_sparse_scans():
+    params = yaml.safe_load(_read(
+        "botbrain_ws/src/fast_lio/config/mid360.yaml"
+    ))["/**"]["ros__parameters"]["mapping"]
+
+    assert params["guard_min_effective_points"] <= 5
+    assert params["guard_recovery_min_effective_points"] <= 3
+    assert params["guard_min_effective_ratio"] > 0.0
+    assert params["guard_max_residual"] <= 0.15
+    assert params["guard_max_rotation_correction_deg"] >= 10.0
+
+
+def test_unsafe_imu_propagation_rebases_without_permanent_visualization_latch():
+    source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
+    recovery = source.split(
+        "if (!IsPlausibleState(state_point) || !covariance_after_imu.allFinite())",
+        1,
+    )[1].split("pos_lid =", 1)[0]
+
+    assert "p_imu->RebaseAfterGap(Measures, state_before_imu)" in recovery
+    assert "suppress_unconfirmed_odometry_after_timing_gap = true;" in recovery
+    assert "guard_failure_latched = true;" not in recovery
 
 
 def test_fast_lio_rebases_before_processing_an_imu_timing_gap():
@@ -514,7 +675,7 @@ def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():
 
     assert "rclcpp::QoS(rclcpp::KeepLast(10)).reliable()" in source
     assert "rclcpp::QoS(rclcpp::KeepLast(20)).reliable()" in source
-    assert "rclcpp::QoS(rclcpp::KeepLast(1)).reliable()" in source
+    assert "rclcpp::QoS(rclcpp::KeepLast(1)).best_effort()" in source
     assert '"Odometry_loc", odom_input_qos' in source
     assert '"cloud_registered_1", latest_cloud_qos' in source
     assert "Eigen::aligned_allocator<TimedOdomPose>" in source
@@ -523,7 +684,17 @@ def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():
     assert "manual_pose_generation = manual_pose_generation_.load();" in source
     assert "manual_pose_generation_.load() == iteration_manual_pose_generation" in source
     assert "Manual pose reset detected during initialization" in source
+    assert source.count("icp_candidate_max_age_sec_ + candidate_processing_sec") == 2
+    assert "candidate_time - loc_start" in source
     assert "KeepLast(100000)" not in source
+
+
+def test_fast_lio_live_clouds_do_not_queue_stale_zenoh_frames():
+    source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
+
+    assert "rclcpp::QoS(rclcpp::KeepLast(1)).best_effort()" in source
+    assert '"cloud_registered_1", latest_cloud_qos' in source
+    assert '"cloud_registered_body_1", latest_cloud_qos' in source
 
 
 def test_open3d_initializes_from_current_cloud_without_persisted_pose():
