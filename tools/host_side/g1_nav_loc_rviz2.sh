@@ -75,8 +75,8 @@ case "${RVIZ_RENDERING:-hardware}" in
 esac
 
 echo "Localization PCD transport is ready. Opening RViz2."
-echo "Preloaded displays: /map, /pcd_map, /scan2map, /cloud_registered_1, /cloud_registered_body_1, /scan, Nav2 path/costmaps and TF"
-echo "No manual Add is required. Fixed Frame must remain map."
+echo "Preloaded displays: /map, /pcd_map, /scan2map, /cloud_registered_1, /cloud_registered_body_1, /scan, Nav2 path/costmaps, TF and loop-closure keyframes/candidates"
+echo "No manual Add is required. Fixed Frame must remain map; phase-2 loop path/map preview are preloaded but disabled."
 echo "Before localization is ready: blue /pcd_map is the reference map; magenta /scan2map shows a valid pose candidate."
 echo "Green/orange live clouds require the verified map TF and may remain Warm until localization succeeds."
 echo "If Intel/Mesa reports 'active samplers with a different type', retry with RVIZ_RENDERING=software."

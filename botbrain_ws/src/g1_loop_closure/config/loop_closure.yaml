@@ -1,0 +1,54 @@
+/**:
+  ros__parameters:
+    # This package is a diagnostic backend. It never publishes TF, Odometry or
+    # a corrected FAST-LIO point cloud; it only publishes loop/graph outputs.
+    cloud_topic: /cloud_registered_1
+    odom_topic: /Odometry_loc
+    world_frame: camera_init
+    odom_sync_tolerance_sec: 0.035
+    odom_history_size: 300
+
+    # Keep the Jetson work bounded. A keyframe contains a voxel-filtered local
+    # cloud and is queried at most once every query_interval_sec seconds.
+    keyframe_distance_m: 1.5
+    keyframe_yaw_deg: 15.0
+    keyframe_time_sec: 2.0
+    keyframe_voxel_m: 0.20
+    keyframe_max_points: 5000
+    max_keyframes: 800
+    query_interval_sec: 5.0
+    min_loop_time_sec: 30.0
+    min_loop_path_distance_m: 12.0
+
+    # Scan-Context-like polar descriptor. Geometric ICP must independently
+    # validate every descriptor match before it becomes a pose-graph edge.
+    descriptor_rings: 20
+    descriptor_sectors: 60
+    descriptor_max_range_m: 25.0
+    descriptor_min_similarity: 0.82
+
+    # Strict loop-verification gate. These values are deliberately tighter
+    # than a global-relocalization search to reject repeated corridor bays.
+    icp_max_correspondence_m: 0.80
+    icp_max_iterations: 60
+    icp_max_fitness_m: 0.18
+    icp_min_inlier_ratio: 0.35
+    icp_max_translation_m: 8.0
+    icp_max_z_translation_m: 0.40
+    icp_max_yaw_deg: 50.0
+    icp_max_roll_pitch_deg: 15.0
+
+    # Start in phase 1.  After reviewing repeated accepted candidates, set
+    # this parameter true to activate phase 2 in the same process.  Phase 2
+    # remains diagnostic-only: it never emits TF/Odometry or corrects FAST-LIO.
+    enable_pose_graph: false
+
+    # Phase 2: optimize a planar graph only for diagnostics. The result is
+    # published as /loop_closure/optimized_path and map_preview, never TF.
+    optimizer_iterations: 8
+    odom_edge_xy_weight: 1.0
+    odom_edge_yaw_weight: 2.0
+    loop_edge_xy_weight: 8.0
+    loop_edge_yaw_weight: 10.0
+    map_preview_max_points: 250000
+    export_optimized_map_path: ""

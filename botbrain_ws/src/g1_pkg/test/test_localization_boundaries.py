@@ -306,6 +306,59 @@ def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
     assert "'pcd_save.pcd_save_en': mapping_save_en" in source
 
 
+def test_loop_closure_is_opt_in_and_cannot_modify_fast_lio_tf_or_odometry():
+    package_root = PROJECT_ROOT / "botbrain_ws/src/g1_loop_closure"
+    source = (package_root / "src/loop_closure_node.cpp").read_text(encoding="utf-8")
+    optimizer_source = (package_root / "src/pose_graph.cpp").read_text(encoding="utf-8")
+    config = (package_root / "config/loop_closure.yaml").read_text(encoding="utf-8")
+    launch = (package_root / "launch/loop_closure.launch.py").read_text(encoding="utf-8")
+    compose = yaml.safe_load(_read("docker-compose.yaml"))
+    fast_lio_launch = _read("botbrain_ws/src/g1_pkg/launch/fast_lio.launch.py")
+
+    assert (package_root / "CMakeLists.txt").is_file()
+    assert (package_root / "package.xml").is_file()
+    assert "BuildDescriptor" in source
+    assert "DescriptorSimilarity" in source
+    assert "pcl::IterativeClosestPoint" in source
+    assert "Eigen::SimplicialLDLT" in optimizer_source
+    assert "enable_pose_graph" in source
+    assert "accepted_loop_edges_" in source
+    assert "enable_pose_graph: false" in config
+    assert "DeclareLaunchArgument(" in launch
+    assert "export_optimized_map_path" in launch
+
+    for forbidden in (
+        "tf2_ros",
+        "TransformBroadcaster",
+        "sendTransform",
+        "create_publisher<nav_msgs::msg::Odometry>",
+    ):
+        assert forbidden not in source
+    assert "g1_loop_closure" not in fast_lio_launch
+
+    loop_service = compose["services"]["loop_closure"]
+    assert loop_service["profiles"] == ["loop_closure"]
+    assert loop_service["restart"] == "no"
+    assert "ros2 launch g1_loop_closure loop_closure.launch.py" in loop_service["command"][-1]
+    assert "g1_loop_closure" in compose["services"]["builder_base"]["command"][-1]
+
+
+def test_loop_closure_rviz_layers_are_preconfigured_but_phase_two_preview_is_off():
+    mapping_rviz = _read("configs/g1_mapping_rviz2.rviz")
+    navigation_rviz = _read("configs/g1_nav_loc_rviz2.rviz")
+    mapping_script = _read("tools/host_side/mapping_rviz2.sh")
+    navigation_script = _read("tools/host_side/g1_nav_loc_rviz2.sh")
+
+    for rviz in (mapping_rviz, navigation_rviz):
+        assert "/loop_closure/keyframe_path" in rviz
+        assert "/loop_closure/markers" in rviz
+        assert "/loop_closure/optimized_path" in rviz
+        assert "/loop_closure/optimized_map_preview" in rviz
+        assert "loop closure optimized map preview (phase 2)" in rviz
+    assert "loop-closure keyframes/candidates" in mapping_script
+    assert "loop-closure keyframes/candidates" in navigation_script
+
+
 def test_mapping_scene_launcher_enables_save_grid_and_readiness_gate():
     source = _read("tools/mapping/start_mapping_scene.sh")
 
@@ -477,11 +530,10 @@ def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
         'bash tools/nav/select_map_scene.sh "$scene" '
         '--wait-ready --ready-timeout 300'
     ) in compact
-    assert (
-        'bash tools/nav/select_map_scene.sh "$scene" '
-        '--restart-fast-lio --wait-ready --ready-timeout 300'
-    ) in compact
-    assert "只有场景选择脚本返回 0 后才执行" in compact
+    assert 'MAP_SCENE="$scene" LOCALIZATION_START_DELAY_SEC=0' in compact
+    assert "--force-recreate --no-deps localization" in compact
+    assert "不是日常启动服务的必经步骤" in compact
+    assert "直接服务流程中" in compact
     assert (
         "docker compose --profile navigation up -d "
         "--force-recreate navigation"
@@ -587,10 +639,13 @@ def test_compact_map_review_keeps_live_fast_lio_topics_available():
     review = source.split("步骤 6：建图完成后查看效果", 1)[1].split("---", 1)[0]
 
     assert "docker compose up -d zenoh bringup state_machine" in review
+    assert "FAST_LIO_MAPPING_MODE=false" in review
+    assert "docker compose up -d --force-recreate fast_lio" in review
     assert (
-        'bash tools/nav/select_map_scene.sh "$scene" --restart-fast-lio --wait-ready'
-        in review
-    )
+        "docker compose --profile navigation up -d "
+        "--force-recreate --no-deps localization"
+    ) in review
+    assert "但它不是本步骤的启动入口" in review
     assert "docker compose up fast_lio localization" not in source
     assert "/cloud_registered_1" in review
     assert "/pcd_map" in review

@@ -89,6 +89,7 @@ services:
           g1_manipulation_pkg \
           fast_lio \
           open3d_loc \
+          g1_loop_closure \
           --cmake-args -DOpen3D_DIR=/opt/open3d/lib/cmake/Open3D"]
 
   zenoh:
@@ -151,6 +152,20 @@ services:
     # Localization is map-specific and must be started explicitly after
     # FAST-LIO. A profile does not prevent an already-created container with
     # restart: always from auto-starting after a robot/Docker reboot.
+    restart: "no"
+
+  # Opt-in, diagnostic-only loop closure.  It has no dependency on the
+  # navigation service and never changes FAST-LIO TF, odometry, or its map.
+  loop_closure:
+    extends: nav3d
+    container_name: g1_robot_loop_closure
+    profiles: ["loop_closure"]
+    environment:
+      LOOP_CLOSURE_ENABLE_POSE_GRAPH: ${LOOP_CLOSURE_ENABLE_POSE_GRAPH:-false}
+      # An empty path disables disk writes.  If explicitly set, the export
+      # service writes a separate diagnostic PCD only; it never replaces maps.
+      LOOP_CLOSURE_EXPORT_OPTIMIZED_MAP_PATH: ${LOOP_CLOSURE_EXPORT_OPTIMIZED_MAP_PATH:-}
+    command: ["bash", "-lc", "source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_loop_closure loop_closure.launch.py enable_pose_graph:=\"$${LOOP_CLOSURE_ENABLE_POSE_GRAPH}\" export_optimized_map_path:=\"$${LOOP_CLOSURE_EXPORT_OPTIMIZED_MAP_PATH}\""]
     restart: "no"
 
   navigation:

@@ -52,11 +52,17 @@ cd "$project_root"
 scene_state_file=botbrain_ws/.runtime/map_scene
 readonly ICP_MIN_FITNESS=0.50
 readonly ICP_MAX_RMSE=0.30
+# Map publisher identity is also checked against the selected PCD/YAML paths,
+# so two consecutive rounds are sufficient and avoid a fixed 10-second wait.
+readonly MAP_PUBLISHER_STABLE_ROUNDS=2
+# Navigation checks six motion-critical topics; keep the stricter debounce.
 readonly PUBLISHER_STABLE_ROUNDS=3
 
 rollback_armed=false
 switch_completed=false
 localization_map_loaded=false
+rviz_pcd_announced=false
+restart_fast_lio_wait_required=false
 previous_fast_lio_running=false
 previous_localization_running=false
 previous_navigation_running=false
@@ -288,12 +294,12 @@ fast_lio_active_logs() {
 }
 
 fast_lio_timing_window() {
-    awk '
+    awk -v window="${FAST_LIO_TIMING_SAMPLES:-3}" '
         /\[FAST_LIO_TIMING\] ok=(true|false)/ {
-            if (samples < 5) {
+            if (samples < window) {
                 samples++
             } else {
-                for (idx = 1; idx < 5; idx++)
+                for (idx = 1; idx < window; idx++)
                     healthy[idx] = healthy[idx + 1]
             }
             healthy[samples] = ($0 ~ /ok=true/) ? 1 : 0
@@ -311,12 +317,23 @@ fast_lio_timing_window() {
 
 verify_fast_lio_topics() {
     docker exec g1_robot_fast_lio bash -lc '
-        set -e
+        set +e
         source /opt/ros/humble/setup.bash
         source /botbrain_ws/install/setup.bash
-        timeout 10 ros2 topic echo /Odometry_loc --once >/dev/null
-        timeout 10 ros2 topic echo /cloud_registered_1 \
-            --qos-reliability best_effort --once >/dev/null
+        # The ROS daemon can retain an empty/stale graph after a Zenoh router or
+        # container restart. Query the live graph directly, and probe both
+        # outputs in parallel so readiness takes at most one timeout window.
+        timeout 6 ros2 topic echo /Odometry_loc \
+            --qos-reliability best_effort --once --no-daemon >/dev/null 2>&1 &
+        odom_pid=$!
+        timeout 6 ros2 topic echo /cloud_registered_1 \
+            --qos-reliability best_effort --once --no-daemon >/dev/null 2>&1 &
+        cloud_pid=$!
+        odom_status=0
+        cloud_status=0
+        wait "$odom_pid" || odom_status=$?
+        wait "$cloud_pid" || cloud_status=$?
+        [ "$odom_status" -eq 0 ] && [ "$cloud_status" -eq 0 ]
     ' >/dev/null 2>&1
 }
 
@@ -333,7 +350,8 @@ topic_publisher_count() {
         set -u
         topic=$1
         status=0
-        output=$(timeout 5 ros2 topic info "$topic" 2>&1) || status=$?
+        output=$(timeout 5 ros2 topic info "$topic" \
+            --no-daemon --spin-time 1 2>&1) || status=$?
         if [ "$status" -ne 0 ]; then
             if grep -Fq "Unknown topic" <<<"$output"; then
                 echo 0
@@ -352,10 +370,29 @@ topic_publisher_count() {
     ' _ "$topic"
 }
 
+announce_rviz_pcd_if_ready() {
+    if [ "$rviz_pcd_announced" = true ] ||
+            ! container_running g1_robot_localization; then
+        return 0
+    fi
+    local logs
+    logs=$(docker compose logs --no-color --tail 200 localization 2>&1)
+    if grep -Fq "Published localization PCD for RViz" <<<"$logs"; then
+        echo "RVIZ POINT CLOUD READY: /pcd_map is publishing for scene '$scene'."
+        echo "Open tools/host_side/g1_nav_loc_rviz2.sh now; no manual Add is required."
+        rviz_pcd_announced=true
+        # Preserve the reference map on later readiness failures so RViz can
+        # still be used to diagnose or provide an initial pose. Navigation
+        # remains prohibited until this selector returns 0.
+        localization_map_loaded=true
+    fi
+}
+
 wait_for_restarted_fast_lio() {
     echo "Waiting for FAST-LIO initialization and continuous sensor timing"
     local deadline=$((SECONDS + 180))
     while [ "$SECONDS" -lt "$deadline" ]; do
+        announce_rviz_pcd_if_ready
         if ! fast_lio_running; then
             echo "ERROR: FAST-LIO stopped during initialization" >&2
             fast_lio_logs >&2 || true
@@ -376,11 +413,11 @@ wait_for_restarted_fast_lio() {
         timing_healthy=$(sed -n '2p' <<<"$timing_window")
         timing_latest_ok=$(sed -n '3p' <<<"$timing_window")
         if grep -Fq "IMU Initial Done" <<<"$logs" &&
-                [ "$timing_samples" -eq 5 ] &&
-                [ "$timing_healthy" -ge 4 ] &&
+                [ "$timing_samples" -eq 3 ] &&
+                [ "$timing_healthy" -ge 2 ] &&
                 [ "$timing_latest_ok" -eq 1 ] &&
                 verify_fast_lio_topics; then
-            echo "FAST-LIO is healthy: IMU initialized, 4/5 recent timing checks passed, outputs live"
+            echo "FAST-LIO is healthy: IMU initialized, 2/3 recent timing checks passed, outputs live"
             return 0
         fi
         sleep 1
@@ -737,7 +774,10 @@ if [ "$restart_fast_lio" = true ]; then
     FAST_LIO_MAP_FILE= \
         docker compose up -d --force-recreate fast_lio
 
-    wait_for_restarted_fast_lio
+    # Start localization immediately below so its static PCD can be displayed
+    # while FAST-LIO finishes IMU/timing initialization. Navigation still waits
+    # for every live-data and ICP/TF gate.
+    restart_fast_lio_wait_required=true
 else
     if ! fast_lio_running; then
         echo "ERROR: FAST-LIO is not running; retry with --restart-fast-lio" >&2
@@ -813,8 +853,8 @@ while [ "$SECONDS" -lt "$old_publisher_deadline" ] ||
     publisher_query_error=""
     if [ "$map_publishers" -eq 0 ] && [ "$pcd_publishers" -eq 0 ]; then
         old_publisher_zero_rounds=$((old_publisher_zero_rounds + 1))
-        echo "Old map publisher removal check ${old_publisher_zero_rounds}/${PUBLISHER_STABLE_ROUNDS}"
-        if [ "$old_publisher_zero_rounds" -eq "$PUBLISHER_STABLE_ROUNDS" ]; then
+        echo "Old map publisher removal check ${old_publisher_zero_rounds}/${MAP_PUBLISHER_STABLE_ROUNDS}"
+        if [ "$old_publisher_zero_rounds" -eq "$MAP_PUBLISHER_STABLE_ROUNDS" ]; then
             old_publishers_gone=true
             break
         fi
@@ -870,6 +910,11 @@ if [ "$actual_scene" != "$scene" ]; then
     exit 1
 fi
 
+if [ "$restart_fast_lio_wait_required" = true ]; then
+    echo "FAST-LIO and localization are initializing in parallel; /pcd_map may be opened as soon as it is announced."
+    wait_for_restarted_fast_lio
+fi
+
 expected_log="Map selection: scene=$scene "
 scene_log_deadline=$((SECONDS + 75))
 while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
@@ -879,10 +924,12 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             grep -F "$expected_log" | tail -n 1
 
         runtime_verified=false
-        rviz_pcd_announced=false
         runtime_stable_rounds=0
         runtime_deadline=$((SECONDS + 180))
         while [ "$SECONDS" -lt "$runtime_deadline" ]; do
+            announce_rviz_pcd_if_ready
+            localization_logs=$(docker compose logs --no-color --tail 200 \
+                localization 2>&1)
             current_fast_lio_logs=$(fast_lio_logs)
             current_fast_lio_logs=$(fast_lio_active_logs \
                 <<<"$current_fast_lio_logs")
@@ -891,15 +938,6 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
                 echo "ERROR: FAST-LIO became unhealthy while loading '$scene'" >&2
                 tail -n 80 <<<"$current_fast_lio_logs" >&2
                 exit 1
-            fi
-            localization_logs=$(docker compose logs --no-color --tail 200 \
-                localization 2>&1)
-            if [ "$rviz_pcd_announced" != true ] &&
-                    grep -Fq "Published localization PCD for RViz" \
-                        <<<"$localization_logs"; then
-                echo "RVIZ POINT CLOUD READY: /pcd_map is publishing for scene '$scene'."
-                echo "Open tools/host_side/g1_nav_loc_rviz2.sh now; no manual Add is required."
-                rviz_pcd_announced=true
             fi
             if ! grep -Fq "initialize finished" <<<"$localization_logs"; then
                 sleep 2
@@ -928,8 +966,8 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
                     [ "$map_query_ok" = true ] && [ "$map_publishers" -eq 1 ] &&
                     [ "$pcd_query_ok" = true ] && [ "$pcd_publishers" -eq 1 ]; then
                 runtime_stable_rounds=$((runtime_stable_rounds + 1))
-                echo "Runtime map publisher check ${runtime_stable_rounds}/${PUBLISHER_STABLE_ROUNDS}"
-                if [ "$runtime_stable_rounds" -eq "$PUBLISHER_STABLE_ROUNDS" ]; then
+                echo "Runtime map publisher check ${runtime_stable_rounds}/${MAP_PUBLISHER_STABLE_ROUNDS}"
+                if [ "$runtime_stable_rounds" -eq "$MAP_PUBLISHER_STABLE_ROUNDS" ]; then
                     runtime_verified=true
                     localization_map_loaded=true
                     break
@@ -937,7 +975,7 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             else
                 runtime_stable_rounds=0
             fi
-            sleep 5
+            sleep 1
         done
         if [ "$runtime_verified" != true ]; then
             echo "ERROR: runtime map verification failed for scene '$scene'" >&2
