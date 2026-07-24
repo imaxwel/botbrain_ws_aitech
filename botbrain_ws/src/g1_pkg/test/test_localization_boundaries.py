@@ -415,6 +415,9 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert static_pcd["Color Transformer"] == "FlatColor"
     candidate_cloud = nav_displays["live/candidate scan preview (scan2map)"]
     assert candidate_cloud["Topic"]["Value"] == "/scan2map"
+    assert candidate_cloud["Topic"]["Depth"] == 1
+    assert candidate_cloud["Topic"]["Reliability Policy"] == "Best Effort"
+    assert candidate_cloud["Topic"]["Durability Policy"] == "Volatile"
     assert candidate_cloud["Enabled"] is True
     assert candidate_cloud["Value"] is True
     assert not any(
@@ -521,6 +524,7 @@ def test_localization_republishes_static_pcd_and_publishes_candidate_preview():
     assert "Refresh the map\n            // between scales" in source
     assert 'message.header.frame_id = "map"' in source
     assert "pub_scan2map_->publish(message)" in source
+    assert "rclcpp::QoS(rclcpp::KeepLast(1)).best_effort()" in source
     assert "publish_scan_preview(pcd_scan, current_odom2map);" in source
     assert "publish_scan_preview(pcd_scan, candidate_odom2map);" in source
     preview = source.index("Visualization is diagnostic, not authorization")
