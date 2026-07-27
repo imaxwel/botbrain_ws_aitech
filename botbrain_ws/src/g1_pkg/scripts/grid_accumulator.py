@@ -934,7 +934,10 @@ def main():
             f"processed={node.processed_frames} "
             f"classified={node.classified_frames}")
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT may already have shut the default context down. Calling it a
+        # second time turns a clean mapping stop into a misleading exit code 1.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

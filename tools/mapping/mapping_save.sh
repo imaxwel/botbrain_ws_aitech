@@ -42,10 +42,12 @@ MAPS="/botbrain_ws/src/g1_pkg/maps"
 
 if [ -n "$SCENE" ]; then
     PCD="$MAPS/${SCENE}_scans.pcd"
+    FAST_LIO_RAW_PCD="$MAPS/${SCENE}_fast_lio_raw.pcd"
     PGM="$MAPS/${SCENE}.pgm"
     YML="$MAPS/${SCENE}.yaml"
 else
     PCD="$MAPS/scans.pcd"
+    FAST_LIO_RAW_PCD="$MAPS/fast_lio_raw.pcd"
     PGM="$MAPS/accumulated_grid.pgm"
     YML="$MAPS/accumulated_grid.yaml"
 fi
@@ -77,8 +79,10 @@ fi
 
 if [ "$SAVE_OK" = false ] && ros2 service call /map_save std_srvs/srv/Trigger 2>/dev/null; then
     sleep 2
-    if [ -f "$PCD" ]; then
+    if [ -f "$FAST_LIO_RAW_PCD" ]; then
+        cp -a "$FAST_LIO_RAW_PCD" "$PCD"
         SAVE_OK=true
+        echo "  using unoptimized FAST-LIO fallback: $FAST_LIO_RAW_PCD"
     fi
 fi
 
@@ -89,10 +93,11 @@ if [ "$SAVE_OK" = false ]; then
     if [ -n "$PID" ]; then
         kill -SIGINT "$PID" 2>/dev/null || true
         sleep 5
-        if [ -f "$PCD" ]; then
+        if [ -f "$FAST_LIO_RAW_PCD" ]; then
+            cp -a "$FAST_LIO_RAW_PCD" "$PCD"
             SAVE_OK=true
         else
-            echo "  WARNING: PCD not found at $PCD after SIGINT"
+            echo "  WARNING: PCD not found at $FAST_LIO_RAW_PCD after SIGINT"
             echo "  Check mid360.yaml pcd_save_en and map_file_path"
         fi
     else
@@ -134,6 +139,11 @@ if ! ros2 run nav2_map_server map_saver_cli \
 fi
 if [ ! -f "$PGM" ] || [ ! -f "$YML" ]; then
     echo "  FAIL: map_saver_cli did not produce $PGM and $YML." >&2
+    exit 2
+fi
+if ! python3 /botbrain_ws/tools/mapping/validate_pgm.py "$PGM"; then
+    echo "  FAIL: saved PGM has insufficient free space or excessive black occupancy." >&2
+    echo "  Keep the files for diagnosis, but do not load this scene into Nav2." >&2
     exit 2
 fi
 PGM_MTIME=$(stat -c %Y "$PGM" 2>/dev/null || echo 0)

@@ -46,7 +46,7 @@ def test_mapping_runbook_documents_safe_save_and_editor_semantics():
     assert "FAST_LIO_START_DELAY_SEC=0" in source
     assert "FAST_LIO_MAPPING_MODE=true" in source
     assert "FAST_LIO_MAPPING_SAVE=true" in source
-    assert 'FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"' in source
+    assert 'FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_fast_lio_raw.pcd"' in source
     assert "docker compose up -d --force-recreate fast_lio" in source
     assert "docker compose ps zenoh bringup state_machine fast_lio" in source
     assert "docker compose logs -f fast_lio" in source

@@ -308,9 +308,10 @@ def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
     assert "'/loop_closure/cloud_registered'" in source
     assert "'/loop_closure/odometry'" in source
     assert "'/loop_closure/reset_grid'" in source
-    assert "'--skip-frames',    '3'" in source
+    assert "'--skip-frames',    '20'" in source
     assert "def reset_cb" in grid_source
     assert "Mapping grid reset for loop-closure keyframe replay" in grid_source
+    assert "if rclpy.ok():" in grid_source
 
 
 def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
@@ -339,6 +340,10 @@ def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
     assert "TransformBroadcaster" in source
     assert "map -> camera_init" in source
     assert "publish_corrected_streams" in source
+    assert "mapping_cloud_world" in source
+    assert "PublishCorrectedWorldCloud" in source
+    assert "corrected_stream_every_n_scans" in source
+    assert "point.z});" in source
     assert "g1_loop_closure" in fast_lio_launch
     assert "'publish_live_correction': True" in fast_lio_launch
     assert "'publish_corrected_streams': True" in fast_lio_launch
@@ -353,6 +358,8 @@ def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
     mapping_save = _read("tools/mapping/mapping_save.sh")
     assert "/loop_closure/export_optimized_map" in mapping_save
     assert "using graph-corrected loop-closure keyframe map" in mapping_save
+    assert "FAST_LIO_RAW_PCD" in mapping_save
+    assert "${SCENE}_fast_lio_raw.pcd" in mapping_save
 
 
 def test_loop_closure_rviz_layers_are_preconfigured_but_phase_two_preview_is_off():
@@ -377,7 +384,7 @@ def test_mapping_scene_launcher_enables_save_grid_and_readiness_gate():
     assert "docker compose stop localization navigation" in source
     assert "FAST_LIO_MAPPING_MODE=true" in source
     assert "FAST_LIO_MAPPING_SAVE=true" in source
-    assert 'FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"' in source
+    assert 'FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_fast_lio_raw.pcd"' in source
     assert "--overwrite" in source
     assert 'touch "$maps/.${scene}_mapping_started"' in source
     assert "IMU Initial Done" in source

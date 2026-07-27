@@ -37,12 +37,13 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$repo"
 maps="$repo/botbrain_ws/src/g1_pkg/maps"
 pcd="$maps/${scene}_scans.pcd"
+fast_lio_raw_pcd="$maps/${scene}_fast_lio_raw.pcd"
 yaml="$maps/${scene}.yaml"
 pgm="$maps/${scene}.pgm"
 mkdir -p "$maps"
 
 existing=()
-for file in "$pcd" "$yaml" "$pgm"; do
+for file in "$pcd" "$fast_lio_raw_pcd" "$yaml" "$pgm"; do
     [ -e "$file" ] && existing+=("$file")
 done
 if [ "${#existing[@]}" -gt 0 ] && [ "$overwrite" != --overwrite ]; then
@@ -71,7 +72,7 @@ docker compose up -d zenoh bringup state_machine
 FAST_LIO_START_DELAY_SEC=0 \
 FAST_LIO_MAPPING_MODE=true \
 FAST_LIO_MAPPING_SAVE=true \
-FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd" \
+FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_fast_lio_raw.pcd" \
 FAST_LIO_MAPPING_PROFILE="$profile" \
 docker compose up -d --force-recreate fast_lio
 
@@ -94,7 +95,8 @@ while [ "$SECONDS" -lt "$deadline" ]; do
        '; then
         echo "MAPPING READY: scene=$scene profile=$profile"
         echo "RViz topics live: raw FAST-LIO + loop-corrected cloud/grid + map->camera_init TF"
-        echo "PCD target: /botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"
+        echo "Optimized PCD target: /botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"
+        echo "FAST-LIO fallback: /botbrain_ws/src/g1_pkg/maps/${scene}_fast_lio_raw.pcd"
         exit 0
     fi
     sleep 3

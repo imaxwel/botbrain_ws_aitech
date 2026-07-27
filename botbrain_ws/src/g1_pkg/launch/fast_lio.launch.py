@@ -155,7 +155,7 @@ def generate_launch_description():
                 '--ground-z',       '-1.15',
                 '--obstacle-z',     '-1.14',
                 '--obstacle-z-max', '0.35',
-                '--skip-frames',    '3',     # corrected keyframes, not raw 10 Hz scans
+                '--skip-frames',    '20',    # 3x-decimated live scans ~= 6 s FAST-LIO warmup
                 '--process-every',  '1',
                 '--sensor-height',  '1.247',
                 '--below-ground-tolerance', '0.10',
@@ -169,7 +169,7 @@ def generate_launch_description():
                 '--max-obstacle-height',    '1.60',
                 '--plane-init-frames',      '3',
                 '--plane-max-tilt-deg',     '5.0',
-                '--plane-max-expected-error', '0.18',
+                '--plane-max-expected-error', '0.08',
                 '--plane-max-median-residual', '0.035',
                 '--max-point-range',        '30.0',
                 # Conservative G1 envelope in the FAST-LIO body/IMU frame.

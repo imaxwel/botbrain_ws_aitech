@@ -93,6 +93,10 @@ public:
     keyframe_voxel_m_ = declare_parameter<double>("keyframe_voxel_m", 0.20);
     keyframe_max_points_ = static_cast<size_t>(std::max<int64_t>(
         200, declare_parameter<int>("keyframe_max_points", 5000)));
+    mapping_keyframe_voxel_m_ = declare_parameter<double>(
+      "mapping_keyframe_voxel_m", 0.10);
+    mapping_keyframe_max_points_ = static_cast<size_t>(std::max<int64_t>(
+        1000, declare_parameter<int>("mapping_keyframe_max_points", 20000)));
     max_keyframes_ = static_cast<size_t>(std::max<int64_t>(
         20, declare_parameter<int>("max_keyframes", 800)));
     query_interval_sec_ = declare_parameter<double>("query_interval_sec", 5.0);
@@ -153,6 +157,8 @@ public:
       "corrected_cloud_topic", "/loop_closure/cloud_registered");
     corrected_odom_topic_ = declare_parameter<std::string>(
       "corrected_odom_topic", "/loop_closure/odometry");
+    corrected_stream_every_n_scans_ = static_cast<size_t>(std::max<int64_t>(
+        1, declare_parameter<int>("corrected_stream_every_n_scans", 3)));
 
     const auto cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
     cloud_subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -219,8 +225,13 @@ private:
     rclcpp::Time stamp;
     Pose2 raw_pose;
     double raw_z{0.0};
+    Eigen::Quaterniond raw_orientation{Eigen::Quaterniond::Identity()};
     double path_distance{0.0};
     Cloud::Ptr local_cloud{new Cloud};
+    // Gravity-aligned FAST-LIO world scan retained separately from the small
+    // descriptor cloud. Applying an SE(2) correction directly to this cloud
+    // preserves its Z, roll and pitch geometry during grid replay/export.
+    Cloud::Ptr mapping_cloud_world{new Cloud};
     std::vector<float> descriptor;
   };
 
@@ -403,21 +414,46 @@ private:
     corrected.header.frame_id = map_frame_;
     corrected.child_frame_id = body_frame_;
     const auto &position = raw.pose.pose.position;
-    const double c = std::cos(smoothed_correction_.yaw);
-    const double s = std::sin(smoothed_correction_.yaw);
-    corrected.pose.pose.position.x = c * position.x - s * position.y + smoothed_correction_.x;
-    corrected.pose.pose.position.y = s * position.x + c * position.y + smoothed_correction_.y;
+    // Corrected mapping streams use the exact graph solution. Only TF is
+    // smoothed for visualization/consumers that cannot tolerate a jump.
+    const double c = std::cos(target.yaw);
+    const double s = std::sin(target.yaw);
+    corrected.pose.pose.position.x = c * position.x - s * position.y + target.x;
+    corrected.pose.pose.position.y = s * position.x + c * position.y + target.y;
     Eigen::Quaterniond raw_orientation(
       raw.pose.pose.orientation.w, raw.pose.pose.orientation.x,
       raw.pose.pose.orientation.y, raw.pose.pose.orientation.z);
     raw_orientation.normalize();
     const Eigen::Quaterniond corrected_orientation =
-      Eigen::AngleAxisd(smoothed_correction_.yaw, Eigen::Vector3d::UnitZ()) * raw_orientation;
+      Eigen::AngleAxisd(target.yaw, Eigen::Vector3d::UnitZ()) * raw_orientation;
     corrected.pose.pose.orientation.x = corrected_orientation.x();
     corrected.pose.pose.orientation.y = corrected_orientation.y();
     corrected.pose.pose.orientation.z = corrected_orientation.z();
     corrected.pose.pose.orientation.w = corrected_orientation.w();
     corrected_odom_publisher_->publish(corrected);
+  }
+
+  void PublishCorrectedWorldCloud(
+    const Cloud::ConstPtr &world_cloud, const rclcpp::Time &stamp)
+  {
+    if (!corrected_cloud_publisher_ || world_cloud->empty()) {
+      return;
+    }
+    const Pose2 correction = GraphCorrection();
+    Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
+    transform(0, 0) = static_cast<float>(std::cos(correction.yaw));
+    transform(0, 1) = static_cast<float>(-std::sin(correction.yaw));
+    transform(1, 0) = static_cast<float>(std::sin(correction.yaw));
+    transform(1, 1) = static_cast<float>(std::cos(correction.yaw));
+    transform(0, 3) = static_cast<float>(correction.x);
+    transform(1, 3) = static_cast<float>(correction.y);
+    Cloud corrected;
+    pcl::transformPointCloud(*world_cloud, corrected, transform);
+    sensor_msgs::msg::PointCloud2 message;
+    pcl::toROSMsg(corrected, message);
+    message.header.stamp = stamp;
+    message.header.frame_id = map_frame_;
+    corrected_cloud_publisher_->publish(message);
   }
 
   void PublishKeyframeStreams(const size_t index, const Pose2 &pose)
@@ -426,15 +462,16 @@ private:
       return;
     }
     const auto &keyframe = keyframes_[index];
-    const float c = static_cast<float>(std::cos(pose.yaw));
-    const float s = static_cast<float>(std::sin(pose.yaw));
+    const Pose2 correction = Compose(pose, Inverse(keyframe.raw_pose));
+    const float c = static_cast<float>(std::cos(correction.yaw));
+    const float s = static_cast<float>(std::sin(correction.yaw));
     Cloud cloud;
-    cloud.reserve(keyframe.local_cloud->size());
-    for (const auto &point : keyframe.local_cloud->points) {
+    cloud.reserve(keyframe.mapping_cloud_world->size());
+    for (const auto &point : keyframe.mapping_cloud_world->points) {
       cloud.push_back({
-        c * point.x - s * point.y + static_cast<float>(pose.x),
-        s * point.x + c * point.y + static_cast<float>(pose.y),
-        point.z + static_cast<float>(keyframe.raw_z)});
+        c * point.x - s * point.y + static_cast<float>(correction.x),
+        s * point.x + c * point.y + static_cast<float>(correction.y),
+        point.z});
     }
     cloud.width = static_cast<uint32_t>(cloud.size());
     cloud.height = 1;
@@ -444,7 +481,16 @@ private:
     odom.header.stamp = keyframe.stamp;
     odom.header.frame_id = map_frame_;
     odom.child_frame_id = body_frame_;
-    odom.pose.pose = ToRosPose(pose, keyframe.raw_z);
+    odom.pose.pose.position.x = pose.x;
+    odom.pose.pose.position.y = pose.y;
+    odom.pose.pose.position.z = keyframe.raw_z;
+    const Eigen::Quaterniond corrected_orientation =
+      Eigen::AngleAxisd(correction.yaw, Eigen::Vector3d::UnitZ()) *
+      keyframe.raw_orientation;
+    odom.pose.pose.orientation.x = corrected_orientation.x();
+    odom.pose.pose.orientation.y = corrected_orientation.y();
+    odom.pose.pose.orientation.z = corrected_orientation.z();
+    odom.pose.pose.orientation.w = corrected_orientation.w();
     corrected_odom_publisher_->publish(odom);
 
     sensor_msgs::msg::PointCloud2 message;
@@ -488,21 +534,23 @@ private:
       grid_replay_target_size_);
   }
 
-  Cloud::Ptr Downsample(const Cloud::ConstPtr &input) const
+  Cloud::Ptr Downsample(
+    const Cloud::ConstPtr &input, const double voxel_size,
+    const size_t max_points) const
   {
     auto output = std::make_shared<Cloud>();
     pcl::VoxelGrid<Point> voxel;
     voxel.setLeafSize(
-      static_cast<float>(keyframe_voxel_m_), static_cast<float>(keyframe_voxel_m_),
-      static_cast<float>(keyframe_voxel_m_));
+      static_cast<float>(voxel_size), static_cast<float>(voxel_size),
+      static_cast<float>(voxel_size));
     voxel.setInputCloud(input);
     voxel.filter(*output);
-    if (output->size() <= keyframe_max_points_) {
+    if (output->size() <= max_points) {
       return output;
     }
     auto bounded = std::make_shared<Cloud>();
-    bounded->reserve(keyframe_max_points_);
-    const size_t stride = (output->size() + keyframe_max_points_ - 1) / keyframe_max_points_;
+    bounded->reserve(max_points);
+    const size_t stride = (output->size() + max_points - 1) / max_points;
     for (size_t index = 0; index < output->size(); index += stride) {
       bounded->push_back((*output)[index]);
     }
@@ -732,6 +780,18 @@ private:
         "Waiting for Odometry_loc paired with loop-closure cloud");
       return;
     }
+
+    auto world_cloud = std::make_shared<Cloud>();
+    pcl::fromROSMsg(*message, *world_cloud);
+    if (world_cloud->empty()) {
+      return;
+    }
+    if (publish_corrected_streams_) {
+      ++corrected_stream_scan_count_;
+      if ((corrected_stream_scan_count_ - 1) % corrected_stream_every_n_scans_ == 0) {
+        PublishCorrectedWorldCloud(world_cloud, stamp);
+      }
+    }
     if (!ShouldCreateKeyframe(*odom, stamp)) {
       return;
     }
@@ -742,15 +802,10 @@ private:
       return;
     }
 
-    auto world_cloud = std::make_shared<Cloud>();
-    pcl::fromROSMsg(*message, *world_cloud);
-    if (world_cloud->empty()) {
-      return;
-    }
     const Eigen::Matrix4f world_to_body = odom->pose_3d.inverse().matrix().cast<float>();
     auto local_cloud = std::make_shared<Cloud>();
     pcl::transformPointCloud(*world_cloud, *local_cloud, world_to_body);
-    local_cloud = Downsample(local_cloud);
+    local_cloud = Downsample(local_cloud, keyframe_voxel_m_, keyframe_max_points_);
     if (local_cloud->size() < 100) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -763,11 +818,14 @@ private:
     keyframe.stamp = stamp;
     keyframe.raw_pose = odom->pose;
     keyframe.raw_z = odom->pose_3d.translation().z();
+    keyframe.raw_orientation = Eigen::Quaterniond(odom->pose_3d.linear());
     keyframe.path_distance = keyframes_.empty() ? 0.0 :
       keyframes_.back().path_distance + std::hypot(
       odom->pose.x - keyframes_.back().raw_pose.x,
       odom->pose.y - keyframes_.back().raw_pose.y);
     keyframe.local_cloud = std::move(local_cloud);
+    keyframe.mapping_cloud_world = Downsample(
+      world_cloud, mapping_keyframe_voxel_m_, mapping_keyframe_max_points_);
     keyframe.descriptor = BuildDescriptor(keyframe.local_cloud);
 
     if (!keyframes_.empty()) {
@@ -781,9 +839,6 @@ private:
       optimized_poses_.push_back(keyframe.raw_pose);
     }
     keyframes_.push_back(std::move(keyframe));
-    PublishKeyframeStreams(
-      keyframes_.back().id,
-      Compose(GraphCorrection(), keyframes_.back().raw_pose));
     PublishPathsAndMarkers();
 
     const auto now = std::chrono::steady_clock::now();
@@ -864,15 +919,19 @@ private:
     for (size_t index = 0; index < keyframes_.size(); ++index) {
       const auto &keyframe = keyframes_[index];
       const auto &pose = optimized_poses_[index];
-      const size_t stride = std::max<size_t>(1, keyframe.local_cloud->size() / per_keyframe);
-      const float c = static_cast<float>(std::cos(pose.yaw));
-      const float s = static_cast<float>(std::sin(pose.yaw));
-      for (size_t point_index = 0; point_index < keyframe.local_cloud->size(); point_index += stride) {
-        const auto &point = (*keyframe.local_cloud)[point_index];
+      const Pose2 correction = Compose(pose, Inverse(keyframe.raw_pose));
+      const size_t stride = std::max<size_t>(
+        1, keyframe.mapping_cloud_world->size() / per_keyframe);
+      const float c = static_cast<float>(std::cos(correction.yaw));
+      const float s = static_cast<float>(std::sin(correction.yaw));
+      for (size_t point_index = 0;
+        point_index < keyframe.mapping_cloud_world->size(); point_index += stride)
+      {
+        const auto &point = (*keyframe.mapping_cloud_world)[point_index];
         preview->push_back({
-          c * point.x - s * point.y + static_cast<float>(pose.x),
-          s * point.x + c * point.y + static_cast<float>(pose.y),
-          point.z + static_cast<float>(keyframe.raw_z)});
+          c * point.x - s * point.y + static_cast<float>(correction.x),
+          s * point.x + c * point.y + static_cast<float>(correction.y),
+          point.z});
         if (preview->size() >= map_preview_max_points_) {
           break;
         }
@@ -1069,6 +1128,8 @@ private:
   double keyframe_time_sec_{2.0};
   double keyframe_voxel_m_{0.2};
   size_t keyframe_max_points_{5000};
+  double mapping_keyframe_voxel_m_{0.10};
+  size_t mapping_keyframe_max_points_{20000};
   size_t max_keyframes_{800};
   double query_interval_sec_{5.0};
   double min_loop_time_sec_{30.0};
@@ -1104,6 +1165,8 @@ private:
   bool publish_corrected_streams_{false};
   std::string corrected_cloud_topic_;
   std::string corrected_odom_topic_;
+  size_t corrected_stream_every_n_scans_{3};
+  size_t corrected_stream_scan_count_{0};
   Pose2 smoothed_correction_;
   rclcpp::Time last_correction_stamp_{0, 0, RCL_ROS_TIME};
   bool correction_initialized_{false};
