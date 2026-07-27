@@ -21,6 +21,7 @@ find_package(rcl_interfaces REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
 add_executable(loop_closure_node
@@ -42,6 +43,7 @@ ament_target_dependencies(loop_closure_node
   sensor_msgs
   std_msgs
   std_srvs
+  tf2_ros
   visualization_msgs
 )
 

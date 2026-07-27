@@ -35,6 +35,7 @@ from rclpy.qos import (
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2 as pc2
+from std_msgs.msg import Empty
 from std_msgs.msg import Header
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -197,6 +198,14 @@ class GridAccumulator(Node):
             PointCloud2, self.cloud_topic, self.cloud_cb, cloud_qos)
         self.create_subscription(
             Odometry, self.odom_topic, self.odom_cb, odom_qos)
+        if args.reset_topic:
+            self.create_subscription(
+                Empty, args.reset_topic, self.reset_cb,
+                QoSProfile(
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    history=HistoryPolicy.KEEP_LAST,
+                    depth=1,
+                ))
 
         latched_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -242,6 +251,19 @@ class GridAccumulator(Node):
         if now - self.warn_times.get(key, -math.inf) >= period:
             self.warn_times[key] = now
             self.get_logger().warning(message)
+
+    def reset_cb(self, _msg):
+        """Drop the old grid before optimized keyframes are replayed."""
+        with self.lock:
+            self.grid = None
+            self.log_odds = None
+            self.observed = None
+            self.origin_x = 0.0
+            self.origin_y = 0.0
+            self.odom_cache.clear()
+            self.pending_clouds.clear()
+        self.get_logger().warning(
+            "Mapping grid reset for loop-closure keyframe replay")
 
     def _put_bounded(self, cache, key, value, *, cloud_cache=False):
         cache[key] = value
@@ -810,6 +832,9 @@ def main():
     parser.add_argument("--cloud-topic", default="/cloud_registered_1")
     parser.add_argument("--odom-topic", default="/Odometry_loc")
     parser.add_argument("--grid-topic", default="/accumulated_grid")
+    parser.add_argument(
+        "--reset-topic", default="",
+        help="optional Empty topic that clears the grid before a corrected replay")
     parser.add_argument("--pose-cache-size", type=int, default=30)
     parser.add_argument("--skip-frames", type=int, default=20)
     parser.add_argument(

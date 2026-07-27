@@ -1,7 +1,9 @@
 /**:
   ros__parameters:
-    # This package is a diagnostic backend. It never publishes TF, Odometry or
-    # a corrected FAST-LIO point cloud; it only publishes loop/graph outputs.
+    # Default is observation-only. Mapping launch explicitly enables the
+    # standard SLAM split: FAST-LIO owns local camera_init->body, while this
+    # node publishes the slow global map->camera_init correction after a
+    # verified loop. Never enable that TF in parallel with localization_3d.
     cloud_topic: /cloud_registered_1
     odom_topic: /Odometry_loc
     world_frame: camera_init
@@ -18,7 +20,11 @@
     max_keyframes: 800
     query_interval_sec: 5.0
     min_loop_time_sec: 30.0
-    min_loop_path_distance_m: 12.0
+    min_loop_path_distance_m: 20.0
+    # A corridor loop must return near a previously visited raw FAST-LIO pose.
+    # This rejects visually identical bays that are several metres apart.
+    candidate_max_raw_separation_m: 4.0
+    candidate_max_raw_z_difference_m: 0.30
 
     # Scan-Context-like polar descriptor. Geometric ICP must independently
     # validate every descriptor match before it becomes a pose-graph edge.
@@ -37,6 +43,10 @@
     icp_max_z_translation_m: 0.40
     icp_max_yaw_deg: 50.0
     icp_max_roll_pitch_deg: 15.0
+    # ICP must not jump several repeated corridor sections away from the
+    # FAST-LIO prediction, even if that section has an apparently good score.
+    icp_max_odom_delta_m: 3.0
+    icp_max_odom_delta_yaw_deg: 25.0
 
     # Start in phase 1.  After reviewing repeated accepted candidates, set
     # this parameter true to activate phase 2 in the same process.  Phase 2
@@ -52,3 +62,14 @@
     loop_edge_yaw_weight: 10.0
     map_preview_max_points: 250000
     export_optimized_map_path: ""
+
+    # Online outputs are disabled for standalone/navigation use. Mapping mode
+    # enables all three and has grid_accumulator consume these corrected
+    # streams, rebuilding its grid after every accepted graph update.
+    publish_live_correction: false
+    map_frame: map
+    body_frame: body
+    correction_smoothing_sec: 2.0
+    publish_corrected_streams: false
+    corrected_cloud_topic: /loop_closure/cloud_registered
+    corrected_odom_topic: /loop_closure/odometry

@@ -104,25 +104,49 @@ def generate_launch_description():
     ]
 
     if mapping_mode:
+        # FAST-LIO keeps its local camera_init->body estimate.  The loop node
+        # owns only map->camera_init and emits corrected keyframe streams for
+        # the grid accumulator.  Do not start this node in navigation mode:
+        # localization_3d is then the sole owner of map->camera_init.
+        loop_config = os.path.join(
+            get_package_share_directory('g1_loop_closure'),
+            'config', 'loop_closure.yaml')
+        actions.append(Node(
+            package='g1_loop_closure',
+            executable='loop_closure_node',
+            name='loop_closure',
+            output='screen',
+            parameters=[
+                loop_config,
+                {
+                    'enable_pose_graph': True,
+                    'publish_live_correction': True,
+                    'publish_corrected_streams': True,
+                    'map_frame': 'map',
+                    'body_frame': 'body',
+                },
+            ],
+        ))
         actions.append(ExecuteProcess(
             cmd=[
                 'python3',
                 '/botbrain_ws/install/g1_pkg/lib/g1_pkg/grid_accumulator.py',
-                # /cloud_registered_1 is already expressed in camera_init.
-                # Accumulating this world-frame cloud avoids a second body→map
-                # TF lookup and avoids treating the robot's floor height as a
-                # LiDAR-to-IMU extrinsic.
+                # These are replayed in map coordinates after every accepted
+                # loop constraint, so old grid cells cannot remain in the
+                # pre-optimization FAST-LIO frame.
                 '--pre-transformed',
-                '--cloud-topic',    '/cloud_registered_1',
-                '--odom-topic',     '/Odometry_loc',
+                '--cloud-topic',    '/loop_closure/cloud_registered',
+                '--odom-topic',     '/loop_closure/odometry',
                 '--grid-topic',     '/accumulated_grid',
-                '--map-frame',      'camera_init',
+                '--reset-topic',    '/loop_closure/reset_grid',
+                '--map-frame',      'map',
                 '--body-frame',     'body',
                 '--resolution',     '0.05',
+                '--pose-cache-size', '200',
                 # Publishing a growing OccupancyGrid at 2 Hz caused multi-
                 # second Python serialization stalls on the Jetson. FAST-LIO
                 # remains 10 Hz; the grid is a lower-rate visualization/save
-                # product and processes every third cloud.
+                # product fed by already-decimated loop-closure keyframes.
                 '--rate',           '0.5',
                 # Fixed-z values are used only with --no-ground-plane. In the
                 # normal path, a constrained plane is initialized around the
@@ -131,8 +155,8 @@ def generate_launch_description():
                 '--ground-z',       '-1.15',
                 '--obstacle-z',     '-1.14',
                 '--obstacle-z-max', '0.35',
-                '--skip-frames',    '60',    # FAST-LIO warmup
-                '--process-every',  '3',
+                '--skip-frames',    '3',     # corrected keyframes, not raw 10 Hz scans
+                '--process-every',  '1',
                 '--sensor-height',  '1.247',
                 '--below-ground-tolerance', '0.10',
                 '--ground-margin',          '0.08',

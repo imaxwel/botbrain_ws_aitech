@@ -18,6 +18,7 @@
 #include <Eigen/Geometry>
 
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <pcl/common/transforms.h>
@@ -33,7 +34,9 @@
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/empty.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "g1_loop_closure/pose_graph.hpp"
@@ -45,6 +48,7 @@ using Point = pcl::PointXYZ;
 using Cloud = pcl::PointCloud<Point>;
 using g1_loop_closure::Between;
 using g1_loop_closure::Compose;
+using g1_loop_closure::Inverse;
 using g1_loop_closure::kPi;
 using g1_loop_closure::Pose2;
 using g1_loop_closure::WrapAngle;
@@ -94,6 +98,10 @@ public:
     query_interval_sec_ = declare_parameter<double>("query_interval_sec", 5.0);
     min_loop_time_sec_ = declare_parameter<double>("min_loop_time_sec", 30.0);
     min_loop_path_distance_m_ = declare_parameter<double>("min_loop_path_distance_m", 12.0);
+    candidate_max_raw_separation_m_ = declare_parameter<double>(
+      "candidate_max_raw_separation_m", 4.0);
+    candidate_max_raw_z_difference_m_ = declare_parameter<double>(
+      "candidate_max_raw_z_difference_m", 0.30);
 
     descriptor_rings_ = static_cast<int>(std::max<int64_t>(
         4, declare_parameter<int>("descriptor_rings", 20)));
@@ -112,6 +120,9 @@ public:
     icp_max_yaw_rad_ = declare_parameter<double>("icp_max_yaw_deg", 50.0) * kPi / 180.0;
     icp_max_roll_pitch_rad_ =
       declare_parameter<double>("icp_max_roll_pitch_deg", 15.0) * kPi / 180.0;
+    icp_max_odom_delta_m_ = declare_parameter<double>("icp_max_odom_delta_m", 3.0);
+    icp_max_odom_delta_yaw_rad_ =
+      declare_parameter<double>("icp_max_odom_delta_yaw_deg", 25.0) * kPi / 180.0;
 
     // Phase 1 is intentionally the default: it only observes, retrieves and
     // verifies loop candidates.  Phase 2 is explicitly enabled after those
@@ -126,6 +137,22 @@ public:
     map_preview_max_points_ = static_cast<size_t>(std::max<int64_t>(
         10000, declare_parameter<int>("map_preview_max_points", 250000)));
     export_optimized_map_path_ = declare_parameter<std::string>("export_optimized_map_path", "");
+
+    // Online mapping mode.  FAST-LIO remains the high-rate local odometry
+    // source (camera_init -> body).  Once a graph is optimized we publish the
+    // slowly changing global correction map -> camera_init, which is the
+    // standard SLAM TF split.  This is deliberately off by default because a
+    // navigation localization node already owns map -> camera_init.
+    publish_live_correction_ = declare_parameter<bool>("publish_live_correction", false);
+    map_frame_ = NormalizeFrame(declare_parameter<std::string>("map_frame", "map"));
+    body_frame_ = NormalizeFrame(declare_parameter<std::string>("body_frame", "body"));
+    correction_smoothing_sec_ = std::max(
+      0.0, declare_parameter<double>("correction_smoothing_sec", 2.0));
+    publish_corrected_streams_ = declare_parameter<bool>("publish_corrected_streams", false);
+    corrected_cloud_topic_ = declare_parameter<std::string>(
+      "corrected_cloud_topic", "/loop_closure/cloud_registered");
+    corrected_odom_topic_ = declare_parameter<std::string>(
+      "corrected_odom_topic", "/loop_closure/odometry");
 
     const auto cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
     cloud_subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -147,6 +174,20 @@ public:
       "/loop_closure/optimized_map_preview", rclcpp::SensorDataQoS().keep_last(1));
     diagnostic_publisher_ = create_publisher<std_msgs::msg::String>(
       "/loop_closure/diagnostics", rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
+    if (publish_live_correction_) {
+      correction_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    }
+    if (publish_corrected_streams_) {
+      corrected_cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+        corrected_cloud_topic_, rclcpp::SensorDataQoS().keep_last(5));
+      corrected_odom_publisher_ = create_publisher<nav_msgs::msg::Odometry>(
+        corrected_odom_topic_, rclcpp::QoS(rclcpp::KeepLast(20)).reliable());
+      grid_reset_publisher_ = create_publisher<std_msgs::msg::Empty>(
+        "/loop_closure/reset_grid", rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
+      replay_timer_ = create_wall_timer(
+        std::chrono::milliseconds(500),
+        std::bind(&LoopClosureNode::HandleGridReplay, this));
+    }
     export_service_ = create_service<std_srvs::srv::Trigger>(
       "/loop_closure/export_optimized_map",
       std::bind(
@@ -157,10 +198,11 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Loop-closure observer started: cloud=%s odom=%s phase=%s. It never publishes TF "
-      "or modifies FAST-LIO odometry/maps.",
+      "Loop-closure started: cloud=%s odom=%s phase=%s. It never modifies FAST-LIO "
+      "odometry/maps; live map->camera_init correction=%s.",
       cloud_topic_.c_str(), odom_topic_.c_str(),
-      enable_pose_graph_ ? "2-diagnostic-pose-graph" : "1-observation-only");
+      enable_pose_graph_ ? "2-pose-graph" : "1-observation-only",
+      publish_live_correction_ ? "enabled" : "disabled");
   }
 
 private:
@@ -242,9 +284,10 @@ private:
         }
         RCLCPP_INFO(
           get_logger(),
-          "Loop closure phase 2 enabled with %zu accepted constraint(s); optimizing "
-          "diagnostic graph only (FAST-LIO TF/odometry remain untouched)",
-          accepted_loop_edges_.size());
+          "Loop closure phase 2 enabled with %zu accepted constraint(s); %s",
+          accepted_loop_edges_.size(), publish_live_correction_ ?
+          "publishing map->camera_init correction for mapping" :
+          "diagnostic graph only (FAST-LIO TF/odometry remain untouched)");
         OptimizePoseGraph();
         PublishPathsAndMarkers();
         PublishOptimizedMapPreview();
@@ -278,11 +321,14 @@ private:
     sample.pose_3d.linear() = quaternion.toRotationMatrix();
     sample.pose_3d.translation() = Eigen::Vector3d(position.x, position.y, position.z);
 
-    std::lock_guard<std::mutex> lock(odom_mutex_);
-    odom_history_.push_back(std::move(sample));
-    while (odom_history_.size() > odom_history_size_) {
-      odom_history_.pop_front();
+    {
+      std::lock_guard<std::mutex> lock(odom_mutex_);
+      odom_history_.push_back(std::move(sample));
+      while (odom_history_.size() > odom_history_size_) {
+        odom_history_.pop_front();
+      }
     }
+    PublishLiveCorrection(*message);
   }
 
   std::optional<OdomSample> FindOdom(const rclcpp::Time &stamp)
@@ -304,6 +350,142 @@ private:
       return std::nullopt;
     }
     return *best;
+  }
+
+  Pose2 GraphCorrection() const
+  {
+    if (keyframes_.empty() || optimized_poses_.size() != keyframes_.size()) {
+      return {};
+    }
+    const size_t index = keyframes_.size() - 1;
+    return Compose(optimized_poses_[index], Inverse(keyframes_[index].raw_pose));
+  }
+
+  void PublishLiveCorrection(const nav_msgs::msg::Odometry &raw)
+  {
+    if (!publish_live_correction_ && !publish_corrected_streams_) {
+      return;
+    }
+    const Pose2 target = GraphCorrection();
+    const rclcpp::Time stamp(raw.header.stamp);
+    if (!correction_initialized_) {
+      smoothed_correction_ = target;
+      last_correction_stamp_ = stamp;
+      correction_initialized_ = true;
+    } else {
+      const double dt = std::max(0.0, (stamp - last_correction_stamp_).seconds());
+      const double alpha = correction_smoothing_sec_ <= 0.0 ? 1.0 :
+        1.0 - std::exp(-dt / correction_smoothing_sec_);
+      smoothed_correction_.x += alpha * (target.x - smoothed_correction_.x);
+      smoothed_correction_.y += alpha * (target.y - smoothed_correction_.y);
+      smoothed_correction_.yaw = WrapAngle(
+        smoothed_correction_.yaw +
+        alpha * WrapAngle(target.yaw - smoothed_correction_.yaw));
+      last_correction_stamp_ = stamp;
+    }
+
+    if (correction_broadcaster_) {
+      geometry_msgs::msg::TransformStamped transform;
+      transform.header.stamp = raw.header.stamp;
+      transform.header.frame_id = map_frame_;
+      transform.child_frame_id = world_frame_;
+      transform.transform.translation.x = smoothed_correction_.x;
+      transform.transform.translation.y = smoothed_correction_.y;
+      transform.transform.rotation.z = std::sin(smoothed_correction_.yaw * 0.5);
+      transform.transform.rotation.w = std::cos(smoothed_correction_.yaw * 0.5);
+      correction_broadcaster_->sendTransform(transform);
+    }
+
+    if (!corrected_odom_publisher_) {
+      return;
+    }
+    nav_msgs::msg::Odometry corrected = raw;
+    corrected.header.frame_id = map_frame_;
+    corrected.child_frame_id = body_frame_;
+    const auto &position = raw.pose.pose.position;
+    const double c = std::cos(smoothed_correction_.yaw);
+    const double s = std::sin(smoothed_correction_.yaw);
+    corrected.pose.pose.position.x = c * position.x - s * position.y + smoothed_correction_.x;
+    corrected.pose.pose.position.y = s * position.x + c * position.y + smoothed_correction_.y;
+    Eigen::Quaterniond raw_orientation(
+      raw.pose.pose.orientation.w, raw.pose.pose.orientation.x,
+      raw.pose.pose.orientation.y, raw.pose.pose.orientation.z);
+    raw_orientation.normalize();
+    const Eigen::Quaterniond corrected_orientation =
+      Eigen::AngleAxisd(smoothed_correction_.yaw, Eigen::Vector3d::UnitZ()) * raw_orientation;
+    corrected.pose.pose.orientation.x = corrected_orientation.x();
+    corrected.pose.pose.orientation.y = corrected_orientation.y();
+    corrected.pose.pose.orientation.z = corrected_orientation.z();
+    corrected.pose.pose.orientation.w = corrected_orientation.w();
+    corrected_odom_publisher_->publish(corrected);
+  }
+
+  void PublishKeyframeStreams(const size_t index, const Pose2 &pose)
+  {
+    if (!corrected_cloud_publisher_ || !corrected_odom_publisher_ || index >= keyframes_.size()) {
+      return;
+    }
+    const auto &keyframe = keyframes_[index];
+    const float c = static_cast<float>(std::cos(pose.yaw));
+    const float s = static_cast<float>(std::sin(pose.yaw));
+    Cloud cloud;
+    cloud.reserve(keyframe.local_cloud->size());
+    for (const auto &point : keyframe.local_cloud->points) {
+      cloud.push_back({
+        c * point.x - s * point.y + static_cast<float>(pose.x),
+        s * point.x + c * point.y + static_cast<float>(pose.y),
+        point.z + static_cast<float>(keyframe.raw_z)});
+    }
+    cloud.width = static_cast<uint32_t>(cloud.size());
+    cloud.height = 1;
+    cloud.is_dense = keyframe.local_cloud->is_dense;
+
+    nav_msgs::msg::Odometry odom;
+    odom.header.stamp = keyframe.stamp;
+    odom.header.frame_id = map_frame_;
+    odom.child_frame_id = body_frame_;
+    odom.pose.pose = ToRosPose(pose, keyframe.raw_z);
+    corrected_odom_publisher_->publish(odom);
+
+    sensor_msgs::msg::PointCloud2 message;
+    pcl::toROSMsg(cloud, message);
+    message.header.stamp = keyframe.stamp;
+    message.header.frame_id = map_frame_;
+    corrected_cloud_publisher_->publish(message);
+  }
+
+  void RequestGridReplay()
+  {
+    if (publish_corrected_streams_) {
+      grid_replay_stage_ = 1;
+      grid_replay_target_size_ = keyframes_.size();
+      grid_replay_index_ = 0;
+    }
+  }
+
+  void HandleGridReplay()
+  {
+    if (grid_replay_stage_ == 1) {
+      grid_reset_publisher_->publish(std_msgs::msg::Empty{});
+      grid_replay_stage_ = 2;
+      return;
+    }
+    if (grid_replay_stage_ != 2) {
+      return;
+    }
+    constexpr size_t replay_batch_size = 25;
+    const size_t end = std::min(
+      grid_replay_target_size_, grid_replay_index_ + replay_batch_size);
+    for (; grid_replay_index_ < end; ++grid_replay_index_) {
+      PublishKeyframeStreams(grid_replay_index_, optimized_poses_[grid_replay_index_]);
+    }
+    if (grid_replay_index_ < grid_replay_target_size_) {
+      return;
+    }
+    grid_replay_stage_ = 0;
+    RCLCPP_INFO(
+      get_logger(), "Replayed %zu optimized keyframes into the mapping grid",
+      grid_replay_target_size_);
   }
 
   Cloud::Ptr Downsample(const Cloud::ConstPtr &input) const
@@ -413,6 +595,16 @@ private:
       {
         continue;
       }
+      // Do not let repeated bays in a long corridor create a topological edge.
+      // A normal closed traversal returns close in the local FAST-LIO frame;
+      // a real drift of a few metres is still recoverable by ICP below.
+      if (std::hypot(
+          current.raw_pose.x - candidate.raw_pose.x,
+          current.raw_pose.y - candidate.raw_pose.y) > candidate_max_raw_separation_m_ ||
+        std::fabs(current.raw_z - candidate.raw_z) > candidate_max_raw_z_difference_m_)
+      {
+        continue;
+      }
       const auto [similarity, yaw_shift] = DescriptorSimilarity(
           current.descriptor, candidate.descriptor);
       if (similarity > best.similarity) {
@@ -493,12 +685,17 @@ private:
       std::atan2(transform(1, 0), transform(0, 0)),
     };
     const double translation = std::hypot(measurement.x, measurement.y);
+    const double odom_delta = std::hypot(
+      measurement.x - odometry_guess.x, measurement.y - odometry_guess.y);
+    const double odom_yaw_delta = std::fabs(WrapAngle(measurement.yaw - odometry_guess.yaw));
     const double z_translation = std::fabs(transform(2, 3));
     const double roll = std::atan2(transform(2, 1), transform(2, 2));
     const double pitch = std::asin(std::clamp(-transform(2, 0), -1.0F, 1.0F));
     return std::isfinite(fitness) && fitness <= icp_max_fitness_m_ &&
       inlier_ratio >= icp_min_inlier_ratio_ &&
       translation <= icp_max_translation_m_ &&
+      odom_delta <= icp_max_odom_delta_m_ &&
+      odom_yaw_delta <= icp_max_odom_delta_yaw_rad_ &&
       z_translation <= icp_max_z_translation_m_ &&
       std::fabs(measurement.yaw) <= icp_max_yaw_rad_ &&
       std::fabs(roll) <= icp_max_roll_pitch_rad_ &&
@@ -584,6 +781,9 @@ private:
       optimized_poses_.push_back(keyframe.raw_pose);
     }
     keyframes_.push_back(std::move(keyframe));
+    PublishKeyframeStreams(
+      keyframes_.back().id,
+      Compose(GraphCorrection(), keyframes_.back().raw_pose));
     PublishPathsAndMarkers();
 
     const auto now = std::chrono::steady_clock::now();
@@ -618,12 +818,14 @@ private:
         "constraint=(%.2f, %.2f, %.1fdeg)%s",
         candidate.id, current.id, match->similarity, fitness, inlier_ratio,
         measurement.x, measurement.y, measurement.yaw * 180.0 / kPi,
-        enable_pose_graph_ ? "; optimizing diagnostic SE2 graph only" :
+        enable_pose_graph_ ? (publish_live_correction_ ?
+        "; optimizing online mapping graph" : "; optimizing diagnostic SE2 graph only") :
         "; recorded for phase 1 observation only");
       if (enable_pose_graph_) {
         edges_.push_back(loop_edge);
         ++active_loop_edge_count_;
         OptimizePoseGraph();
+        RequestGridReplay();
         PublishOptimizedMapPreview();
       }
     } else {
@@ -693,7 +895,7 @@ private:
     }
     sensor_msgs::msg::PointCloud2 message;
     pcl::toROSMsg(*preview, message);
-    message.header.frame_id = world_frame_;
+    message.header.frame_id = publish_live_correction_ ? map_frame_ : world_frame_;
     message.header.stamp = now();
     map_preview_publisher_->publish(message);
   }
@@ -853,7 +1055,7 @@ private:
     const int result = pcl::io::savePCDFileBinary(export_optimized_map_path_, *preview);
     response->success = result == 0;
     response->message = response->success ?
-      "wrote diagnostic optimized map: " + export_optimized_map_path_ :
+      "wrote optimized keyframe map: " + export_optimized_map_path_ :
       "failed to write: " + export_optimized_map_path_;
   }
 
@@ -871,6 +1073,8 @@ private:
   double query_interval_sec_{5.0};
   double min_loop_time_sec_{30.0};
   double min_loop_path_distance_m_{12.0};
+  double candidate_max_raw_separation_m_{4.0};
+  double candidate_max_raw_z_difference_m_{0.30};
   int descriptor_rings_{20};
   int descriptor_sectors_{60};
   double descriptor_max_range_m_{25.0};
@@ -883,6 +1087,8 @@ private:
   double icp_max_z_translation_m_{0.40};
   double icp_max_yaw_rad_{50.0 * kPi / 180.0};
   double icp_max_roll_pitch_rad_{15.0 * kPi / 180.0};
+  double icp_max_odom_delta_m_{3.0};
+  double icp_max_odom_delta_yaw_rad_{25.0 * kPi / 180.0};
   bool enable_pose_graph_{false};
   int optimizer_iterations_{8};
   double odom_edge_xy_weight_{1.0};
@@ -891,6 +1097,19 @@ private:
   double loop_edge_yaw_weight_{10.0};
   size_t map_preview_max_points_{250000};
   std::string export_optimized_map_path_;
+  bool publish_live_correction_{false};
+  std::string map_frame_{"map"};
+  std::string body_frame_{"body"};
+  double correction_smoothing_sec_{2.0};
+  bool publish_corrected_streams_{false};
+  std::string corrected_cloud_topic_;
+  std::string corrected_odom_topic_;
+  Pose2 smoothed_correction_;
+  rclcpp::Time last_correction_stamp_{0, 0, RCL_ROS_TIME};
+  bool correction_initialized_{false};
+  int grid_replay_stage_{0};
+  size_t grid_replay_index_{0};
+  size_t grid_replay_target_size_{0};
 
   std::mutex odom_mutex_;
   std::deque<OdomSample> odom_history_;
@@ -910,7 +1129,12 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_preview_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr diagnostic_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr corrected_cloud_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr corrected_odom_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr grid_reset_publisher_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> correction_broadcaster_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr export_service_;
+  rclcpp::TimerBase::SharedPtr replay_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
 };
 

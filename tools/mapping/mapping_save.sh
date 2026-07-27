@@ -4,11 +4,12 @@
 # Triggered either by mapping_launch.sh's SIGINT trap (one-shot save on
 # Ctrl+C), or by a human in a separate window for an interim dump.
 #
-# Two save modes:
-#   A) /map_save service (RECOMMENDED — requires pcd_save_en: false in mid360.yaml)
-#      → fast_lio writes PCD on demand, process keeps running
-#   B) SIGINT to fastlio_mapping (FALLBACK — when pcd_save_en: true)
-#      → fast_lio auto-saves PCD on shutdown, then restarts
+# Three save modes:
+#   A) /loop_closure/export_optimized_map (mapping default)
+#      → writes the graph-corrected keyframe map in the same `map` frame as
+#        /accumulated_grid. This is the only mode that preserves online loops.
+#   B) /map_save service (fallback without loop closure)
+#   C) SIGINT to fastlio_mapping (last fallback when pcd_save_en: true)
 #
 # map_saver_cli writes accumulated_grid.{pgm,yaml} on top of any existing
 # files (previous maps are backed up as *.bak).
@@ -60,11 +61,21 @@ for f in "$PCD" "$PGM" "$YML"; do
 done
 
 # ── [1/3] dump 3D PCD ──────────────────────────────
-echo "[1/3] dumping 3D PCD via fast_lio /map_save ..."
+echo "[1/3] dumping 3D PCD (prefer graph-corrected loop map) ..."
 
-# Try /map_save service first (pcd_save_en: false mode)
+# Prefer the graph-corrected keyframe map when online mapping is active.
 SAVE_OK=false
-if ros2 service call /map_save std_srvs/srv/Trigger 2>/dev/null; then
+if ros2 node list 2>/dev/null | grep -qx '/loop_closure' && \
+   ros2 param set /loop_closure export_optimized_map_path "$PCD" >/dev/null && \
+   ros2 service call /loop_closure/export_optimized_map std_srvs/srv/Trigger 2>/dev/null; then
+    sleep 2
+    if [ -f "$PCD" ]; then
+        SAVE_OK=true
+        echo "  using graph-corrected loop-closure keyframe map"
+    fi
+fi
+
+if [ "$SAVE_OK" = false ] && ros2 service call /map_save std_srvs/srv/Trigger 2>/dev/null; then
     sleep 2
     if [ -f "$PCD" ]; then
         SAVE_OK=true
@@ -73,7 +84,7 @@ fi
 
 # Fallback: SIGINT to fastlio_mapping (pcd_save_en: true mode)
 if [ "$SAVE_OK" = false ]; then
-    echo "  /map_save unavailable, trying SIGINT to fastlio_mapping ..."
+    echo "  loop export and /map_save unavailable, trying SIGINT to fastlio_mapping ..."
     PID=$(pgrep -f fastlio_mapping 2>/dev/null || true)
     if [ -n "$PID" ]; then
         kill -SIGINT "$PID" 2>/dev/null || true

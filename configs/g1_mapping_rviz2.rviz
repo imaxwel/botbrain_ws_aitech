@@ -348,7 +348,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
-    Fixed Frame: camera_init
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:

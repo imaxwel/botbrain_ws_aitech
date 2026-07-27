@@ -10,7 +10,7 @@ v4l2_apriltag_trigger:
     tag_family: "tag36h11"
     tag_size: 0.05
     target_tag_id: 0
-    offset_xyz: [-0.103, 0.27, 0.077]
+    offset_xyz: [0.03, 0.27, 0.04]
     decision_margin_min: 25.0
     quad_decimate: 1.0
     detect_scale: 1.0

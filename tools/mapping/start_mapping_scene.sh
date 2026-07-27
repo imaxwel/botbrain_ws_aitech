@@ -64,6 +64,9 @@ touch "$maps/.${scene}_mapping_started"
 
 echo "Starting mapping scene '$scene' with profile '$profile'"
 docker compose stop localization navigation
+# A previous diagnostic container has the same node name and must not remain
+# on the graph while the mapping launch starts its online-correction instance.
+docker compose stop loop_closure
 docker compose up -d zenoh bringup state_machine
 FAST_LIO_START_DELAY_SEC=0 \
 FAST_LIO_MAPPING_MODE=true \
@@ -84,11 +87,13 @@ while [ "$SECONDS" -lt "$deadline" ]; do
          source /botbrain_ws/install/setup.bash
          timeout 3 ros2 topic echo /cloud_registered_1 --once --field header >/dev/null 2>&1
          timeout 3 ros2 topic echo /cloud_registered_body_1 --once --field header >/dev/null 2>&1
+         timeout 5 ros2 topic echo /loop_closure/cloud_registered --once --field header >/dev/null 2>&1
          timeout 3 ros2 topic echo /accumulated_grid --once --field header >/dev/null 2>&1
          timeout 3 ros2 run tf2_ros tf2_echo camera_init body 2>/dev/null | grep -q "Translation:"
+         timeout 3 ros2 run tf2_ros tf2_echo map camera_init 2>/dev/null | grep -q "Translation:"
        '; then
         echo "MAPPING READY: scene=$scene profile=$profile"
-        echo "RViz topics live: /cloud_registered_1 /cloud_registered_body_1 /accumulated_grid /tf"
+        echo "RViz topics live: raw FAST-LIO + loop-corrected cloud/grid + map->camera_init TF"
         echo "PCD target: /botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"
         exit 0
     fi

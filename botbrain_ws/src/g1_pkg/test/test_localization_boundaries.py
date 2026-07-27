@@ -293,20 +293,27 @@ def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
 
 def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
     source = _read("botbrain_ws/src/g1_pkg/launch/fast_lio.launch.py")
+    grid_source = _read("botbrain_ws/src/g1_pkg/scripts/grid_accumulator.py")
 
     assert "sigterm_timeout='150'" in source
     assert "sigkill_timeout='20'" in source
     assert "'--rate',           '0.5'" in source
-    assert "'--process-every',  '3'" in source
+    assert "'--process-every',  '1'" in source
     assert "'--debug-clouds'" not in source
     assert "FAST_LIO_MAPPING_MODE" in source
     assert "FAST_LIO_MAPPING_SAVE" in source
     assert "FAST_LIO_MAP_FILE" in source
     assert "if mapping_mode:" in source
     assert "'pcd_save.pcd_save_en': mapping_save_en" in source
+    assert "'/loop_closure/cloud_registered'" in source
+    assert "'/loop_closure/odometry'" in source
+    assert "'/loop_closure/reset_grid'" in source
+    assert "'--skip-frames',    '3'" in source
+    assert "def reset_cb" in grid_source
+    assert "Mapping grid reset for loop-closure keyframe replay" in grid_source
 
 
-def test_loop_closure_is_opt_in_and_cannot_modify_fast_lio_tf_or_odometry():
+def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
     package_root = PROJECT_ROOT / "botbrain_ws/src/g1_loop_closure"
     source = (package_root / "src/loop_closure_node.cpp").read_text(encoding="utf-8")
     optimizer_source = (package_root / "src/pose_graph.cpp").read_text(encoding="utf-8")
@@ -327,20 +334,25 @@ def test_loop_closure_is_opt_in_and_cannot_modify_fast_lio_tf_or_odometry():
     assert "DeclareLaunchArgument(" in launch
     assert "export_optimized_map_path" in launch
 
-    for forbidden in (
-        "tf2_ros",
-        "TransformBroadcaster",
-        "sendTransform",
-        "create_publisher<nav_msgs::msg::Odometry>",
-    ):
-        assert forbidden not in source
-    assert "g1_loop_closure" not in fast_lio_launch
+    assert "publish_live_correction: false" in config
+    assert "publish_live_correction" in source
+    assert "TransformBroadcaster" in source
+    assert "map -> camera_init" in source
+    assert "publish_corrected_streams" in source
+    assert "g1_loop_closure" in fast_lio_launch
+    assert "'publish_live_correction': True" in fast_lio_launch
+    assert "'publish_corrected_streams': True" in fast_lio_launch
+    assert "/loop_closure/reset_grid" in fast_lio_launch
 
     loop_service = compose["services"]["loop_closure"]
     assert loop_service["profiles"] == ["loop_closure"]
     assert loop_service["restart"] == "no"
     assert "ros2 launch g1_loop_closure loop_closure.launch.py" in loop_service["command"][-1]
     assert "g1_loop_closure" in compose["services"]["builder_base"]["command"][-1]
+
+    mapping_save = _read("tools/mapping/mapping_save.sh")
+    assert "/loop_closure/export_optimized_map" in mapping_save
+    assert "using graph-corrected loop-closure keyframe map" in mapping_save
 
 
 def test_loop_closure_rviz_layers_are_preconfigured_but_phase_two_preview_is_off():
@@ -372,10 +384,12 @@ def test_mapping_scene_launcher_enables_save_grid_and_readiness_gate():
     for topic in (
         "/cloud_registered_1",
         "/cloud_registered_body_1",
+        "/loop_closure/cloud_registered",
         "/accumulated_grid",
     ):
         assert topic in source
     assert "tf2_echo camera_init body" in source
+    assert "tf2_echo map camera_init" in source
     assert "MAPPING READY" in source
 
 
@@ -419,7 +433,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
 
     mapping_manager = mapping["Visualization Manager"]
     nav_manager = navigation["Visualization Manager"]
-    assert mapping_manager["Global Options"]["Fixed Frame"] == "camera_init"
+    assert mapping_manager["Global Options"]["Fixed Frame"] == "map"
     assert nav_manager["Global Options"]["Fixed Frame"] == "map"
 
     mapping_displays = {
@@ -936,7 +950,7 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
     }
 
     assert "choices=['record', 'list', 'delete']" in recorder
-    assert "waypoint_recorder.py delete floor1_old" in compact_runbook
+    assert 'delete ug_old --scene "$scene"' in compact_runbook
     assert "def _yaw_quaternion(" in recorder
     assert "def _planar_quaternion(" in navigator
     assert "PoseWithCovarianceStamped" not in navigator
