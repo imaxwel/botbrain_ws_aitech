@@ -262,8 +262,16 @@ class GridAccumulator(Node):
             self.origin_y = 0.0
             self.odom_cache.clear()
             self.pending_clouds.clear()
+            # The stored plane is expressed in the old XY coordinate system.
+            # A loop correction rotates/translates that system, so carrying
+            # the old coefficients into the replay can classify the floor as
+            # an obstacle across a long corridor.
+            self.plane_coeffs = None
+            self.plane_candidate = None
+            self.plane_candidate_count = 0
+            self.plane_metrics = {"reason": "loop_replay_reset"}
         self.get_logger().warning(
-            "Mapping grid reset for loop-closure keyframe replay")
+            "Mapping grid and floor model reset for loop-closure replay")
 
     def _put_bounded(self, cache, key, value, *, cloud_cache=False):
         cache[key] = value
@@ -322,9 +330,15 @@ class GridAccumulator(Node):
 
     @staticmethod
     def _read_xyz(msg):
-        raw = pc2.read_points(
-            msg, field_names=("x", "y", "z"), skip_nans=True)
-        raw = np.asarray(list(raw))
+        # Humble's read_points_numpy avoids constructing one Python object per
+        # LiDAR point. That conversion dominated grid generation on Jetson.
+        if hasattr(pc2, "read_points_numpy"):
+            raw = pc2.read_points_numpy(
+                msg, field_names=("x", "y", "z"), skip_nans=True)
+        else:
+            raw = np.asarray(list(pc2.read_points(
+                msg, field_names=("x", "y", "z"), skip_nans=True)))
+        raw = np.asarray(raw)
         if raw.size == 0:
             return np.empty((0, 3), dtype=np.float64)
         if raw.dtype.names is not None:

@@ -7,7 +7,7 @@
     filter_size_map: 0.3   # 匹配参考
     cube_side_length: 1000.0
     runtime_pos_log_enable: false
-    map_file_path: "/botbrain_ws/src/g1_pkg/maps/floor15_scans.pcd"
+    map_file_path: "/botbrain_ws/src/g1_pkg/maps/scans.pcd"
 
     common:
       lid_topic: "/livox/lidar"
@@ -58,6 +58,9 @@
       guard_max_residual: 0.15
       guard_max_translation_correction: 0.50
       guard_max_rotation_correction_deg: 10.0
+      # Keep permissive corridor yaw recovery, but never let a weak LiDAR
+      # match rotate the IMU gravity axis and tilt the entire world map.
+      guard_max_tilt_correction_deg: 2.0
       # 连续拒帧后允许一次“只修状态、不写地图”的高置信恢复，避免纯 IMU 越漂越远后永久锁死。
       guard_recovery_min_rejections: 5
       guard_recovery_min_effective_points: 3
@@ -65,6 +68,7 @@
       guard_recovery_max_residual: 0.10
       guard_recovery_max_translation_correction: 1.50
       guard_recovery_max_rotation_correction_deg: 30.0
+      guard_recovery_max_tilt_correction_deg: 2.0
       # 最多发布 3 帧未被 LiDAR 确认的纯 IMU 里程计。持续失败时停止 TF，
       # 让 localization/costmap 超时并停车，而不是继续使用发散位姿。
       guard_max_unconfirmed_odometry_frames: 3

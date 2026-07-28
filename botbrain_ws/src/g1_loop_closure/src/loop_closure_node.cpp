@@ -96,7 +96,7 @@ public:
     mapping_keyframe_voxel_m_ = declare_parameter<double>(
       "mapping_keyframe_voxel_m", 0.10);
     mapping_keyframe_max_points_ = static_cast<size_t>(std::max<int64_t>(
-        1000, declare_parameter<int>("mapping_keyframe_max_points", 20000)));
+        1000, declare_parameter<int>("mapping_keyframe_max_points", 12000)));
     max_keyframes_ = static_cast<size_t>(std::max<int64_t>(
         20, declare_parameter<int>("max_keyframes", 800)));
     query_interval_sec_ = declare_parameter<double>("query_interval_sec", 5.0);
@@ -191,7 +191,7 @@ public:
       grid_reset_publisher_ = create_publisher<std_msgs::msg::Empty>(
         "/loop_closure/reset_grid", rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
       replay_timer_ = create_wall_timer(
-        std::chrono::milliseconds(500),
+        std::chrono::milliseconds(50),
         std::bind(&LoopClosureNode::HandleGridReplay, this));
     }
     export_service_ = create_service<std_srvs::srv::Trigger>(
@@ -519,7 +519,10 @@ private:
     if (grid_replay_stage_ != 2) {
       return;
     }
-    constexpr size_t replay_batch_size = 25;
+    // Pace replay instead of publishing a burst larger than the sensor-data
+    // QoS queue. One keyframe every 50 ms is fast enough to rebuild the grid
+    // while allowing the Python accumulator to actually consume every scan.
+    constexpr size_t replay_batch_size = 1;
     const size_t end = std::min(
       grid_replay_target_size_, grid_replay_index_ + replay_batch_size);
     for (; grid_replay_index_ < end; ++grid_replay_index_) {
@@ -786,7 +789,10 @@ private:
     if (world_cloud->empty()) {
       return;
     }
-    if (publish_corrected_streams_) {
+    // Do not mix live scans into an optimized historical replay. They would
+    // compete for the small sensor-data queue and can be inserted before the
+    // reset/replay sequence has completed.
+    if (publish_corrected_streams_ && grid_replay_stage_ == 0) {
       ++corrected_stream_scan_count_;
       if ((corrected_stream_scan_count_ - 1) % corrected_stream_every_n_scans_ == 0) {
         PublishCorrectedWorldCloud(world_cloud, stamp);
@@ -1129,7 +1135,7 @@ private:
   double keyframe_voxel_m_{0.2};
   size_t keyframe_max_points_{5000};
   double mapping_keyframe_voxel_m_{0.10};
-  size_t mapping_keyframe_max_points_{20000};
+  size_t mapping_keyframe_max_points_{12000};
   size_t max_keyframes_{800};
   double query_interval_sec_{5.0};
   double min_loop_time_sec_{30.0};

@@ -21,7 +21,7 @@
     # replay and optimized PCD export. Never rebuild a map from the small
     # body-frame descriptor cloud, because that would bake robot tilt into Z.
     mapping_keyframe_voxel_m: 0.10
-    mapping_keyframe_max_points: 20000
+    mapping_keyframe_max_points: 12000
     max_keyframes: 800
     query_interval_sec: 5.0
     min_loop_time_sec: 30.0

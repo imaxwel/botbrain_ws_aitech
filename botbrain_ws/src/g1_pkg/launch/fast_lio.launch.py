@@ -143,11 +143,10 @@ def generate_launch_description():
                 '--body-frame',     'body',
                 '--resolution',     '0.05',
                 '--pose-cache-size', '200',
-                # Publishing a growing OccupancyGrid at 2 Hz caused multi-
-                # second Python serialization stalls on the Jetson. FAST-LIO
-                # remains 10 Hz; the grid is a lower-rate visualization/save
-                # product fed by already-decimated loop-closure keyframes.
-                '--rate',           '0.5',
+                # PointCloud2 conversion and OccupancyGrid serialization are
+                # vectorized, so keep the responsive 2 Hz map display while
+                # consuming the already-decimated corrected scan stream.
+                '--rate',           '2.0',
                 # Fixed-z values are used only with --no-ground-plane. In the
                 # normal path, a constrained plane is initialized around the
                 # known body-to-floor height and must pass quality gates.
@@ -168,7 +167,7 @@ def generate_launch_description():
                 # from being projected into a solid black floor region.
                 '--max-obstacle-height',    '1.60',
                 '--plane-init-frames',      '3',
-                '--plane-max-tilt-deg',     '5.0',
+                '--plane-max-tilt-deg',     '2.0',
                 '--plane-max-expected-error', '0.08',
                 '--plane-max-median-residual', '0.035',
                 '--max-point-range',        '30.0',

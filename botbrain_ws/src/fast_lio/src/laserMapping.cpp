@@ -93,8 +93,10 @@ int guard_recovery_min_rejections = 5, guard_recovery_min_effective_points = 60;
 int guard_max_unconfirmed_odometry_frames = 3, guard_max_consecutive_rejections = 30;
 double guard_min_effective_ratio = 0.10, guard_max_residual = 0.15;
 double guard_max_translation_correction = 0.25, guard_max_rotation_correction_deg = 5.0;
+double guard_max_tilt_correction_deg = 2.0;
 double guard_recovery_min_effective_ratio = 0.15, guard_recovery_max_residual = 0.10;
 double guard_recovery_max_translation_correction = 0.75, guard_recovery_max_rotation_correction_deg = 15.0;
+double guard_recovery_max_tilt_correction_deg = 2.0;
 double guard_max_position_norm = 1000.0, guard_max_abs_z = 5.0, guard_max_velocity_norm = 20.0;
 bool guard_failure_latched = false;
 bool suppress_unconfirmed_odometry_after_timing_gap = false;
@@ -966,12 +968,14 @@ public:
         this->declare_parameter<double>("mapping.guard_max_residual", 0.15);
         this->declare_parameter<double>("mapping.guard_max_translation_correction", 0.25);
         this->declare_parameter<double>("mapping.guard_max_rotation_correction_deg", 5.0);
+        this->declare_parameter<double>("mapping.guard_max_tilt_correction_deg", 2.0);
         this->declare_parameter<int>("mapping.guard_recovery_min_rejections", 5);
         this->declare_parameter<int>("mapping.guard_recovery_min_effective_points", 60);
         this->declare_parameter<double>("mapping.guard_recovery_min_effective_ratio", 0.15);
         this->declare_parameter<double>("mapping.guard_recovery_max_residual", 0.10);
         this->declare_parameter<double>("mapping.guard_recovery_max_translation_correction", 0.75);
         this->declare_parameter<double>("mapping.guard_recovery_max_rotation_correction_deg", 15.0);
+        this->declare_parameter<double>("mapping.guard_recovery_max_tilt_correction_deg", 2.0);
         this->declare_parameter<int>("mapping.guard_max_unconfirmed_odometry_frames", 3);
         this->declare_parameter<int>("mapping.guard_max_consecutive_rejections", 30);
         this->declare_parameter<double>("mapping.guard_max_position_norm", 1000.0);
@@ -1024,12 +1028,14 @@ public:
         this->get_parameter_or<double>("mapping.guard_max_residual", guard_max_residual, 0.15);
         this->get_parameter_or<double>("mapping.guard_max_translation_correction", guard_max_translation_correction, 0.25);
         this->get_parameter_or<double>("mapping.guard_max_rotation_correction_deg", guard_max_rotation_correction_deg, 5.0);
+        this->get_parameter_or<double>("mapping.guard_max_tilt_correction_deg", guard_max_tilt_correction_deg, 2.0);
         this->get_parameter_or<int>("mapping.guard_recovery_min_rejections", guard_recovery_min_rejections, 5);
         this->get_parameter_or<int>("mapping.guard_recovery_min_effective_points", guard_recovery_min_effective_points, 60);
         this->get_parameter_or<double>("mapping.guard_recovery_min_effective_ratio", guard_recovery_min_effective_ratio, 0.15);
         this->get_parameter_or<double>("mapping.guard_recovery_max_residual", guard_recovery_max_residual, 0.10);
         this->get_parameter_or<double>("mapping.guard_recovery_max_translation_correction", guard_recovery_max_translation_correction, 0.75);
         this->get_parameter_or<double>("mapping.guard_recovery_max_rotation_correction_deg", guard_recovery_max_rotation_correction_deg, 15.0);
+        this->get_parameter_or<double>("mapping.guard_recovery_max_tilt_correction_deg", guard_recovery_max_tilt_correction_deg, 2.0);
         this->get_parameter_or<int>("mapping.guard_max_unconfirmed_odometry_frames", guard_max_unconfirmed_odometry_frames, 3);
         this->get_parameter_or<int>("mapping.guard_max_consecutive_rejections", guard_max_consecutive_rejections, 30);
         this->get_parameter_or<double>("mapping.guard_max_position_norm", guard_max_position_norm, 1000.0);
@@ -1079,6 +1085,9 @@ public:
             guard_max_translation_correction, guard_recovery_max_translation_correction);
         guard_recovery_max_rotation_correction_deg = std::max(
             guard_max_rotation_correction_deg, guard_recovery_max_rotation_correction_deg);
+        guard_max_tilt_correction_deg = std::max(0.1, guard_max_tilt_correction_deg);
+        guard_recovery_max_tilt_correction_deg = std::max(
+            guard_max_tilt_correction_deg, guard_recovery_max_tilt_correction_deg);
         consecutive_guard_rejections = 0;
         guard_failure_latched = false;
         suppress_unconfirmed_odometry_after_timing_gap = false;
@@ -1529,24 +1538,37 @@ private:
                                            std::max(1, feats_down_size);
             double translation_correction = std::numeric_limits<double>::infinity();
             double rotation_correction_deg = std::numeric_limits<double>::infinity();
+            double tilt_correction_deg = std::numeric_limits<double>::infinity();
             if (IsFiniteState(updated_state))
             {
                 translation_correction = (updated_state.pos - predicted_state.pos).norm();
-                const M3D rotation_delta = predicted_state.rot.toRotationMatrix().transpose() *
-                                           updated_state.rot.toRotationMatrix();
+                const M3D predicted_rotation = predicted_state.rot.toRotationMatrix();
+                const M3D updated_rotation = updated_state.rot.toRotationMatrix();
+                const M3D rotation_delta = predicted_rotation.transpose() * updated_rotation;
                 rotation_correction_deg = Log(rotation_delta).norm() * 180.0 / PI_M;
+                // Yaw corrections are needed in repetitive corridors, but a
+                // scan-to-map update must never rotate the gravity/up axis by
+                // several degrees. Measure that component independently so
+                // permissive yaw recovery cannot tilt the whole map.
+                const V3D predicted_up = predicted_rotation.col(2).normalized();
+                const V3D updated_up = updated_rotation.col(2).normalized();
+                const double up_dot = std::clamp(
+                    predicted_up.dot(updated_up), -1.0, 1.0);
+                tilt_correction_deg = std::acos(up_dot) * 180.0 / PI_M;
             }
 
             const bool finite_update = IsPlausibleState(updated_state) && updated_cov.allFinite() &&
                                        std::isfinite(res_mean_last) &&
                                        std::isfinite(translation_correction) &&
-                                       std::isfinite(rotation_correction_deg);
+                                       std::isfinite(rotation_correction_deg) &&
+                                       std::isfinite(tilt_correction_deg);
             const bool enough_effective_points = effct_feat_num >= guard_min_effective_points;
             const bool enough_effective_ratio = effective_ratio >= guard_min_effective_ratio;
             const bool residual_ok = res_mean_last <= guard_max_residual;
             const bool correction_ok =
                 translation_correction <= guard_max_translation_correction &&
-                rotation_correction_deg <= guard_max_rotation_correction_deg;
+                rotation_correction_deg <= guard_max_rotation_correction_deg &&
+                tilt_correction_deg <= guard_max_tilt_correction_deg;
             const bool quality_ok = timing_ok && enough_effective_points &&
                                     enough_effective_ratio && residual_ok && correction_ok;
 
@@ -1563,7 +1585,8 @@ private:
                 res_mean_last <= guard_recovery_max_residual;
             const bool recovery_correction_ok =
                 translation_correction <= guard_recovery_max_translation_correction &&
-                rotation_correction_deg <= guard_recovery_max_rotation_correction_deg;
+                rotation_correction_deg <= guard_recovery_max_rotation_correction_deg &&
+                tilt_correction_deg <= guard_recovery_max_tilt_correction_deg;
             const bool recovery_ready =
                 consecutive_guard_rejections + 1 >= guard_recovery_min_rejections;
             const bool recovery_update =
@@ -1580,14 +1603,16 @@ private:
                 RefreshStateOutputs();
                 consecutive_guard_rejections++;
                 RCLCPP_WARN(this->get_logger(),
-                            "[FAST_LIO_GUARD] rejected=%d timing=%s finite=%s effective=%d/%d(%.3f) residual=%.4f correction=%.3fm/%.2fdeg limits=%d/%.3f/%.3f/%.3f/%.1f",
+                            "[FAST_LIO_GUARD] rejected=%d timing=%s finite=%s effective=%d/%d(%.3f) residual=%.4f correction=%.3fm/%.2fdeg tilt=%.2fdeg limits=%d/%.3f/%.3f/%.3f/%.1f/%.1f",
                             consecutive_guard_rejections, timing_ok ? "true" : "false",
                             finite_update ? "true" : "false",
                             effct_feat_num, feats_down_size, effective_ratio, res_mean_last,
                             translation_correction, rotation_correction_deg,
+                            tilt_correction_deg,
                             guard_min_effective_points, guard_min_effective_ratio,
                             guard_max_residual, guard_max_translation_correction,
-                            guard_max_rotation_correction_deg);
+                            guard_max_rotation_correction_deg,
+                            guard_max_tilt_correction_deg);
 
                 if (consecutive_guard_rejections >= guard_max_consecutive_rejections)
                 {
@@ -1636,10 +1661,10 @@ private:
                 consecutive_guard_rejections = 0;
                 suppress_unconfirmed_odometry_after_timing_gap = false;
                 RCLCPP_WARN(this->get_logger(),
-                            "[FAST_LIO_GUARD] state-only recovery on guarded candidate %d: effective=%d/%d(%.3f) residual=%.4f correction=%.3fm/%.2fdeg; map insertion intentionally skipped",
+                            "[FAST_LIO_GUARD] state-only recovery on guarded candidate %d: effective=%d/%d(%.3f) residual=%.4f correction=%.3fm/%.2fdeg tilt=%.2fdeg; map insertion intentionally skipped",
                             recovery_candidate_index, effct_feat_num, feats_down_size,
                             effective_ratio, res_mean_last, translation_correction,
-                            rotation_correction_deg);
+                            rotation_correction_deg, tilt_correction_deg);
                 // A recovery candidate may repair the state, but it is deliberately
                 // state-only. Hold the world cloud until the next strict accepted
                 // LiDAR update confirms the recovered pose for downstream Open3D.
