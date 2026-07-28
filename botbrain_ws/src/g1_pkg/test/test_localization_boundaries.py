@@ -291,13 +291,13 @@ def test_fast_lio_service_execs_launch_for_graceful_map_save_shutdown():
     assert fast_lio_env["FAST_LIO_MAP_FILE"] == "${FAST_LIO_MAP_FILE:-}"
 
 
-def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
+def test_fast_lio_launch_preserves_dense_grid_input_and_pcd_flush():
     source = _read("botbrain_ws/src/g1_pkg/launch/fast_lio.launch.py")
     grid_source = _read("botbrain_ws/src/g1_pkg/scripts/grid_accumulator.py")
 
     assert "sigterm_timeout='150'" in source
     assert "sigkill_timeout='20'" in source
-    assert "'--rate',           '0.5'" in source
+    assert "'--rate',           '2.0'" in source
     assert "'--process-every',  '1'" in source
     assert "'--debug-clouds'" not in source
     assert "FAST_LIO_MAPPING_MODE" in source
@@ -305,12 +305,14 @@ def test_fast_lio_launch_allows_large_pcd_flush_before_signal_escalation():
     assert "FAST_LIO_MAP_FILE" in source
     assert "if mapping_mode:" in source
     assert "'pcd_save.pcd_save_en': mapping_save_en" in source
-    assert "'/loop_closure/cloud_registered'" in source
-    assert "'/loop_closure/odometry'" in source
-    assert "'/loop_closure/reset_grid'" in source
-    assert "'--skip-frames',    '20'" in source
-    assert "def reset_cb" in grid_source
-    assert "Mapping grid reset for loop-closure keyframe replay" in grid_source
+    assert "'/cloud_registered_1'" in source
+    assert "'/Odometry_loc'" in source
+    assert "'--map-frame',      'camera_init'" in source
+    assert "'/loop_closure/cloud_registered'" not in source
+    assert "'/loop_closure/odometry'" not in source
+    assert "'/loop_closure/reset_grid'" not in source
+    assert "'--skip-frames',    '60'" in source
+    assert "def reset_cb" in grid_source  # optional compatibility, not wired
     assert "if rclpy.ok():" in grid_source
 
 
@@ -347,7 +349,11 @@ def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
     assert "g1_loop_closure" in fast_lio_launch
     assert "'publish_live_correction': True" in fast_lio_launch
     assert "'publish_corrected_streams': True" in fast_lio_launch
-    assert "/loop_closure/reset_grid" in fast_lio_launch
+    # Loop closure is additive: it must not replace the proven dense input
+    # used for live ground/obstacle classification.
+    assert "'/cloud_registered_1'" in fast_lio_launch
+    assert "'/Odometry_loc'" in fast_lio_launch
+    assert "'/loop_closure/reset_grid'" not in fast_lio_launch
 
     loop_service = compose["services"]["loop_closure"]
     assert loop_service["profiles"] == ["loop_closure"]

@@ -96,6 +96,15 @@ docker exec -it g1_robot_dev_dex3 bash -c \
 ## 4. 编译详解
 
 ### 全量编译（首次 / 修改了 CMakeLists.txt / 修改了 C++ 代码）
+```bash
+docker exec -it g1_robot_dev_dex3 bash
+
+cd /botbrain_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+colcon build --packages-select unitree_g1_dex3_stack \
+  --cmake-args -DBUILD_IK_FCL_OMPL_PLANNER=ON
 
 ```bash
 cd /data/botbrain_ws/botbrain_project-main

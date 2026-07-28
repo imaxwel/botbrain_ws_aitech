@@ -459,6 +459,7 @@ class GridAccumulator(Node):
                 obstacle_margin=self.obstacle_margin,
                 max_obstacle_height=self.max_obstacle_height,
             )
+
         else:
             fixed_z = filtered_points[:, 2]
             ground_mask = (

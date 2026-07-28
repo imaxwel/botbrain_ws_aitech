@@ -104,10 +104,12 @@ def generate_launch_description():
     ]
 
     if mapping_mode:
-        # FAST-LIO keeps its local camera_init->body estimate.  The loop node
-        # owns only map->camera_init and emits corrected keyframe streams for
-        # the grid accumulator.  Do not start this node in navigation mode:
-        # localization_3d is then the sole owner of map->camera_init.
+        # FAST-LIO keeps its local camera_init->body estimate. The loop node
+        # owns only map->camera_init and the optimized trajectory/PCD path.
+        # The live grid deliberately stays on complete FAST-LIO scans below;
+        # sparse loop keyframes do not contain enough repeated floor evidence.
+        # Do not start this node in navigation mode: localization_3d is then
+        # the sole owner of map->camera_init.
         loop_config = os.path.join(
             get_package_share_directory('g1_loop_closure'),
             'config', 'loop_closure.yaml')
@@ -131,21 +133,21 @@ def generate_launch_description():
             cmd=[
                 'python3',
                 '/botbrain_ws/install/g1_pkg/lib/g1_pkg/grid_accumulator.py',
-                # These are replayed in map coordinates after every accepted
-                # loop constraint, so old grid cells cannot remain in the
-                # pre-optimization FAST-LIO frame.
+                # Keep the proven grid-classification path on complete
+                # FAST-LIO scans. Loop closure still publishes map->camera_init
+                # and the optimized PCD, but sparse graph keyframes must not be
+                # used as a replacement for the dense floor/obstacle stream.
                 '--pre-transformed',
-                '--cloud-topic',    '/loop_closure/cloud_registered',
-                '--odom-topic',     '/loop_closure/odometry',
+                '--cloud-topic',    '/cloud_registered_1',
+                '--odom-topic',     '/Odometry_loc',
                 '--grid-topic',     '/accumulated_grid',
-                '--reset-topic',    '/loop_closure/reset_grid',
-                '--map-frame',      'map',
+                '--map-frame',      'camera_init',
                 '--body-frame',     'body',
                 '--resolution',     '0.05',
-                '--pose-cache-size', '200',
                 # PointCloud2 conversion and OccupancyGrid serialization are
-                # vectorized, so keep the responsive 2 Hz map display while
-                # consuming the already-decimated corrected scan stream.
+                # vectorized. Process every complete FAST-LIO scan so repeated
+                # floor evidence clears a departed moving object at the same
+                # cadence as the proven pre-loop-closure mapping pipeline.
                 '--rate',           '2.0',
                 # Fixed-z values are used only with --no-ground-plane. In the
                 # normal path, a constrained plane is initialized around the
@@ -154,7 +156,7 @@ def generate_launch_description():
                 '--ground-z',       '-1.15',
                 '--obstacle-z',     '-1.14',
                 '--obstacle-z-max', '0.35',
-                '--skip-frames',    '20',    # 3x-decimated live scans ~= 6 s FAST-LIO warmup
+                '--skip-frames',    '60',    # FAST-LIO warmup
                 '--process-every',  '1',
                 '--sensor-height',  '1.247',
                 '--below-ground-tolerance', '0.10',
@@ -167,8 +169,8 @@ def generate_launch_description():
                 # from being projected into a solid black floor region.
                 '--max-obstacle-height',    '1.60',
                 '--plane-init-frames',      '3',
-                '--plane-max-tilt-deg',     '2.0',
-                '--plane-max-expected-error', '0.08',
+                '--plane-max-tilt-deg',     '5.0',
+                '--plane-max-expected-error', '0.18',
                 '--plane-max-median-residual', '0.035',
                 '--max-point-range',        '30.0',
                 # Conservative G1 envelope in the FAST-LIO body/IMU frame.
