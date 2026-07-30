@@ -58,7 +58,7 @@ def generate_launch_description():
         "behavior_server",
         "bt_navigator",
         "waypoint_follower",
-        # "velocity_smoother",
+        "velocity_smoother",
     ]
 
     remappings = [("/tf", "/tf"), ("/tf_static", "/tf_static")]
@@ -91,7 +91,9 @@ def generate_launch_description():
         respawn_delay=2.0,
         parameters=[configured_params],
         arguments=["--ros-args", "--log-level", log_level],
-        remappings=remappings + [("cmd_vel", "cmd_vel_nav")],
+        # Velocity smoothing owns the public cmd_vel_nav stream consumed by
+        # twist_mux. Keep the controller's raw 12 Hz output on a private topic.
+        remappings=remappings + [("cmd_vel", "cmd_vel_nav_raw")],
     )
 
     smoother_server = Node(
@@ -169,7 +171,10 @@ def generate_launch_description():
         respawn_delay=2.0,
         parameters=[configured_params],
         arguments=["--ros-args", "--log-level", log_level],
-        remappings=remappings + [("cmd_vel", "cmd_vel_nav"), ("cmd_vel_smoothed", "cmd_vel")],
+        remappings=remappings + [
+            ("cmd_vel", "cmd_vel_nav_raw"),
+            ("cmd_vel_smoothed", "cmd_vel_nav"),
+        ],
     )
 
     lifecycle_manager = Node(
@@ -189,6 +194,6 @@ def generate_launch_description():
         behavior_server,
         bt_navigator,
         waypoint_follower,
-        # velocity_smoother,
+        velocity_smoother,
         lifecycle_manager,
     ])

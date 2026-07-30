@@ -1,5 +1,8 @@
 <!--
-  Replan only when the goal changes or the current path becomes invalid.
+  Keep a valid global plan stable while the local controller handles transient
+  scan obstacles. Replan when the goal changes, or after a persistent FollowPath
+  failure reaches the outer recovery. This prevents a flickering global scan
+  cell from alternating between a short path and a map-sized detour.
   Automatic spin and backup recoveries are intentionally omitted because they
   can increase foot slip and FAST-LIO attitude transients on smooth floors.
 -->
@@ -7,41 +10,28 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="4" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithStableReplanning">
-        <RateController hz="0.5" name="PathValidityRate">
+        <GoalUpdatedController name="PlanOnGoalUpdate">
           <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
-            <Fallback name="ComputePathWhenNeeded">
-              <ReactiveSequence name="KeepValidPath">
-                <Inverter>
-                  <GlobalUpdatedGoal/>
-                </Inverter>
-                <IsPathValid path="{path}"/>
-              </ReactiveSequence>
-              <ComputePathToPose
-                goal="{goal}"
-                path="{path}"
-                planner_id="GridBased"/>
-            </Fallback>
+            <ComputePathToPose
+              goal="{goal}"
+              path="{path}"
+              planner_id="GridBased"/>
             <ClearEntireCostmap
               name="ClearGlobalCostmapContext"
               service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
-        </RateController>
+        </GoalUpdatedController>
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
           <FollowPath
             path="{path}"
             controller_id="FollowPath"
             goal_checker_id="general_goal_checker"/>
-          <Sequence name="ClearAndReplanAfterFollowPathFailure">
+          <Sequence name="RefreshLocalCostmapAfterFollowPathFailure">
             <ClearEntireCostmap
               name="ClearLocalCostmapContext"
               service_name="local_costmap/clear_entirely_local_costmap"/>
-            <ClearEntireCostmap
-              name="ClearGlobalCostmapContextAfterFollowPath"
-              service_name="global_costmap/clear_entirely_global_costmap"/>
-            <ComputePathToPose
-              goal="{goal}"
-              path="{path}"
-              planner_id="GridBased"/>
+            <!-- Let a fresh /scan repopulate the local costmap before retry. -->
+            <Wait wait_duration="0.5"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>

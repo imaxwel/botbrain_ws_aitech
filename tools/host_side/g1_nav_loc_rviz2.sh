@@ -77,8 +77,8 @@ esac
 echo "Localization PCD transport is ready. Opening RViz2."
 echo "Preloaded displays: /map, /pcd_map, /scan2map, /cloud_registered_1, /cloud_registered_body_1, /scan, Nav2 path/costmaps, TF and loop-closure keyframes/candidates"
 echo "No manual Add is required. Fixed Frame must remain map; phase-2 loop path/map preview are preloaded but disabled."
-echo "Before localization is ready: blue /pcd_map is the reference map; magenta /scan2map shows a valid pose candidate."
-echo "Green/orange live clouds require the verified map TF and may remain Warm until localization succeeds."
+echo "Before localization is ready: dark-blue /pcd_map is the reference map; red /scan2map shows the live/candidate scan."
+echo "Red /cloud_registered_1 and white /cloud_registered_body_1 require the verified map TF and may remain Warm until localization succeeds."
 echo "If Intel/Mesa reports 'active samplers with a different type', retry with RVIZ_RENDERING=software."
 if command -v pgrep >/dev/null 2>&1 && pgrep -x rviz2 >/dev/null 2>&1; then
     echo "WARNING: another RViz2 process is already open; close the old window so it is not mistaken for this updated preset." >&2

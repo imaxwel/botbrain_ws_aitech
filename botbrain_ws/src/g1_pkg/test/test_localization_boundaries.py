@@ -526,6 +526,10 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     mapping = yaml.safe_load(_read("configs/g1_mapping_rviz2.rviz"))
     navigation = yaml.safe_load(_read("configs/g1_nav_loc_rviz2.rviz"))
 
+    red = "255; 0; 0"
+    white = "255; 255; 255"
+    dark_blue = "0; 0; 139"
+
     mapping_manager = mapping["Visualization Manager"]
     nav_manager = navigation["Visualization Manager"]
     assert mapping_manager["Global Options"]["Fixed Frame"] == "camera_init"
@@ -544,6 +548,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert float(mapping_live["Decay Time"]) == 0
     assert mapping_live["Enabled"] is True
     assert mapping_live["Color Transformer"] == "FlatColor"
+    assert mapping_live["Color"] == red
     mapping_history = mapping_displays["world history (2 min)"]
     assert mapping_history["Topic"]["Value"] == "/cloud_registered_1"
     assert mapping_history["Topic"]["Depth"] == 1
@@ -551,12 +556,14 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert 60 <= float(mapping_history["Decay Time"]) <= 600
     assert mapping_history["Enabled"] is True
     assert mapping_history["Value"] is True
+    assert mapping_history["Color"] == red
     mapping_body = mapping_displays["body cloud (robot live scan)"]
     assert mapping_body["Topic"]["Value"] == "/cloud_registered_body_1"
     assert mapping_body["Topic"]["Depth"] == 1
     assert mapping_body["Topic"]["Reliability Policy"] == "Best Effort"
     assert mapping_body["Enabled"] is False
     assert mapping_body["Value"] is False
+    assert mapping_body["Color"] == white
     assert nav_displays["Map"]["Topic"]["Value"] == "/map"
     assert nav_displays["Map"]["Update Topic"]["Value"] == "/map_updates"
     assert nav_displays["Path (Nav2 /g1_robot/plan)"]["Topic"]["Value"] == (
@@ -566,15 +573,18 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     nav_cloud = nav_displays["registered cloud (FAST-LIO)"]
     assert nav_cloud["Topic"]["Depth"] == 1
     assert nav_cloud["Topic"]["Reliability Policy"] == "Best Effort"
+    assert nav_cloud["Color"] == red
     body_cloud = nav_displays["body cloud (robot live scan)"]
     assert body_cloud["Topic"]["Value"] == "/cloud_registered_body_1"
     assert body_cloud["Topic"]["Depth"] == 1
     assert body_cloud["Topic"]["Reliability Policy"] == "Best Effort"
+    assert body_cloud["Color"] == white
     static_pcd = nav_displays["map (scans.pcd)"]
     assert static_pcd["Topic"]["Reliability Policy"] == "Reliable"
     assert static_pcd["Topic"]["Durability Policy"] == "Transient Local"
     assert float(static_pcd["Alpha"]) >= 0.80
     assert static_pcd["Color Transformer"] == "FlatColor"
+    assert static_pcd["Color"] == dark_blue
     candidate_cloud = nav_displays["live/candidate scan preview (scan2map)"]
     assert candidate_cloud["Topic"]["Value"] == "/scan2map"
     assert candidate_cloud["Topic"]["Depth"] == 1
@@ -582,6 +592,19 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert candidate_cloud["Topic"]["Durability Policy"] == "Volatile"
     assert candidate_cloud["Enabled"] is True
     assert candidate_cloud["Value"] is True
+    assert candidate_cloud["Color"] == red
+    mapping_point_cloud_colors = {
+        display["Color"]
+        for display in mapping_manager["Displays"]
+        if display.get("Class") == "rviz_default_plugins/PointCloud2"
+    }
+    navigation_point_cloud_colors = {
+        display["Color"]
+        for display in nav_manager["Displays"]
+        if display.get("Class") == "rviz_default_plugins/PointCloud2"
+    }
+    assert mapping_point_cloud_colors <= {red, white}
+    assert navigation_point_cloud_colors <= {red, white, dark_blue}
     assert not any(
         display.get("Class") == "rviz_default_plugins/RobotModel"
         for display in nav_manager["Displays"]
@@ -634,7 +657,7 @@ def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
 
     assert "bash tools/host_side/mapping_rviz2.sh 192.168.100.3" in compact
     assert "bash tools/host_side/g1_nav_loc_rviz2.sh 192.168.100.3" in compact
-    assert "cd ~/Workspace/g1_botbrain_greeter" in compact
+    assert "cd ~/Workspace/botbrain_project" in compact
     assert (
         'bash tools/nav/select_map_scene.sh "$scene" '
         '--wait-ready --ready-timeout 300'
@@ -1006,6 +1029,11 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert source.count("obstacle_max_range:") == 2
     assert source.count("raytrace_max_range:") == 2
     global_costmap = params["/**/global_costmap"]["global_costmap"]["ros__parameters"]
+    # Unknown cells must remain unknown so allow_unknown=false prevents map
+    # boundary leaks. Dynamic obstacles remain available for initial planning
+    # and persistent-failure replanning, but the BT no longer invalidates the
+    # active path on each transient global scan update.
+    assert global_costmap["track_unknown_space"] is True
     assert global_costmap["plugins"] == [
         "static_layer", "obstacle_layer", "denoise_layer", "inflation_layer"]
     global_scan = global_costmap["obstacle_layer"]["scan"]
@@ -1215,8 +1243,11 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
         "botbrain_ws/src/bot_navigation/behavior_trees/g1_navigate_to_pose.xml")
     launch = _read("botbrain_ws/src/bot_navigation/launch/nav2.launch.py")
     cmake = _read("botbrain_ws/src/bot_navigation/CMakeLists.txt")
+    package = _read("botbrain_ws/src/bot_navigation/package.xml")
 
     assert 0.15 <= float(planner["tolerance"]) <= 0.25
+    assert planner["allow_unknown"] is False
+    assert 1.0 <= float(planner["cost_travel_multiplier"]) <= 5.0
     goal_checker = controller["general_goal_checker"]
     assert goal_checker["stateful"] is True
     assert 0.20 <= float(goal_checker["xy_goal_tolerance"]) <= 0.30
@@ -1233,13 +1264,21 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert math.isclose(float(controller["failure_tolerance"]), 1.0)
     assert float(controller["min_y_velocity_threshold"]) <= 0.01
     assert int(controller["FollowPath"]["iteration_count"]) == 1
+    assert math.isclose(float(controller["FollowPath"]["vx_max"]), 0.50)
+    velocity_smoother = params["/**/velocity_smoother"]["ros__parameters"]
+    assert float(velocity_smoother["smoothing_frequency"]) >= 20.0
+    assert velocity_smoother["feedback"] == "OPEN_LOOP"
+    assert velocity_smoother["max_velocity"] == [0.50, 0.15, 0.80]
+    assert velocity_smoother["min_velocity"] == [-0.30, -0.15, -0.80]
+    assert float(velocity_smoother["velocity_timeout"]) <= 0.30
     assert int(bt["bt_loop_duration"]) >= 20
     assert int(bt["default_server_timeout"]) >= 200
     assert int(bt["wait_for_service_timeout"]) >= 1000
     assert bt["default_nav_to_pose_bt_xml"] == "<nav_to_pose_bt_xml>"
-    assert "<IsPathValid" in tree
-    assert "ClearAndReplanAfterFollowPathFailure" in tree
-    assert tree.count("<ComputePathToPose") >= 3
+    assert "<IsPathValid" not in tree
+    assert "<GoalUpdatedController" in tree
+    assert "RefreshLocalCostmapAfterFollowPathFailure" in tree
+    assert tree.count("<ComputePathToPose") == 2
     tree_root = ET.fromstring(tree)
     follow_recovery = next(
         node for node in tree_root.iter("RecoveryNode")
@@ -1249,14 +1288,19 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert [node.tag for node in follow_children] == ["FollowPath", "Sequence"]
     recovery_steps = list(follow_children[1])
     assert [node.tag for node in recovery_steps] == [
-        "ClearEntireCostmap", "ClearEntireCostmap", "ComputePathToPose"]
-    assert recovery_steps[-1].attrib["planner_id"] == "GridBased"
-    assert '<RateController hz="0.5"' in tree
+        "ClearEntireCostmap", "Wait"]
+    assert math.isclose(float(recovery_steps[-1].attrib["wait_duration"]), 0.5)
+    assert "<RateController" not in tree
     assert 'number_of_retries="4"' in tree
     assert "goal_checker_id=\"general_goal_checker\"" in tree
     assert "<Spin" not in tree
     assert "<BackUp" not in tree
     assert "<nav_to_pose_bt_xml>" in launch
+    assert '("cmd_vel", "cmd_vel_nav_raw")' in launch
+    assert '("cmd_vel_smoothed", "cmd_vel_nav")' in launch
+    assert '"velocity_smoother",' in launch
+    assert "\n        velocity_smoother," in launch
+    assert "nav2_velocity_smoother" in package
     assert "behavior_trees" in cmake
     assert "file(REMOVE" in cmake
     assert "goal_pose_bridge.py" in cmake

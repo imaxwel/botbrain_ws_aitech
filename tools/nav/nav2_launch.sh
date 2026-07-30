@@ -88,10 +88,10 @@ die() {
 }
 
 # ── 1/3 Nav2 stack ─────────────────────────────────
-echo -n "[1/3] Nav2 (controller + planner + bt_navigator + behaviors + smoother + waypoint_follower) ... "
+echo -n "[1/3] Nav2 (controller + planner + bt_navigator + behaviors + path/velocity smoothers + waypoint_follower) ... "
 ros2 launch bot_navigation navigation.launch.py > /tmp/nav2.log 2>&1 &
 wait_for "Nav2 lifecycle active" \
-    "ros2 lifecycle get /bt_navigator 2>/dev/null | grep -q active" 60 \
+    "ros2 lifecycle get /bt_navigator 2>/dev/null | grep -q active && ros2 lifecycle get /velocity_smoother 2>/dev/null | grep -q active" 60 \
     /tmp/nav2.log "MPPI param type mismatch (e.g. vy_max: 0 must be 0.0)? Or D-009 topic-fork yaml missing? Verify nav2_params.yaml and rebuild g1_pkg if needed." \
     || die "Nav2 lifecycle did not reach active." /tmp/nav2.log \
         "Common causes: (1) MPPI yaml int/double mismatch, (2) costmap subscribed to a topic that isn't publishing yet, (3) g1_pkg install stale (rebuild). 'colcon-symlink-install-trap' memory note may apply."

@@ -954,7 +954,7 @@ while [ "$SECONDS" -lt "$scene_log_deadline" ]; do
             echo "RVIZ POINT CLOUD READY: /pcd_map is publishing for scene '$scene'."
             echo "Open tools/host_side/g1_nav_loc_rviz2.sh now; no manual Add is required."
         fi
-        echo "Blue=/pcd_map. Magenta=/scan2map candidate. Green/orange live clouds appear after map TF is verified."
+        echo "Dark blue=/pcd_map. Red=/scan2map candidate and /cloud_registered_1. White=/cloud_registered_body_1; live clouds appear after map TF is verified."
 
         if [ "$wait_ready" = true ]; then
             wait_for_localization_ready

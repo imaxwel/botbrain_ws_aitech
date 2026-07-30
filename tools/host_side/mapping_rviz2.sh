@@ -93,6 +93,7 @@ case "${RVIZ_RENDERING:-hardware}" in
 esac
 
 echo "Preloaded displays: live/history /cloud_registered_1, /cloud_registered_body_1, /accumulated_grid, /Odometry_loc, /path_1, TF and loop-closure keyframes/candidates"
+echo "Point-cloud colors: red=world live/history; white=Body and loop-optimized map preview."
 echo "No manual Add is required. Fixed Frame must remain camera_init: this view intentionally shows raw FAST-LIO mapping."
 echo "If Intel/Mesa reports 'active samplers with a different type', retry with RVIZ_RENDERING=software."
 if command -v pgrep >/dev/null 2>&1 && pgrep -x rviz2 >/dev/null 2>&1; then

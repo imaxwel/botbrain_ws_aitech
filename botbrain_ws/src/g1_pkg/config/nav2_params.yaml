@@ -4,7 +4,10 @@
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_smac_planner/SmacPlanner2D"
-      allow_unknown: true
+      # Saved indoor maps must not leak through an unfinished map boundary.
+      # Unknown cells are not a valid shortcut; add an explicit virtual wall
+      # or edit the map when a boundary is intentionally traversable.
+      allow_unknown: false
       use_astar: true
       motion_model_for_search: "VON_NEUMANN"
       downsample_costmap: false
@@ -16,7 +19,10 @@
       # recorded waypoint yaw that can make the robot oscillate at the goal.
       use_final_approach_orientation: true
       max_iterations: 500000
-      cost_travel_multiplier: 15.0   # 20.0→15.0: 降低高代价区域惩罚，避免迭代耗尽
+      # Keep hard collision checks intact while preferring a 2 m corridor path
+      # over a 20+ m low-cost loop. The old value (15) let a transient scan
+      # cost dominate geometric distance.
+      cost_travel_multiplier: 3.0
 
 
 /**/controller_server:
@@ -63,7 +69,9 @@
       vx_std: 0.6
       vy_std: 0.08   # 恢复横向速度采样
       wz_std: 0.6
-      vx_max: 0.3
+      # A modest increase is safe only together with the active velocity
+      # smoother below; it also avoids excessively slow stop/start walking.
+      vx_max: 0.5
       vx_min: -0.3
       vy_max: 0.15   # 恢复横向速度
       wz_max: 0.8    # 1.2→0.8: 进一步限制旋转速度，旋转过快是ICP丢失的主因
@@ -144,6 +152,25 @@
         max_angle_to_furthest: 1.0
         mode: 0
 
+/**/velocity_smoother:
+  ros__parameters:
+    # MPPI publishes at 12 Hz. Resample at 20 Hz so a single delayed control
+    # cycle does not turn into a zero-command gap at twist_mux.
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.50, 0.15, 0.80]
+    min_velocity: [-0.30, -0.15, -0.80]
+    # Reach normal walking speed smoothly in about 0.5 s while allowing a
+    # faster controlled deceleration. The independent safety-stop topic still
+    # bypasses this ramp and has higher twist_mux priority.
+    max_accel: [0.80, 0.40, 1.50]
+    max_decel: [-1.00, -0.50, -1.80]
+    odom_topic: /<prefix>nav_odom
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 0.30
+
 /**/bt_navigator:
   ros__parameters:
     use_sim_time: false
@@ -168,6 +195,9 @@
       publish_frequency: 2.0
       rolling_window: false
       resolution: 0.05
+      # Preserve unknown cells from the saved occupancy map so the planner's
+      # allow_unknown=false policy actually prevents out-of-map detours.
+      track_unknown_space: true
 
       footprint: "[[0.175, 0.225], [0.175, -0.225], [-0.175, -0.225], [-0.175, 0.225]]"
       # Use the measured footprint without an extra global margin; local

@@ -37,7 +37,7 @@ timeout 3 ros2 topic echo /goal_pose --once 2>&1 | head -10
 
 echo
 echo "--- Nav2 lifecycle states (must all be active [3]) ---"
-for n in controller_server planner_server bt_navigator behavior_server smoother_server waypoint_follower; do
+for n in controller_server planner_server bt_navigator behavior_server smoother_server waypoint_follower velocity_smoother; do
     state=$(timeout 3 ros2 lifecycle get /$n 2>&1 | tail -1)
     echo "  $n: $state"
 done

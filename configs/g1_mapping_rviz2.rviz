@@ -87,7 +87,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 0; 255; 255
+      Color: 255; 0; 0
       Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
@@ -121,7 +121,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 160; 255; 255
+      Color: 255; 0; 0
       Color Transformer: FlatColor
       Decay Time: 120
       Enabled: true
@@ -155,7 +155,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 255; 170; 0
+      Color: 255; 255; 255
       Color Transformer: FlatColor
       Decay Time: 0
       Enabled: false
@@ -320,7 +320,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 0
+      Color: 255; 255; 255
       Color Transformer: FlatColor
       Decay Time: 0
       Enabled: false
