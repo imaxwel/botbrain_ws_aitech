@@ -15,12 +15,15 @@
       # upside-down R_x(pi) correction internally to avoid relay latency.
       imu_topic: "/livox/imu"
       imu_flip_yz: true
-      # Keep at most about two seconds of input. Longer reliable queues turn a
-      # temporary CPU stall into stale odometry and a large IMU integration gap.
+      # Keep the input horizon bounded.  Reliable queues that hold ten seconds
+      # of sensor data turn a short CPU/DDS stall into stale odometry and make
+      # the next scan appear to drift.  These depths retain roughly two seconds
+      # of IMU and two seconds of LiDAR at the MID360's normal rates.
       imu_queue_depth: 400
       lidar_queue_depth: 20
-      # The Jetson logs show recurring 40-50 ms scheduling gaps under load.
-      # Preserve those short gaps; larger discontinuities are still rebased.
+      # The real robot has occasional 40--50 ms ROS scheduling gaps even when
+      # sensor timestamps remain ordered.  Rejecting every such scan prevents
+      # the map from initializing; 60 ms still detects an actual IMU dropout.
       max_imu_gap: 0.06
       time_sync_en: false # ONLY turn on when external time synchronization is really not possible
       time_offset_lidar_to_imu:
@@ -31,8 +34,8 @@
       lidar_type: 1 # 1 for Livox serials LiDAR
       scan_line: 4
       blind: 0.5
-      # 0 disables the upper range filter. The corridor launch profile
-      # overrides this to reduce weakly constrained far-wall matches.
+      # 0 disables the upper range filter. Keep distant end walls/corners;
+      # they are often the only longitudinal constraint in a long corridor.
       max_range: 0.0
       timestamp_unit: 3
       scan_rate: 10
@@ -48,27 +51,30 @@
       # LiDAR update is a correction to the IMU prediction, not the robot's
       # physical per-frame motion. Keep this strict so a corridor mismatch or
       # timing/extrinsic fault cannot write a 20-45 degree jump into the map.
-      # Long-corridor turns observed on the real G1 can temporarily leave only
-      # 5-29 effective points even while the match ratio is 0.2-0.5 and the
-      # residual is 2-5 cm.  Do not reject those useful corrections on an
-      # absolute-count gate alone; ratio, residual and correction gates remain
-      # active and still reject zero/degenerate matches.
-      guard_min_effective_points: 5
-      guard_min_effective_ratio: 0.05
+      # Restore the values that produced the known-good maps. A low residual
+      # from a handful of parallel-wall points is not proof that longitudinal
+      # corridor motion is observable.
+      guard_min_effective_points: 100
+      guard_min_effective_ratio: 0.10
       guard_max_residual: 0.15
-      guard_max_translation_correction: 0.50
-      guard_max_rotation_correction_deg: 10.0
-      # Keep permissive corridor yaw recovery, but never let a weak LiDAR
-      # match rotate the IMU gravity axis and tilt the entire world map.
+      guard_max_translation_correction: 0.25
+      guard_max_rotation_correction_deg: 5.0
+      # Never write a scan whose correction would tilt the gravity/up axis by
+      # more than 2 degrees. A larger but high-confidence post-gap correction
+      # is handled only by the state-only recovery gate below.
       guard_max_tilt_correction_deg: 2.0
       # 连续拒帧后允许一次“只修状态、不写地图”的高置信恢复，避免纯 IMU 越漂越远后永久锁死。
       guard_recovery_min_rejections: 5
-      guard_recovery_min_effective_points: 3
-      guard_recovery_min_effective_ratio: 0.05
+      guard_recovery_min_effective_points: 60
+      guard_recovery_min_effective_ratio: 0.15
       guard_recovery_max_residual: 0.10
-      guard_recovery_max_translation_correction: 1.50
-      guard_recovery_max_rotation_correction_deg: 30.0
-      guard_recovery_max_tilt_correction_deg: 2.0
+      guard_recovery_max_translation_correction: 0.75
+      guard_recovery_max_rotation_correction_deg: 15.0
+      # Recovery is state-only and never inserts this scan into the map. Allow
+      # a trustworthy 2-5 degree correction to break an IMU-only rejection
+      # loop; the following scan must pass the strict 2 degree tilt gate before
+      # map writes and the world cloud resume.
+      guard_recovery_max_tilt_correction_deg: 5.0
       # 最多发布 3 帧未被 LiDAR 确认的纯 IMU 里程计。持续失败时停止 TF，
       # 让 localization/costmap 超时并停车，而不是继续使用发散位姿。
       guard_max_unconfirmed_odometry_frames: 3

@@ -128,6 +128,11 @@ services:
       FAST_LIO_MAPPING_MODE: ${FAST_LIO_MAPPING_MODE:-auto}
       FAST_LIO_MAPPING_SAVE: ${FAST_LIO_MAPPING_SAVE:-auto}
       FAST_LIO_MAP_FILE: ${FAST_LIO_MAP_FILE:-}
+      # Mapping keeps the pose graph by default, but does not publish its
+      # dynamic map->camera_init correction unless a dedicated live-TF test
+      # explicitly opts in. This leaves raw FAST-LIO mapping deterministic.
+      FAST_LIO_LOOP_POSE_GRAPH: ${FAST_LIO_LOOP_POSE_GRAPH:-true}
+      FAST_LIO_LOOP_LIVE_CORRECTION: ${FAST_LIO_LOOP_LIVE_CORRECTION:-false}
     command: ["bash", "-lc", "sleep \"$${FAST_LIO_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch --noninteractive g1_pkg fast_lio.launch.py"]
     stop_signal: SIGINT
     stop_grace_period: 180s

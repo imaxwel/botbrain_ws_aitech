@@ -39,16 +39,18 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
-#include "g1_loop_closure/pose_graph.hpp"
+#include "g1_loop_closure/loop_validation.hpp"
 
 namespace
 {
 
 using Point = pcl::PointXYZ;
 using Cloud = pcl::PointCloud<Point>;
+using g1_loop_closure::AreLoopCorrectionsConsistent;
 using g1_loop_closure::Between;
 using g1_loop_closure::Compose;
 using g1_loop_closure::Inverse;
+using g1_loop_closure::IsLoopYawConsistent;
 using g1_loop_closure::kPi;
 using g1_loop_closure::Pose2;
 using g1_loop_closure::WrapAngle;
@@ -121,16 +123,25 @@ public:
     icp_min_inlier_ratio_ = declare_parameter<double>("icp_min_inlier_ratio", 0.35);
     icp_max_translation_m_ = declare_parameter<double>("icp_max_translation_m", 8.0);
     icp_max_z_translation_m_ = declare_parameter<double>("icp_max_z_translation_m", 0.40);
-    icp_max_yaw_rad_ = declare_parameter<double>("icp_max_yaw_deg", 50.0) * kPi / 180.0;
+    // This is the physical candidate->current relative heading, not a loop
+    // correction.  An out-and-back corridor revisit is legitimately 180 deg;
+    // the separate odometry-delta gate below limits the ICP correction itself.
+    icp_max_yaw_rad_ = declare_parameter<double>("icp_max_yaw_deg", 180.0) * kPi / 180.0;
     icp_max_roll_pitch_rad_ =
       declare_parameter<double>("icp_max_roll_pitch_deg", 15.0) * kPi / 180.0;
     icp_max_odom_delta_m_ = declare_parameter<double>("icp_max_odom_delta_m", 3.0);
     icp_max_odom_delta_yaw_rad_ =
       declare_parameter<double>("icp_max_odom_delta_yaw_deg", 25.0) * kPi / 180.0;
+    loop_confirmation_count_ = static_cast<size_t>(std::max<int64_t>(
+        3, declare_parameter<int>("loop_confirmation_count", 3)));
+    loop_confirmation_max_translation_m_ = declare_parameter<double>(
+      "loop_confirmation_max_translation_m", 0.75);
+    loop_confirmation_max_yaw_rad_ = declare_parameter<double>(
+      "loop_confirmation_max_yaw_deg", 8.0) * kPi / 180.0;
 
-    // Phase 1 is intentionally the default: it only observes, retrieves and
-    // verifies loop candidates.  Phase 2 is explicitly enabled after those
-    // observations have been reviewed, and still remains diagnostic-only.
+    // Phase 1 is intentionally the standalone default. Enabling the graph by
+    // itself remains diagnostic-only; mapping launch can separately opt into
+    // the live map->camera_init correction below for a dedicated experiment.
     enable_pose_graph_ = declare_parameter<bool>("enable_pose_graph", false);
     optimizer_iterations_ = static_cast<int>(std::max<int64_t>(
         1, declare_parameter<int>("optimizer_iterations", 8)));
@@ -253,6 +264,12 @@ private:
     double descriptor_similarity{0.0};
     double icp_fitness{std::numeric_limits<double>::infinity()};
     double inlier_ratio{0.0};
+  };
+
+  struct PendingLoopConfirmation
+  {
+    Edge edge;
+    Pose2 global_correction;
   };
 
   rcl_interfaces::msg::SetParametersResult HandleParameterUpdate(
@@ -693,7 +710,7 @@ private:
   }
 
   bool VerifyLoop(
-    const Keyframe &candidate, const Keyframe &current, const DescriptorMatch &match,
+    const Keyframe &candidate, const Keyframe &current,
     Pose2 &measurement, double &fitness, double &inlier_ratio)
   {
     pcl::IterativeClosestPoint<Point, Point> icp;
@@ -706,9 +723,11 @@ private:
 
     const Pose2 odometry_guess = Between(candidate.raw_pose, current.raw_pose);
     Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
-    const double descriptor_yaw =
-      -2.0 * kPi * static_cast<double>(match.yaw_shift) / descriptor_sectors_;
-    const double yaw_guess = WrapAngle(odometry_guess.yaw + descriptor_yaw);
+    // The polar descriptor is rotation-invariant candidate retrieval.  Its
+    // sector shift must not be added to the already complete candidate->current
+    // odometry rotation: on a 180 degree out-and-back revisit the two shifts
+    // can cancel and seed ICP at the opposite, false corridor alignment.
+    const double yaw_guess = odometry_guess.yaw;
     initial_guess(0, 0) = static_cast<float>(std::cos(yaw_guess));
     initial_guess(0, 1) = static_cast<float>(-std::sin(yaw_guess));
     initial_guess(1, 0) = static_cast<float>(std::sin(yaw_guess));
@@ -729,7 +748,14 @@ private:
       inlier_ratio = 0.0;
       return false;
     }
-    fitness = icp.getFitnessScore(icp_max_correspondence_m_);
+    // PCL returns mean squared correspondence distance. Configuration and
+    // diagnostics are explicitly in metres, so compare the RMS distance;
+    // otherwise 0.18 would silently accept about 0.42 m RMS in a repeated
+    // corridor and a single false constraint could move the whole map.
+    const double mean_squared_fitness =
+      icp.getFitnessScore(icp_max_correspondence_m_);
+    fitness = mean_squared_fitness >= 0.0 ?
+      std::sqrt(mean_squared_fitness) : std::numeric_limits<double>::infinity();
     inlier_ratio = ComputeInlierRatio(current.local_cloud, candidate.local_cloud, transform);
     measurement = {
       transform(0, 3), transform(1, 3),
@@ -738,7 +764,6 @@ private:
     const double translation = std::hypot(measurement.x, measurement.y);
     const double odom_delta = std::hypot(
       measurement.x - odometry_guess.x, measurement.y - odometry_guess.y);
-    const double odom_yaw_delta = std::fabs(WrapAngle(measurement.yaw - odometry_guess.yaw));
     const double z_translation = std::fabs(transform(2, 3));
     const double roll = std::atan2(transform(2, 1), transform(2, 2));
     const double pitch = std::asin(std::clamp(-transform(2, 0), -1.0F, 1.0F));
@@ -746,11 +771,88 @@ private:
       inlier_ratio >= icp_min_inlier_ratio_ &&
       translation <= icp_max_translation_m_ &&
       odom_delta <= icp_max_odom_delta_m_ &&
-      odom_yaw_delta <= icp_max_odom_delta_yaw_rad_ &&
+      IsLoopYawConsistent(
+        measurement.yaw, odometry_guess.yaw,
+        icp_max_yaw_rad_, icp_max_odom_delta_yaw_rad_) &&
       z_translation <= icp_max_z_translation_m_ &&
-      std::fabs(measurement.yaw) <= icp_max_yaw_rad_ &&
       std::fabs(roll) <= icp_max_roll_pitch_rad_ &&
       std::fabs(pitch) <= icp_max_roll_pitch_rad_;
+  }
+
+  Pose2 ImpliedGlobalCorrection(
+    const Keyframe &candidate, const Keyframe &current,
+    const Pose2 &measurement) const
+  {
+    // The loop measurement predicts current in the raw world through the
+    // candidate. Compare the left-multiplying world correction implied by
+    // adjacent loop observations before any of them can move map TF.
+    const Pose2 loop_predicted_current = Compose(candidate.raw_pose, measurement);
+    return Compose(loop_predicted_current, Inverse(current.raw_pose));
+  }
+
+  std::vector<Edge> ConfirmLoopConstraint(
+    const Keyframe &candidate, const Keyframe &current, const Edge &edge)
+  {
+    const Pose2 correction = ImpliedGlobalCorrection(
+      candidate, current, edge.measurement);
+    if (!pending_loop_confirmations_.empty()) {
+      // Every observation must agree with the first one. Comparing only with
+      // the previous observation would allow a slowly walking false match
+      // (for example 0.0 -> 0.7 -> 1.4 m) through the confirmation gate.
+      const Pose2 &reference =
+        pending_loop_confirmations_.front().global_correction;
+      const bool correction_is_consistent = AreLoopCorrectionsConsistent(
+          reference, correction,
+          loop_confirmation_max_translation_m_,
+          loop_confirmation_max_yaw_rad_);
+      if (!correction_is_consistent)
+      {
+        const bool finite_corrections =
+          std::isfinite(reference.x) && std::isfinite(reference.y) &&
+          std::isfinite(reference.yaw) && std::isfinite(correction.x) &&
+          std::isfinite(correction.y) && std::isfinite(correction.yaw);
+        const double translation_delta = finite_corrections ? std::hypot(
+          correction.x - reference.x, correction.y - reference.y) :
+          std::numeric_limits<double>::infinity();
+        const double yaw_delta = finite_corrections ? std::fabs(WrapAngle(
+          correction.yaw - reference.yaw)) :
+          std::numeric_limits<double>::infinity();
+        RCLCPP_WARN(
+          get_logger(),
+          "Loop confirmation reset: implied global correction changed by "
+          "%.2fm/%.1fdeg (limits %.2fm/%.1fdeg)",
+          translation_delta, yaw_delta * 180.0 / kPi,
+          loop_confirmation_max_translation_m_,
+          loop_confirmation_max_yaw_rad_ * 180.0 / kPi);
+        pending_loop_confirmations_.clear();
+      }
+    }
+    pending_loop_confirmations_.push_back({edge, correction});
+    if (pending_loop_confirmations_.size() < loop_confirmation_count_) {
+      RCLCPP_INFO(
+        get_logger(), "Loop confirmation %zu/%zu; graph/TF unchanged",
+        pending_loop_confirmations_.size(), loop_confirmation_count_);
+      return {};
+    }
+
+    std::vector<Edge> confirmed;
+    confirmed.reserve(pending_loop_confirmations_.size());
+    for (const auto &pending : pending_loop_confirmations_) {
+      confirmed.push_back(pending.edge);
+    }
+    pending_loop_confirmations_.clear();
+    return confirmed;
+  }
+
+  void ResetPendingLoopConfirmations(const char *reason)
+  {
+    if (pending_loop_confirmations_.empty()) {
+      return;
+    }
+    RCLCPP_INFO(
+      get_logger(), "Loop confirmation sequence reset after %s (%zu/%zu)",
+      reason, pending_loop_confirmations_.size(), loop_confirmation_count_);
+    pending_loop_confirmations_.clear();
   }
 
   bool ShouldCreateKeyframe(const OdomSample &odom, const rclcpp::Time &stamp) const
@@ -784,21 +886,31 @@ private:
       return;
     }
 
-    auto world_cloud = std::make_shared<Cloud>();
-    pcl::fromROSMsg(*message, *world_cloud);
-    if (world_cloud->empty()) {
-      return;
-    }
+    const bool create_keyframe = ShouldCreateKeyframe(*odom, stamp);
+    bool publish_corrected_cloud = false;
     // Do not mix live scans into an optimized historical replay. They would
     // compete for the small sensor-data queue and can be inserted before the
     // reset/replay sequence has completed.
     if (publish_corrected_streams_ && grid_replay_stage_ == 0) {
       ++corrected_stream_scan_count_;
-      if ((corrected_stream_scan_count_ - 1) % corrected_stream_every_n_scans_ == 0) {
-        PublishCorrectedWorldCloud(world_cloud, stamp);
-      }
+      publish_corrected_cloud =
+        (corrected_stream_scan_count_ - 1) % corrected_stream_every_n_scans_ == 0;
     }
-    if (!ShouldCreateKeyframe(*odom, stamp)) {
+    // With corrected streams disabled, most 10 Hz scans need no PCL
+    // conversion at all. Only convert a cloud that will become a keyframe (or
+    // an explicitly requested diagnostic corrected scan).
+    if (!create_keyframe && !publish_corrected_cloud) {
+      return;
+    }
+    auto world_cloud = std::make_shared<Cloud>();
+    pcl::fromROSMsg(*message, *world_cloud);
+    if (world_cloud->empty()) {
+      return;
+    }
+    if (publish_corrected_cloud) {
+      PublishCorrectedWorldCloud(world_cloud, stamp);
+    }
+    if (!create_keyframe) {
       return;
     }
     if (keyframes_.size() >= max_keyframes_) {
@@ -855,6 +967,7 @@ private:
     const Keyframe &current = keyframes_.back();
     const auto match = FindLoopCandidate(current);
     if (!match) {
+      ResetPendingLoopConfirmations("no descriptor candidate");
       PublishDiagnostic("no_descriptor_candidate", std::nullopt);
       return;
     }
@@ -863,7 +976,7 @@ private:
     Pose2 measurement;
     double fitness = std::numeric_limits<double>::infinity();
     double inlier_ratio = 0.0;
-    const bool accepted = VerifyLoop(candidate, current, *match, measurement, fitness, inlier_ratio);
+    const bool accepted = VerifyLoop(candidate, current, measurement, fitness, inlier_ratio);
     last_candidate_ = {
       true, accepted, candidate.id, current.id, match->similarity, fitness, inlier_ratio};
     PublishCandidatePoses(candidate, current);
@@ -872,24 +985,32 @@ private:
       const Edge loop_edge{
         candidate.id, current.id, measurement,
         loop_edge_xy_weight_, loop_edge_yaw_weight_, true};
-      accepted_loop_edges_.push_back(loop_edge);
+      const std::vector<Edge> confirmed_edges = ConfirmLoopConstraint(
+        candidate, current, loop_edge);
       RCLCPP_INFO(
         get_logger(),
         "LOOP ACCEPTED candidate=%zu current=%zu descriptor=%.3f fitness=%.3f inliers=%.3f "
-        "constraint=(%.2f, %.2f, %.1fdeg)%s",
+        "constraint=(%.2f, %.2f, %.1fdeg); %s",
         candidate.id, current.id, match->similarity, fitness, inlier_ratio,
         measurement.x, measurement.y, measurement.yaw * 180.0 / kPi,
-        enable_pose_graph_ ? (publish_live_correction_ ?
-        "; optimizing online mapping graph" : "; optimizing diagnostic SE2 graph only") :
-        "; recorded for phase 1 observation only");
-      if (enable_pose_graph_) {
-        edges_.push_back(loop_edge);
-        ++active_loop_edge_count_;
+        confirmed_edges.empty() ? "awaiting consistent confirmations" :
+        (enable_pose_graph_ ? (publish_live_correction_ ?
+        "confirmed; optimizing online mapping graph" :
+        "confirmed; optimizing diagnostic SE2 graph only") :
+        "confirmed; recorded for phase 1 observation only"));
+      if (!confirmed_edges.empty()) {
+        accepted_loop_edges_.insert(
+          accepted_loop_edges_.end(), confirmed_edges.begin(), confirmed_edges.end());
+      }
+      if (enable_pose_graph_ && !confirmed_edges.empty()) {
+        edges_.insert(edges_.end(), confirmed_edges.begin(), confirmed_edges.end());
+        active_loop_edge_count_ += confirmed_edges.size();
         OptimizePoseGraph();
         RequestGridReplay();
         PublishOptimizedMapPreview();
       }
     } else {
+      ResetPendingLoopConfirmations("ICP rejection");
       RCLCPP_INFO(
         get_logger(),
         "LOOP REJECTED candidate=%zu current=%zu descriptor=%.3f fitness=%.3f inliers=%.3f",
@@ -1152,10 +1273,13 @@ private:
   double icp_min_inlier_ratio_{0.35};
   double icp_max_translation_m_{8.0};
   double icp_max_z_translation_m_{0.40};
-  double icp_max_yaw_rad_{50.0 * kPi / 180.0};
+  double icp_max_yaw_rad_{180.0 * kPi / 180.0};
   double icp_max_roll_pitch_rad_{15.0 * kPi / 180.0};
   double icp_max_odom_delta_m_{3.0};
   double icp_max_odom_delta_yaw_rad_{25.0 * kPi / 180.0};
+  size_t loop_confirmation_count_{3};
+  double loop_confirmation_max_translation_m_{0.75};
+  double loop_confirmation_max_yaw_rad_{8.0 * kPi / 180.0};
   bool enable_pose_graph_{false};
   int optimizer_iterations_{8};
   double odom_edge_xy_weight_{1.0};
@@ -1186,6 +1310,7 @@ private:
   std::vector<Pose2> optimized_poses_;
   std::vector<Edge> edges_;
   std::vector<Edge> accepted_loop_edges_;
+  std::vector<PendingLoopConfirmation> pending_loop_confirmations_;
   size_t active_loop_edge_count_{0};
   CandidateState last_candidate_;
   std::chrono::steady_clock::time_point last_query_time_{};

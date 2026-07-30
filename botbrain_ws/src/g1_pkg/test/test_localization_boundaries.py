@@ -316,10 +316,44 @@ def test_fast_lio_launch_preserves_dense_grid_input_and_pcd_flush():
     assert "if rclpy.ok():" in grid_source
 
 
-def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
+def test_grid_uses_local_floor_height_without_extrapolating_plane_tilt():
+    source = _read("botbrain_ws/src/g1_pkg/scripts/grid_accumulator.py")
+
+    assert "floor_at_body = float(plane_height(" in source
+    assert "candidate, body_position[0], body_position[1]" in source
+    assert (
+        "candidate = np.array([0.0, 0.0, floor_at_body], "
+        "dtype=np.float64)"
+    ) in source
+
+
+def test_grid_rejected_floor_fit_cannot_write_with_stale_plane():
+    source = _read("botbrain_ws/src/g1_pkg/scripts/grid_accumulator.py")
+
+    assert "self.force_plane_refit = True" in source
+    assert "self.force_plane_refit or" in source
+    assert "plane_valid_for_scan = self._update_ground_plane(" in source
+    assert "self.plane_coeffs is None or not plane_valid_for_scan" in source
+    candidate_rejection = source.split("if candidate is None:", 1)[1].split(
+        "# Each mapped building floor", 1
+    )[0]
+    assert "self.force_plane_refit = True" in candidate_rejection
+    assert "return False" in candidate_rejection
+    jump_rejection = source.split(
+        'self.plane_metrics["reason"] = "plane_jump"', 1
+    )[1].split("self.plane_coeffs = (", 1)[0]
+    assert "self.force_plane_refit = True" in jump_rejection
+    assert "return False" in jump_rejection
+
+
+def test_loop_closure_is_observation_only_outside_mapping_and_live_tf_is_opt_in():
     package_root = PROJECT_ROOT / "botbrain_ws/src/g1_loop_closure"
     source = (package_root / "src/loop_closure_node.cpp").read_text(encoding="utf-8")
     optimizer_source = (package_root / "src/pose_graph.cpp").read_text(encoding="utf-8")
+    cmake = (package_root / "CMakeLists.txt").read_text(encoding="utf-8")
+    validation_header = (
+        package_root / "include/g1_loop_closure/loop_validation.hpp"
+    ).read_text(encoding="utf-8")
     config = (package_root / "config/loop_closure.yaml").read_text(encoding="utf-8")
     launch = (package_root / "launch/loop_closure.launch.py").read_text(encoding="utf-8")
     compose = yaml.safe_load(_read("docker-compose.yaml"))
@@ -330,6 +364,34 @@ def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
     assert "BuildDescriptor" in source
     assert "DescriptorSimilarity" in source
     assert "pcl::IterativeClosestPoint" in source
+    assert "std::sqrt(mean_squared_fitness)" in source
+    assert "RMS correspondence distance in metres" in config
+    loop_params = yaml.safe_load(config)["/**"]["ros__parameters"]
+    assert loop_params["icp_max_yaw_deg"] == 180.0
+    assert loop_params["icp_max_odom_delta_yaw_deg"] == 25.0
+    assert loop_params["loop_confirmation_count"] == 3
+    assert loop_params["loop_confirmation_max_translation_m"] <= 0.75
+    assert loop_params["loop_confirmation_max_yaw_deg"] <= 8.0
+    assert "const double yaw_guess = odometry_guess.yaw;" in source
+    assert "odometry_guess.yaw + descriptor_yaw" not in source
+    assert "IsLoopYawConsistent(" in source
+    assert "measurement_yaw - odometry_yaw" in validation_header
+    assert '#include "g1_loop_closure/loop_validation.hpp"' in source
+    assert "target_include_directories(loop_closure_node BEFORE PRIVATE" in cmake
+    assert "install(DIRECTORY include/" in cmake
+    assert "ament_export_include_directories(include)" in cmake
+    assert (package_root / "test/test_pose_graph_geometry.cpp").is_file()
+    assert "ConfirmLoopConstraint" in source
+    assert "awaiting consistent confirmations" in source
+    assert 'std::max<int64_t>(\n        3, declare_parameter<int>("loop_confirmation_count", 3))' in source
+    assert "pending_loop_confirmations_.front().global_correction" in source
+    assert "pending_loop_confirmations_.back().global_correction" not in source
+    assert source.index("ConfirmLoopConstraint(") < source.index(
+        "accepted_loop_edges_.insert("
+    )
+    assert source.index("ShouldCreateKeyframe(*odom, stamp)") < (
+        source.index("pcl::fromROSMsg(*message, *world_cloud)")
+    )
     assert "Eigen::SimplicialLDLT" in optimizer_source
     assert "enable_pose_graph" in source
     assert "accepted_loop_edges_" in source
@@ -347,8 +409,12 @@ def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
     assert "corrected_stream_every_n_scans" in source
     assert "point.z});" in source
     assert "g1_loop_closure" in fast_lio_launch
-    assert "'publish_live_correction': True" in fast_lio_launch
-    assert "'publish_corrected_streams': True" in fast_lio_launch
+    assert "FAST_LIO_LOOP_POSE_GRAPH" in fast_lio_launch
+    assert "FAST_LIO_LOOP_LIVE_CORRECTION" in fast_lio_launch
+    assert "'enable_pose_graph': loop_pose_graph" in fast_lio_launch
+    assert "'publish_live_correction': loop_live_correction" in fast_lio_launch
+    assert "FAST_LIO_LOOP_LIVE_CORRECTION=true requires" in fast_lio_launch
+    assert "'publish_corrected_streams': False" in fast_lio_launch
     # Loop closure is additive: it must not replace the proven dense input
     # used for live ground/obstacle classification.
     assert "'/cloud_registered_1'" in fast_lio_launch
@@ -363,9 +429,18 @@ def test_loop_closure_is_observation_only_outside_mapping_and_owns_mapping_tf():
 
     mapping_save = _read("tools/mapping/mapping_save.sh")
     assert "/loop_closure/export_optimized_map" in mapping_save
-    assert "using graph-corrected loop-closure keyframe map" in mapping_save
+    assert "${SCENE}_loop_optimized.pcd" in mapping_save
+    assert "not used for navigation" in mapping_save
+    assert "using raw FAST-LIO navigation map" in mapping_save
     assert "FAST_LIO_RAW_PCD" in mapping_save
     assert "${SCENE}_fast_lio_raw.pcd" in mapping_save
+    assert 'export_optimized_map_path "$LOOP_OPTIMIZED_PCD"' in mapping_save
+    assert 'export_optimized_map_path "$PCD"' not in mapping_save
+    assert mapping_save.index("ros2 service call /map_save") < (
+        mapping_save.index(
+            "ros2 service call /loop_closure/export_optimized_map"
+        )
+    )
 
 
 def test_loop_closure_rviz_layers_are_preconfigured_but_phase_two_preview_is_off():
@@ -397,16 +472,18 @@ def test_mapping_scene_launcher_enables_save_grid_and_readiness_gate():
     for topic in (
         "/cloud_registered_1",
         "/cloud_registered_body_1",
-        "/loop_closure/cloud_registered",
         "/accumulated_grid",
     ):
         assert topic in source
     assert "tf2_echo camera_init body" in source
-    assert "tf2_echo map camera_init" in source
+    assert "tf2_echo map camera_init" not in source
+    assert "FAST_LIO_LOOP_POSE_GRAPH=true" in source
+    assert "FAST_LIO_LOOP_LIVE_CORRECTION=\"$live_loop_correction\"" in source
+    assert "--live-loop-correction" in source
     assert "MAPPING READY" in source
 
 
-def test_fast_lio_corridor_profile_is_explicit_and_preserves_defaults():
+def test_fast_lio_uses_one_mapping_profile_and_accepts_the_legacy_alias():
     launch = _read("botbrain_ws/src/g1_pkg/launch/fast_lio.launch.py")
     compose = yaml.safe_load(_read("docker-compose.yaml"))
 
@@ -414,12 +491,17 @@ def test_fast_lio_corridor_profile_is_explicit_and_preserves_defaults():
     assert fast_lio_env["FAST_LIO_MAPPING_PROFILE"] == (
         "${FAST_LIO_MAPPING_PROFILE:-default}"
     )
+    assert fast_lio_env["FAST_LIO_LOOP_POSE_GRAPH"] == (
+        "${FAST_LIO_LOOP_POSE_GRAPH:-true}"
+    )
+    assert fast_lio_env["FAST_LIO_LOOP_LIVE_CORRECTION"] == (
+        "${FAST_LIO_LOOP_LIVE_CORRECTION:-false}"
+    )
     assert "'default': {}" in launch
-    assert "'corridor':" in launch
-    assert "'point_filter_num': 2" in launch
-    assert "'filter_size_surf': 0.25" in launch
-    assert "'filter_size_map': 0.25" in launch
-    assert "'preprocess.max_range': 20.0" in launch
+    assert "requested_mapping_profile" in launch
+    assert "requested_mapping_profile == 'corridor'" in launch
+    assert "mapping_profile = 'default'" in launch
+    assert "'preprocess.max_range': 20.0" not in launch
     assert "Unsupported FAST_LIO_MAPPING_PROFILE" in launch
     assert "FAST-LIO mapping profile:" in launch
 
@@ -446,7 +528,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
 
     mapping_manager = mapping["Visualization Manager"]
     nav_manager = navigation["Visualization Manager"]
-    assert mapping_manager["Global Options"]["Fixed Frame"] == "map"
+    assert mapping_manager["Global Options"]["Fixed Frame"] == "camera_init"
     assert nav_manager["Global Options"]["Fixed Frame"] == "map"
 
     mapping_displays = {
@@ -462,7 +544,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert float(mapping_live["Decay Time"]) == 0
     assert mapping_live["Enabled"] is True
     assert mapping_live["Color Transformer"] == "FlatColor"
-    mapping_history = mapping_displays["world history (5 min)"]
+    mapping_history = mapping_displays["world history (2 min)"]
     assert mapping_history["Topic"]["Value"] == "/cloud_registered_1"
     assert mapping_history["Topic"]["Depth"] == 1
     assert mapping_history["Topic"]["Reliability Policy"] == "Best Effort"
@@ -473,8 +555,8 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert mapping_body["Topic"]["Value"] == "/cloud_registered_body_1"
     assert mapping_body["Topic"]["Depth"] == 1
     assert mapping_body["Topic"]["Reliability Policy"] == "Best Effort"
-    assert mapping_body["Enabled"] is True
-    assert mapping_body["Value"] is True
+    assert mapping_body["Enabled"] is False
+    assert mapping_body["Value"] is False
     assert nav_displays["Map"]["Topic"]["Value"] == "/map"
     assert nav_displays["Map"]["Update Topic"]["Value"] == "/map_updates"
     assert nav_displays["Path (Nav2 /g1_robot/plan)"]["Topic"]["Value"] == (
@@ -573,8 +655,10 @@ def test_workstation_rviz_launchers_are_one_command_and_ros_setup_safe():
     assert "docker compose up -d --force-recreate fast_lio" in compact
     assert "docker compose ps zenoh bringup state_machine fast_lio" in compact
     assert "docker compose logs -f fast_lio" in compact
-    assert 'bash tools/mapping/start_mapping_scene.sh "$scene" default' in compact
-    assert 'bash tools/mapping/start_mapping_scene.sh "$scene" corridor' in compact
+    assert "FAST_LIO_MAPPING_PROFILE=default" in compact
+    assert "FAST_LIO_LOOP_POSE_GRAPH=true" in compact
+    assert "FAST_LIO_LOOP_LIVE_CORRECTION=false" in compact
+    assert 'bash tools/mapping/start_mapping_scene.sh "$scene"' not in compact
 
 
 def test_navigation_restart_explicitly_disables_mapping_outputs():
@@ -707,52 +791,77 @@ def test_fast_lio_guard_recovers_early_or_stops_unconfirmed_outputs():
     assert "guard_failure_latched = true;" in source
 
 
-def test_fast_lio_corridor_guard_uses_ratio_and_residual_with_sparse_scans():
+def test_fast_lio_guard_keeps_the_proven_strict_mapping_limits():
     params = yaml.safe_load(_read(
         "botbrain_ws/src/fast_lio/config/mid360.yaml"
     ))["/**"]["ros__parameters"]["mapping"]
 
-    assert params["guard_min_effective_points"] <= 5
-    assert params["guard_recovery_min_effective_points"] <= 3
-    assert params["guard_min_effective_ratio"] > 0.0
-    assert params["guard_max_residual"] <= 0.15
-    assert params["guard_max_rotation_correction_deg"] >= 10.0
+    assert params["guard_min_effective_points"] == 100
+    assert params["guard_recovery_min_effective_points"] == 60
+    assert params["guard_min_effective_ratio"] == 0.10
+    assert params["guard_recovery_min_effective_ratio"] == 0.15
+    assert params["guard_max_residual"] == 0.15
+    assert params["guard_max_translation_correction"] == 0.25
+    assert params["guard_max_rotation_correction_deg"] == 5.0
+    assert params["guard_recovery_max_translation_correction"] == 0.75
+    assert params["guard_recovery_max_rotation_correction_deg"] == 15.0
+    assert params["guard_max_tilt_correction_deg"] == 2.0
+    assert params["guard_recovery_max_tilt_correction_deg"] == 5.0
+    # A recovery gate below the proven strict rotation envelope can reject a
+    # high-support post-gap correction forever while IMU-only drift grows.
+    assert (
+        params["guard_recovery_max_tilt_correction_deg"]
+        >= params["guard_max_rotation_correction_deg"]
+    )
+    # State-only recovery must still prohibit the much larger tilt permitted
+    # by its yaw/total-rotation envelope.
+    assert (
+        params["guard_recovery_max_tilt_correction_deg"]
+        < params["guard_recovery_max_rotation_correction_deg"]
+    )
 
 
-def test_unsafe_imu_propagation_rebases_without_permanent_visualization_latch():
+def test_unsafe_imu_propagation_stops_without_cross_time_rebase():
     source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
-    recovery = source.split(
+    propagation = source.split(
+        "p_imu->Process(Measures, kf, feats_undistort);", 1
+    )[1].split("/*** add the feature points to map kdtree ***/", 1)[0]
+
+    unsafe = propagation.split(
         "if (!IsPlausibleState(state_point) || !covariance_after_imu.allFinite())",
         1,
     )[1].split("pos_lid =", 1)[0]
+    assert "guard_failure_latched = true;" in unsafe
+    assert "must be restarted" in unsafe
+    assert "RebaseAfterGap" not in source
+    assert "DropBufferedLidarData" not in source
 
-    assert "p_imu->RebaseAfterGap(Measures, state_before_imu)" in recovery
-    assert "suppress_unconfirmed_odometry_after_timing_gap = true;" in recovery
-    assert "guard_failure_latched = true;" not in recovery
+    # FOV maintenance deletes ikd-tree boxes and therefore belongs only to the
+    # strict accepted path, after both reject and state-only recovery returns.
+    quality_gate = source.index("const bool quality_ok = timing_ok")
+    reject_path = source.index("if (reject_update)", quality_gate)
+    recovery_path = source.index("if (recovery_update)", reject_path)
+    strict_fov_update = source.index("lasermap_fov_segment();", recovery_path)
+    map_insert = source.index("map_incremental();", strict_fov_update)
+    assert quality_gate < reject_path < recovery_path < strict_fov_update < map_insert
 
 
-def test_fast_lio_rebases_before_processing_an_imu_timing_gap():
+def test_fast_lio_propagates_but_rejects_lidar_updates_on_an_imu_timing_gap():
     source = _read("botbrain_ws/src/fast_lio/src/laserMapping.cpp")
-    imu_source = _read("botbrain_ws/src/fast_lio/src/IMU_Processing.hpp")
     params = yaml.safe_load(_read(
         "botbrain_ws/src/fast_lio/config/mid360.yaml"
     ))["/**"]["ros__parameters"]
 
-    timing_guard = source.index(
-        "if (!timing_ok)", source.index("void timer_callback()"))
     imu_process = source.index("p_imu->Process(Measures, kf, feats_undistort)")
-    assert timing_guard < imu_process
-    assert "dropping this scan before IMU propagation" in source
-    assert "p_imu->RebaseAfterGap(Measures, state_before_gap)" in source
-    assert "DropBufferedLidarData();" in source
-    assert "suppress_unconfirmed_odometry_after_timing_gap = true;" in source
-    assert "!suppress_unconfirmed_odometry_after_timing_gap" in source
-    assert "last_lidar_end_time_ = meas.lidar_end_time;" in imu_source
-    assert "last_imu_ = latest_imu;" in imu_source
-    assert "imu_lag_at_scan_end > 0.10" in imu_source
-    assert "rejected an invalid IMU rebase baseline" in source
-    assert params["common"]["imu_queue_depth"] <= 400
-    assert params["common"]["lidar_queue_depth"] <= 20
+    quality_gate = source.index(
+        "const bool quality_ok = timing_ok", imu_process)
+    rejection = source.index("if (reject_update)", quality_gate)
+    assert imu_process < quality_gate < rejection
+    assert "this scan cannot update/write the map" in source
+    assert "p_imu->RebaseAfterGap(Measures, state_before_gap)" not in source
+    assert params["common"]["max_imu_gap"] == 0.02
+    assert params["common"]["imu_queue_depth"] == 2000
+    assert params["common"]["lidar_queue_depth"] == 100
 
 
 def test_open3d_localization_pairs_latest_cloud_with_matching_odom_history():

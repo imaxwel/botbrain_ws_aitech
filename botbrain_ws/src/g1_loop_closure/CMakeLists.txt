@@ -28,7 +28,7 @@ add_executable(loop_closure_node
   src/loop_closure_node.cpp
   src/pose_graph.cpp
 )
-target_include_directories(loop_closure_node PRIVATE
+target_include_directories(loop_closure_node BEFORE PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${PCL_INCLUDE_DIRS}
 )
@@ -49,7 +49,18 @@ ament_target_dependencies(loop_closure_node
 
 install(TARGETS loop_closure_node
   DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/
+  DESTINATION include)
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_pose_graph_geometry
+    test/test_pose_graph_geometry.cpp)
+  target_include_directories(test_pose_graph_geometry BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
+
+ament_export_include_directories(include)
 ament_package()

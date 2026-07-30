@@ -87,7 +87,7 @@ std::size_t last_saved_point_count = std::numeric_limits<std::size_t>::max();
 bool imu_flip_yz = false;
 bool lidar_update_guard_enable = true;
 int imu_queue_depth = 400, lidar_queue_depth = 20;
-double max_imu_gap = 0.02, preprocess_max_range = 0.0;
+double max_imu_gap = 0.06, preprocess_max_range = 0.0;
 int guard_min_effective_points = 100, consecutive_guard_rejections = 0;
 int guard_recovery_min_rejections = 5, guard_recovery_min_effective_points = 60;
 int guard_max_unconfirmed_odometry_frames = 3, guard_max_consecutive_rejections = 30;
@@ -96,7 +96,7 @@ double guard_max_translation_correction = 0.25, guard_max_rotation_correction_de
 double guard_max_tilt_correction_deg = 2.0;
 double guard_recovery_min_effective_ratio = 0.15, guard_recovery_max_residual = 0.10;
 double guard_recovery_max_translation_correction = 0.75, guard_recovery_max_rotation_correction_deg = 15.0;
-double guard_recovery_max_tilt_correction_deg = 2.0;
+double guard_recovery_max_tilt_correction_deg = 5.0;
 double guard_max_position_norm = 1000.0, guard_max_abs_z = 5.0, guard_max_velocity_norm = 20.0;
 bool guard_failure_latched = false;
 bool suppress_unconfirmed_odometry_after_timing_gap = false;
@@ -196,17 +196,6 @@ void RefreshStateOutputs()
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
-
-void DropBufferedLidarData()
-{
-    lock_guard<mutex> lock(mtx_buffer);
-    // sync_packages() has already consumed the IMU samples belonging to the
-    // rejected scan. Keep the remaining, strictly newer samples so the next
-    // scan can resume from the rebase baseline instead of creating another gap.
-    lidar_buffer.clear();
-    time_buffer.clear();
-    lidar_pushed = false;
-}
 
 inline void dump_lio_state_to_log(FILE *fp)
 {
@@ -951,7 +940,7 @@ public:
         this->declare_parameter<bool>("common.imu_flip_yz", false);
         this->declare_parameter<int>("common.imu_queue_depth", 400);
         this->declare_parameter<int>("common.lidar_queue_depth", 20);
-        this->declare_parameter<double>("common.max_imu_gap", 0.02);
+        this->declare_parameter<double>("common.max_imu_gap", 0.06);
         this->declare_parameter<double>("filter_size_corner", 0.5);
         this->declare_parameter<double>("filter_size_surf", 0.5);
         this->declare_parameter<double>("filter_size_map", 0.5);
@@ -975,7 +964,7 @@ public:
         this->declare_parameter<double>("mapping.guard_recovery_max_residual", 0.10);
         this->declare_parameter<double>("mapping.guard_recovery_max_translation_correction", 0.75);
         this->declare_parameter<double>("mapping.guard_recovery_max_rotation_correction_deg", 15.0);
-        this->declare_parameter<double>("mapping.guard_recovery_max_tilt_correction_deg", 2.0);
+        this->declare_parameter<double>("mapping.guard_recovery_max_tilt_correction_deg", 5.0);
         this->declare_parameter<int>("mapping.guard_max_unconfirmed_odometry_frames", 3);
         this->declare_parameter<int>("mapping.guard_max_consecutive_rejections", 30);
         this->declare_parameter<double>("mapping.guard_max_position_norm", 1000.0);
@@ -1011,7 +1000,7 @@ public:
         this->get_parameter_or<bool>("common.imu_flip_yz", imu_flip_yz, false);
         this->get_parameter_or<int>("common.imu_queue_depth", imu_queue_depth, 400);
         this->get_parameter_or<int>("common.lidar_queue_depth", lidar_queue_depth, 20);
-        this->get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.02);
+        this->get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.06);
         this->get_parameter_or<double>("filter_size_corner", filter_size_corner_min, 0.5);
         this->get_parameter_or<double>("filter_size_surf", filter_size_surf_min, 0.5);
         this->get_parameter_or<double>("filter_size_map", filter_size_map_min, 0.5);
@@ -1035,7 +1024,7 @@ public:
         this->get_parameter_or<double>("mapping.guard_recovery_max_residual", guard_recovery_max_residual, 0.10);
         this->get_parameter_or<double>("mapping.guard_recovery_max_translation_correction", guard_recovery_max_translation_correction, 0.75);
         this->get_parameter_or<double>("mapping.guard_recovery_max_rotation_correction_deg", guard_recovery_max_rotation_correction_deg, 15.0);
-        this->get_parameter_or<double>("mapping.guard_recovery_max_tilt_correction_deg", guard_recovery_max_tilt_correction_deg, 2.0);
+        this->get_parameter_or<double>("mapping.guard_recovery_max_tilt_correction_deg", guard_recovery_max_tilt_correction_deg, 5.0);
         this->get_parameter_or<int>("mapping.guard_max_unconfirmed_odometry_frames", guard_max_unconfirmed_odometry_frames, 3);
         this->get_parameter_or<int>("mapping.guard_max_consecutive_rejections", guard_max_consecutive_rejections, 30);
         this->get_parameter_or<double>("mapping.guard_max_position_norm", guard_max_position_norm, 1000.0);
@@ -1281,7 +1270,7 @@ private:
                 if (!timing_ok)
                 {
                     RCLCPP_WARN(this->get_logger(),
-                                "[FAST_LIO_TIMING] abnormal timing: dropping this scan before IMU propagation");
+                                "[FAST_LIO_TIMING] abnormal timing: IMU prediction may continue, but this scan cannot update/write the map");
                 }
                 last_timing_log_time = Measures.lidar_end_time;
             }
@@ -1291,55 +1280,6 @@ private:
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
                 flg_first_scan = false;
-                return;
-            }
-
-            if (!timing_ok)
-            {
-                const state_ikfom state_before_gap = kf.get_x();
-                const auto covariance_before_gap = kf.get_P();
-                if (!IsPlausibleState(state_before_gap) ||
-                    !covariance_before_gap.allFinite())
-                {
-                    guard_failure_latched = true;
-                    RCLCPP_ERROR(
-                        this->get_logger(),
-                        "[FAST_LIO_GUARD] EKF was unsafe before timing recovery; "
-                        "output latched unhealthy");
-                    return;
-                }
-
-                const bool has_imu_baseline = !Measures.imu.empty();
-                const bool rebased = has_imu_baseline &&
-                    p_imu->RebaseAfterGap(Measures, state_before_gap);
-                DropBufferedLidarData();
-                Measures.imu.clear();
-                feats_undistort->clear();
-                suppress_unconfirmed_odometry_after_timing_gap = true;
-                last_timing_log_time = -1.0;
-                if (!has_imu_baseline)
-                {
-                    RCLCPP_WARN(
-                        this->get_logger(),
-                        "[FAST_LIO_TIMING] discarded an unsynchronized scan with "
-                        "no IMU baseline; waiting for fresh sensor data");
-                    return;
-                }
-                if (!rebased)
-                {
-                    RCLCPP_WARN(
-                        this->get_logger(),
-                        "[FAST_LIO_TIMING] rejected an invalid IMU rebase baseline; "
-                        "waiting for fresh sensor data");
-                    return;
-                }
-
-                RCLCPP_WARN(
-                    this->get_logger(),
-                    "[FAST_LIO_TIMING] discarded buffered LiDAR data, preserved future "
-                    "IMU samples, and rebased IMU propagation after a timing "
-                    "discontinuity (max_gap=%.4fs)",
-                    observed_max_imu_gap);
                 return;
             }
 
@@ -1372,28 +1312,26 @@ private:
             auto covariance_after_imu = kf.get_P();
             if (!IsPlausibleState(state_point) || !covariance_after_imu.allFinite())
             {
+                const double unsafe_position_norm = state_point.pos.norm();
+                const double unsafe_z = state_point.pos.z();
+                const double unsafe_velocity_norm = state_point.vel.norm();
                 kf.change_x(state_before_imu);
                 kf.change_P(covariance_before_imu);
                 p_imu->RestorePropagationCheckpoint(imu_checkpoint);
                 feats_undistort->clear();
                 state_point = state_before_imu;
                 RefreshStateOutputs();
-                // A single malformed/spiky IMU integration must not permanently
-                // remove all point clouds.  Restore the last finite EKF state and
-                // rebase the IMU processor at this scan boundary.  Odom/TF/map
-                // writes remain suppressed until a later LiDAR update passes the
-                // normal quality gate.
-                const bool rebased = p_imu->RebaseAfterGap(Measures, state_before_imu);
-                DropBufferedLidarData();
-                suppress_unconfirmed_odometry_after_timing_gap = true;
-                consecutive_guard_rejections = std::max(
-                    consecutive_guard_rejections,
-                    guard_max_unconfirmed_odometry_frames + 1);
-                RCLCPP_ERROR_THROTTLE(
-                    this->get_logger(), *this->get_clock(), 2000,
-                    "[FAST_LIO_GUARD] unsafe IMU propagation rolled back; "
-                    "rebased=%s, holding odometry/TF/map writes while continuing recovery",
-                    rebased ? "true" : "false");
+                // An out-of-bounds or non-finite propagated state cannot be
+                // trusted for deskew, FOV deletion or scan matching. Stop
+                // explicitly instead of rebasing an old pose to a new time
+                // boundary and pretending the missing motion was recovered.
+                guard_failure_latched = true;
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "[FAST_LIO_GUARD] unsafe IMU propagation rolled back "
+                    "(pos=%.2fm z=%.2fm vel=%.2fmps); output latched unhealthy "
+                    "and fast_lio must be restarted",
+                    unsafe_position_norm, unsafe_z, unsafe_velocity_norm);
                 return;
             }
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
@@ -1445,9 +1383,6 @@ private:
             }
 
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? false : true;
-            /*** Segment the map in lidar FOV ***/
-            lasermap_fov_segment();
-
             /*** downsample the feature points in a scan ***/
             downSizeFilterSurf.setInputCloud(feats_undistort);
             downSizeFilterSurf.filter(*feats_down_body);
@@ -1692,6 +1627,11 @@ private:
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+
+            // This permanently deletes old ikd-tree boxes. Keep it behind the
+            // strict acceptance gate so rejected/timing-bad predictions cannot
+            // move the local-map window and erase the last trustworthy map.
+            lasermap_fov_segment();
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();

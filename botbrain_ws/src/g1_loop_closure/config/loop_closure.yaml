@@ -1,9 +1,9 @@
 /**:
   ros__parameters:
-    # Default is observation-only. Mapping launch explicitly enables the
-    # standard SLAM split: FAST-LIO owns local camera_init->body, while this
-    # node publishes the slow global map->camera_init correction after a
-    # verified loop. Never enable that TF in parallel with localization_3d.
+    # Default is observation-only. Mapping launch enables diagnostic pose-graph
+    # optimization, while its live map->camera_init correction remains an
+    # explicit FAST_LIO_LOOP_LIVE_CORRECTION=true experiment. Never enable that
+    # TF in parallel with localization_3d.
     cloud_topic: /cloud_registered_1
     odom_topic: /Odometry_loc
     world_frame: camera_init
@@ -42,24 +42,36 @@
     # than a global-relocalization search to reject repeated corridor bays.
     icp_max_correspondence_m: 0.80
     icp_max_iterations: 60
-    icp_max_fitness_m: 0.18
+    icp_max_fitness_m: 0.18  # RMS correspondence distance in metres
     icp_min_inlier_ratio: 0.35
     icp_max_translation_m: 8.0
     icp_max_z_translation_m: 0.40
-    icp_max_yaw_deg: 50.0
+    # This is the true candidate->current relative heading. An out-and-back
+    # corridor loop is 180 degrees; false ICP rotation is instead bounded by
+    # icp_max_odom_delta_yaw_deg below.
+    icp_max_yaw_deg: 180.0
     icp_max_roll_pitch_deg: 15.0
     # ICP must not jump several repeated corridor sections away from the
     # FAST-LIO prediction, even if that section has an apparently good score.
     icp_max_odom_delta_m: 3.0
     icp_max_odom_delta_yaw_deg: 25.0
+    # Never let one repeated-corridor match move map->camera_init. Three
+    # consecutive verified loop observations must imply nearly the same
+    # global correction before their edges enter the pose graph.
+    loop_confirmation_count: 3
+    loop_confirmation_max_translation_m: 0.75
+    loop_confirmation_max_yaw_deg: 8.0
 
-    # Start in phase 1.  After reviewing repeated accepted candidates, set
-    # this parameter true to activate phase 2 in the same process.  Phase 2
-    # remains diagnostic-only: it never emits TF/Odometry or corrects FAST-LIO.
+    # The standalone loop_closure Compose profile starts in phase 1. Setting
+    # only this parameter true activates diagnostic graph optimization and
+    # still emits no TF. The FAST-LIO mapping launch enables it by default;
+    # live correction remains opt-in through its environment variable.
     enable_pose_graph: false
 
-    # Phase 2: optimize a planar graph only for diagnostics. The result is
-    # published as /loop_closure/optimized_path and map_preview, never TF.
+    # Graph outputs are always published as /loop_closure/optimized_path and
+    # map_preview. A TF is emitted only when publish_live_correction is also
+    # explicitly true; navigation localization owns that TF in navigation mode,
+    # so the mapping instance is not started there.
     optimizer_iterations: 8
     odom_edge_xy_weight: 1.0
     odom_edge_yaw_weight: 2.0
@@ -69,8 +81,10 @@
     export_optimized_map_path: ""
 
     # Online outputs are disabled for standalone/navigation use. Mapping mode
-    # enables all three and has grid_accumulator consume these corrected
-    # streams, rebuilding its grid after every accepted graph update.
+    # enables the graph but keeps this false unless a live-TF experiment is
+    # explicitly requested. Corrected scan/odom streams remain an explicit
+    # diagnostic option; the live grid uses dense FAST-LIO scans so floor
+    # classification and CPU load stay predictable.
     publish_live_correction: false
     map_frame: map
     body_frame: body

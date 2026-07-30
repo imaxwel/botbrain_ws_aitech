@@ -8,16 +8,6 @@ from launch_ros.actions import Node
 
 MAPPING_PROFILES = {
     'default': {},
-    # Preserve more doorway/corner geometry and reduce the influence of
-    # distant parallel corridor walls. This mitigates corridor degeneracy but
-    # is not a pose-graph loop-closure backend.
-    'corridor': {
-        'point_filter_num': 2,
-        'max_iteration': 5,
-        'filter_size_surf': 0.25,
-        'filter_size_map': 0.25,
-        'preprocess.max_range': 20.0,
-    },
 }
 
 
@@ -48,6 +38,15 @@ def generate_launch_description():
         'FAST_LIO_MAPPING_SAVE', yaml_pcd_save_en)
     mapping_mode = _environment_bool(
         'FAST_LIO_MAPPING_MODE', mapping_save_en)
+    loop_pose_graph = _environment_bool(
+        'FAST_LIO_LOOP_POSE_GRAPH', True)
+    loop_live_correction = _environment_bool(
+        'FAST_LIO_LOOP_LIVE_CORRECTION', False)
+    if mapping_mode and loop_live_correction and not loop_pose_graph:
+        raise RuntimeError(
+            'FAST_LIO_LOOP_LIVE_CORRECTION=true requires '
+            'FAST_LIO_LOOP_POSE_GRAPH=true'
+        )
     map_file_override = os.environ.get('FAST_LIO_MAP_FILE', '').strip()
     effective_map_file = (
         map_file_override or yaml_parameters.get('map_file_path', '')
@@ -58,28 +57,47 @@ def generate_launch_description():
             'map_file_path in mid360.yaml'
         )
 
-    mapping_profile = os.environ.get(
+    requested_mapping_profile = os.environ.get(
         'FAST_LIO_MAPPING_PROFILE', 'default'
     ).strip().lower()
+    # There is deliberately one mapping configuration.  The former corridor
+    # overrides removed distant end walls/corners and changed the front-end
+    # while a scene was being selected, so a human could not make a reliable
+    # choice from the first scan.  Accept the old value only as a migration
+    # alias, but run and report the deterministic default configuration.
+    if requested_mapping_profile == 'corridor':
+        mapping_profile = 'default'
+    else:
+        mapping_profile = requested_mapping_profile
     if mapping_profile not in MAPPING_PROFILES:
         supported = ', '.join(sorted(MAPPING_PROFILES))
         raise RuntimeError(
-            f"Unsupported FAST_LIO_MAPPING_PROFILE={mapping_profile!r}; "
+            f"Unsupported FAST_LIO_MAPPING_PROFILE={requested_mapping_profile!r}; "
             f"expected one of: {supported}"
         )
     # Profile tuning is only for live mapping. Navigation must use the
     # conservative values from mid360.yaml even though Compose carries the
     # same profile environment variable.
     profile_parameters = MAPPING_PROFILES[mapping_profile] if mapping_mode else {}
+    if not mapping_mode:
+        loop_mode = 'not-started'
+    elif loop_live_correction:
+        loop_mode = 'pose-graph+live-tf'
+    elif loop_pose_graph:
+        loop_mode = 'pose-graph-diagnostic'
+    else:
+        loop_mode = 'observation-only'
 
     # FAST-LIO subscribes directly to /livox/imu and applies the upside-down
     # MID360 Y/Z sign correction in C++. Do not also launch imu_flip.py, or the
     # IMU will be transformed twice.
     actions = [
         LogInfo(msg=(
-            f"FAST-LIO mapping profile: {mapping_profile}; "
+            f"FAST-LIO mapping profile: {mapping_profile} "
+            f"(requested={requested_mapping_profile}); "
             f"overrides={profile_parameters or 'none'}; "
             f"mapping_mode={mapping_mode}; save={mapping_save_en}; "
+            f"loop_mode={loop_mode}; "
             f"map_file={effective_map_file or 'disabled'}"
         )),
         Node(
@@ -104,10 +122,10 @@ def generate_launch_description():
     ]
 
     if mapping_mode:
-        # FAST-LIO keeps its local camera_init->body estimate. The loop node
-        # owns only map->camera_init and the optimized trajectory/PCD path.
-        # The live grid deliberately stays on complete FAST-LIO scans below;
-        # sparse loop keyframes do not contain enough repeated floor evidence.
+        # FAST-LIO keeps its local camera_init->body estimate.  The loop node
+        # still builds the graph and publishes diagnostics, but live
+        # map->camera_init is deliberately opt-in: a graph correction must not
+        # move the raw dense cloud/grid while their stability is being judged.
         # Do not start this node in navigation mode: localization_3d is then
         # the sole owner of map->camera_init.
         loop_config = os.path.join(
@@ -121,9 +139,12 @@ def generate_launch_description():
             parameters=[
                 loop_config,
                 {
-                    'enable_pose_graph': True,
-                    'publish_live_correction': True,
-                    'publish_corrected_streams': True,
+                    'enable_pose_graph': loop_pose_graph,
+                    'publish_live_correction': loop_live_correction,
+                    # The live grid consumes the original dense FAST-LIO
+                    # stream. Do not spend Jetson/Zenoh capacity publishing a
+                    # second corrected cloud/odom stream with no consumer.
+                    'publish_corrected_streams': False,
                     'map_frame': 'map',
                     'body_frame': 'body',
                 },
@@ -134,9 +155,8 @@ def generate_launch_description():
                 'python3',
                 '/botbrain_ws/install/g1_pkg/lib/g1_pkg/grid_accumulator.py',
                 # Keep the proven grid-classification path on complete
-                # FAST-LIO scans. Loop closure still publishes map->camera_init
-                # and the optimized PCD, but sparse graph keyframes must not be
-                # used as a replacement for the dense floor/obstacle stream.
+                # FAST-LIO scans. Sparse graph keyframes must not be used as a
+                # replacement for the dense floor/obstacle stream.
                 '--pre-transformed',
                 '--cloud-topic',    '/cloud_registered_1',
                 '--odom-topic',     '/Odometry_loc',

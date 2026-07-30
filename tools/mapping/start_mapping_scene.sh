@@ -5,33 +5,52 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bash tools/mapping/start_mapping_scene.sh <scene> [default|corridor] [--overwrite]
+Usage: bash tools/mapping/start_mapping_scene.sh <scene> [--overwrite] [--live-loop-correction]
 
 Examples:
-  bash tools/mapping/start_mapping_scene.sh floor1 default
-  bash tools/mapping/start_mapping_scene.sh long_corridor corridor
-  bash tools/mapping/start_mapping_scene.sh floor1 corridor --overwrite
+  bash tools/mapping/start_mapping_scene.sh floor1
+  bash tools/mapping/start_mapping_scene.sh long_corridor --overwrite
+  bash tools/mapping/start_mapping_scene.sh loop_tf_trial --live-loop-correction
+
+The old `default`/`corridor` positional argument is accepted as a legacy alias
+but ignored.  Mapping always uses the one validated default configuration.
+`--live-loop-correction` is an explicit experiment: it publishes the loop
+pose-graph's `map -> camera_init` TF and is not part of the stable raw-map run.
 EOF
 }
 
 scene="${1:-}"
-profile="${2:-default}"
-overwrite="${3:-}"
+shift || true
+overwrite=""
+live_loop_correction=false
 if [[ ! "$scene" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
     usage >&2
     echo "ERROR: scene must contain only letters, digits, '_' or '-'" >&2
     exit 2
 fi
-if [ "$profile" != default ] && [ "$profile" != corridor ]; then
-    usage >&2
-    echo "ERROR: profile must be default or corridor" >&2
-    exit 2
-fi
-if [ -n "$overwrite" ] && [ "$overwrite" != --overwrite ]; then
-    usage >&2
-    echo "ERROR: unknown option '$overwrite'" >&2
-    exit 2
-fi
+for arg in "$@"; do
+    case "$arg" in
+        --overwrite)
+            if [ -n "$overwrite" ]; then
+                usage >&2
+                echo "ERROR: --overwrite was supplied more than once" >&2
+                exit 2
+            fi
+            overwrite=--overwrite
+            ;;
+        default|corridor)
+            echo "WARNING: legacy mapping profile '$arg' is ignored; using the stable default configuration" >&2
+            ;;
+        --live-loop-correction)
+            live_loop_correction=true
+            ;;
+        *)
+            usage >&2
+            echo "ERROR: unknown option '$arg'" >&2
+            exit 2
+            ;;
+    esac
+done
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$repo"
@@ -63,17 +82,19 @@ fi
 # Used by the save instructions to prove that the PCD belongs to this run.
 touch "$maps/.${scene}_mapping_started"
 
-echo "Starting mapping scene '$scene' with profile '$profile'"
+echo "Starting mapping scene '$scene' with the stable raw FAST-LIO configuration"
 docker compose stop localization navigation
-# A previous diagnostic container has the same node name and must not remain
-# on the graph while the mapping launch starts its online-correction instance.
+# A previous standalone loop diagnostic has the same node name and must not
+# remain on the graph while the mapping launch starts its own loop node.
 docker compose stop loop_closure
 docker compose up -d zenoh bringup state_machine
 FAST_LIO_START_DELAY_SEC=0 \
 FAST_LIO_MAPPING_MODE=true \
 FAST_LIO_MAPPING_SAVE=true \
 FAST_LIO_MAP_FILE="/botbrain_ws/src/g1_pkg/maps/${scene}_fast_lio_raw.pcd" \
-FAST_LIO_MAPPING_PROFILE="$profile" \
+FAST_LIO_MAPPING_PROFILE=default \
+FAST_LIO_LOOP_POSE_GRAPH=true \
+FAST_LIO_LOOP_LIVE_CORRECTION="$live_loop_correction" \
 docker compose up -d --force-recreate fast_lio
 
 echo "Waiting up to 120s for IMU, world/body point clouds, grid and TF"
@@ -88,15 +109,17 @@ while [ "$SECONDS" -lt "$deadline" ]; do
          source /botbrain_ws/install/setup.bash
          timeout 3 ros2 topic echo /cloud_registered_1 --once --field header >/dev/null 2>&1
          timeout 3 ros2 topic echo /cloud_registered_body_1 --once --field header >/dev/null 2>&1
-         timeout 5 ros2 topic echo /loop_closure/cloud_registered --once --field header >/dev/null 2>&1
          timeout 3 ros2 topic echo /accumulated_grid --once --field header >/dev/null 2>&1
          timeout 3 ros2 run tf2_ros tf2_echo camera_init body 2>/dev/null | grep -q "Translation:"
-         timeout 3 ros2 run tf2_ros tf2_echo map camera_init 2>/dev/null | grep -q "Translation:"
        '; then
-        echo "MAPPING READY: scene=$scene profile=$profile"
-        echo "RViz topics live: raw FAST-LIO + loop-corrected cloud/grid + map->camera_init TF"
-        echo "Optimized PCD target: /botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"
-        echo "FAST-LIO fallback: /botbrain_ws/src/g1_pkg/maps/${scene}_fast_lio_raw.pcd"
+        echo "MAPPING READY: scene=$scene loop_live_tf=$live_loop_correction"
+        echo "RViz topics live: dense raw FAST-LIO cloud/grid in camera_init"
+        if [ "$live_loop_correction" = true ]; then
+            echo "Online loop TF test enabled: map->camera_init may move after a confirmed loop."
+        fi
+        echo "Navigation PCD target: /botbrain_ws/src/g1_pkg/maps/${scene}_scans.pcd"
+        echo "FAST-LIO raw source: /botbrain_ws/src/g1_pkg/maps/${scene}_fast_lio_raw.pcd"
+        echo "Loop diagnostic only: /botbrain_ws/src/g1_pkg/maps/${scene}_loop_optimized.pcd"
         exit 0
     fi
     sleep 3

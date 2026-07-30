@@ -55,6 +55,7 @@ if ! timeout 15 ros2 topic echo /cloud_registered_1 --once --field header \
         --qos-reliability best_effort --no-daemon >/dev/null 2>&1; then
     echo "ERROR: no /cloud_registered_1 reached this workstation within 15s" >&2
     echo "Check g1_robot_fast_lio, Zenoh, and use the mapping launcher with FAST_LIO_MAPPING_MODE=true." >&2
+    echo "If Zenoh reports 'timestamp ... exceeding delta 500ms', synchronize the robot/workstation clocks; do not relax FAST-LIO gates." >&2
     exit 1
 fi
 
@@ -92,7 +93,7 @@ case "${RVIZ_RENDERING:-hardware}" in
 esac
 
 echo "Preloaded displays: live/history /cloud_registered_1, /cloud_registered_body_1, /accumulated_grid, /Odometry_loc, /path_1, TF and loop-closure keyframes/candidates"
-echo "No manual Add is required. Fixed Frame must remain map: mapping mode publishes map->camera_init after loop verification."
+echo "No manual Add is required. Fixed Frame must remain camera_init: this view intentionally shows raw FAST-LIO mapping."
 echo "If Intel/Mesa reports 'active samplers with a different type', retry with RVIZ_RENDERING=software."
 if command -v pgrep >/dev/null 2>&1 && pgrep -x rviz2 >/dev/null 2>&1; then
     echo "WARNING: another RViz2 process is already open; close the old window so it is not mistaken for this updated preset." >&2

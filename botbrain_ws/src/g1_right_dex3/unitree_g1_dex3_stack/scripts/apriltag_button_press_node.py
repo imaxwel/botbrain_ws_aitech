@@ -293,9 +293,11 @@ class AprilTagButtonPressNode(Node):
                 if self.capture_pub is not None:
                     self.capture_pub.publish(Empty())
                 self.get_logger().info(
-                    f'[apriltag_button_press_node] waiting for YOLO detection (up to {self.capture_wait_timeout_s:.0f}s)...')
+                    f'[按压] 等待YOLO检测结果（最多{self.capture_wait_timeout_s:.0f}s）...')
                 if not self._wait_event(self._target_event, self.capture_wait_timeout_s):
-                    self.get_logger().warn('[apriltag_button_press_node] no detection within timeout')
+                    self.get_logger().error(
+                        '==== [ABORT] 未收到检测结果 — 请确认：'
+                        '1)相机对准按键面板 2)button_detector_node正在运行 ====')
                     return
             else:
                 if self.capture_pub is not None:
@@ -304,12 +306,14 @@ class AprilTagButtonPressNode(Node):
                 target = _copy_pose_stamped(self._last_target)
                 age_s = time.monotonic() - self._last_target_time
             if age_s > _CACHE_TTL:
-                self.get_logger().warn(f'[apriltag_button_press_node] target stale ({age_s:.2f}s)')
+                self.get_logger().error(
+                    f'==== [ABORT] 检测结果已过期({age_s:.1f}s) — 请重新对准按键后按G ====')
                 return
+
             self.get_logger().info(
-                f'[apriltag_button_press_node] tag accepted: '
-                f'({target.pose.position.x:.3f}, {target.pose.position.y:.3f}, {target.pose.position.z:.3f}) '
-                f'@ {target.header.frame_id or "torso_link"}')
+                f'==== [按压开始] 目标楼层按键位置: '
+                f'x={target.pose.position.x:.3f} y={target.pose.position.y:.3f} z={target.pose.position.z:.3f} '
+                f'(检测时间{age_s:.1f}s前) ====')
 
             pre = self._make_goal(
                 target,
@@ -325,18 +329,25 @@ class AprilTagButtonPressNode(Node):
             )
 
             if not self._send_goal_and_wait('pre-contact', pre):
+                self.get_logger().error(
+                    '==== [ABORT] 手臂移动到预接触位置失败 — 可能原因：IK无解/规划超时/目标超出工作空间 ====')
                 return
             if not self._run_dex3('extend-middle-finger', self.pre_extend_pose, self.pre_extend_wait_s):
+                self.get_logger().error(
+                    '==== [ABORT] Dex-3伸手指失败 — 检查手部连接(enP8p1s0) ====')
                 return
             if not self._send_goal_and_wait('press-target', press):
+                self.get_logger().error(
+                    '==== [ABORT] 手臂移动到按压位置失败 — 可能原因：规划超时/目标太近面板 ====')
                 return
             if not self._send_goal_and_wait('retreat-pre-contact', pre):
-                return
+                self.get_logger().warn('[按压] 退回预接触位置失败，继续收手')
             if not self._run_dex3('close-hand', self.close_pose, self.close_wait_s):
+                self.get_logger().error('==== [ABORT] Dex-3收手失败 ====')
                 return
             self._publish_return_to_standing()
             self._sleep_interruptible(self.ramp_wait_s)
-            self.get_logger().info('[apriltag_button_press_node] press complete')
+            self.get_logger().info('==== [按压完成] 手臂已归位 ====')
         finally:
             if self._shutdown:
                 self._publish_return_to_standing()

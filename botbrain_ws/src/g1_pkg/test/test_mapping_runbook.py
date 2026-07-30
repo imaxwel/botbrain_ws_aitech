@@ -50,7 +50,8 @@ def test_mapping_runbook_documents_safe_save_and_editor_semantics():
     assert "docker compose up -d --force-recreate fast_lio" in source
     assert "docker compose ps zenoh bringup state_machine fast_lio" in source
     assert "docker compose logs -f fast_lio" in source
-    assert 'bash tools/mapping/start_mapping_scene.sh "$scene" default' in source
+    assert 'bash tools/mapping/start_mapping_scene.sh "$scene"' in source
+    assert "--live-loop-correction" in source
     assert "FAST_LIO_MAPPING_MODE=false" in source
     assert "FAST_LIO_MAPPING_SAVE=false" in source
     assert 'test -s "$maps/${scene}_scans.pcd"' in source
