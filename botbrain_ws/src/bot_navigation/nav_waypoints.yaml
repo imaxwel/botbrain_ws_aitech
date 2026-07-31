@@ -157,30 +157,75 @@ scenes:
         z: 0.0
   aitech_v2:
     waypoints:
-      aitech_v2_1:
-        x: 3.234
-        y: 0.0602
+      home:
+        x: 2.0697
+        y: 1.6301
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: -0.001304
-        qw: 0.999999
+        qz: 0.13254
+        qw: 0.991178
+        frame: g1_robot/map
+      aitech_v2_1:
+        x: 2.9238
+        y: 1.2764
+        z: 0.0
+        qx: 0.0
+        qy: 0.0
+        qz: 0.761639
+        qw: 0.648002
         frame: g1_robot/map
       aitech_v2_2:
-        x: 6.2536
-        y: 0.5605
+        x: 3.2607
+        y: 0.2915
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: 0.135765
-        qw: 0.990741
+        qz: -0.104129
+        qw: 0.994564
         frame: g1_robot/map
       aitech_v2_3:
-        x: 4.7278
-        y: 0.5345
+        x: 5.7545
+        y: 0.6486
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: -0.989414
-        qw: 0.145119
+        qz: -0.022871
+        qw: 0.999738
+        frame: g1_robot/map
+      aitech_v2_4:
+        x: 11.378
+        y: 1.0312
+        z: 0.0
+        qx: 0.0
+        qy: 0.0
+        qz: 0.045668
+        qw: 0.998957
+        frame: g1_robot/map
+      aitech_v2_turn:
+        x: 10.0435
+        y: 0.9269
+        z: 0.0
+        qx: 0.0
+        qy: 0.0
+        qz: -0.999841
+        qw: 0.017819
+        frame: g1_robot/map
+      aitech_v2_5:
+        x: 5.8166
+        y: 0.4151
+        z: 0.0
+        qx: 0.0
+        qy: 0.0
+        qz: -0.99988
+        qw: 0.015487
+        frame: g1_robot/map
+      aitech_v2_6:
+        x: 3.5731
+        y: 0.2146
+        z: 0.0
+        qx: 0.0
+        qy: 0.0
+        qz: -0.997003
+        qw: 0.077357
         frame: g1_robot/map
