@@ -1,8 +1,9 @@
 <!--
   Keep a valid global plan stable while the local controller handles transient
-  scan obstacles. Replan when the goal changes, or after a persistent FollowPath
-  failure reaches the outer recovery. This prevents a flickering global scan
-  cell from alternating between a short path and a map-sized detour.
+  scan obstacles. Replan immediately for a new goal, but require an invalid
+  path to remain invalid for 0.75 seconds before replacing it. This prevents a
+  flickering global scan cell from alternating between a short path and a
+  map-sized detour.
   Automatic spin and backup recoveries are intentionally omitted because they
   can increase foot slip and FAST-LIO attitude transients on smooth floors.
 -->
@@ -10,22 +11,58 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="4" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithStableReplanning">
+        <!--
+          GoalUpdatedController is the ownership boundary between navigation
+          requests.  It guarantees that a new request replaces any path left
+          on the BT blackboard by the previous request before FollowPath can
+          run.  Path validity alone cannot provide that guarantee: an old path
+          may still be perfectly valid while ending at the wrong waypoint.
+        -->
         <GoalUpdatedController name="PlanOnGoalUpdate">
-          <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
+          <RecoveryNode number_of_retries="1" name="ComputeNewGoalPathRecovery">
             <ComputePathToPose
               goal="{goal}"
               path="{path}"
               planner_id="GridBased"/>
             <ClearEntireCostmap
-              name="ClearGlobalCostmapContext"
+              name="ClearGlobalCostmapForNewGoal"
               service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </GoalUpdatedController>
+        <RateController hz="2.0" name="CheckPathAtTwoHertz">
+          <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
+            <Fallback name="ReplanOnlyAfterPersistentInvalidity">
+              <Fallback name="ValidateOrConfirmBlockedPath">
+                <IsPathValid path="{path}"/>
+                <Delay delay_msec="750" name="ConfirmPathInvalidity">
+                  <IsPathValid path="{path}"/>
+                </Delay>
+              </Fallback>
+              <ComputePathToPose
+                goal="{goal}"
+                path="{path}"
+                planner_id="GridBased"/>
+            </Fallback>
+            <ClearEntireCostmap
+              name="ClearGlobalCostmapContext"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath
-            path="{path}"
-            controller_id="FollowPath"
-            goal_checker_id="general_goal_checker"/>
+          <RecoveryNode number_of_retries="1" name="LocalControllerDegradedRecovery">
+            <FollowPath
+              path="{path}"
+              controller_id="FollowPath"
+              goal_checker_id="general_goal_checker"/>
+            <ForceSuccess>
+              <Timeout msec="1000">
+                <FollowPath
+                  path="{path}"
+                  controller_id="FollowPathFallback"
+                  goal_checker_id="general_goal_checker"/>
+              </Timeout>
+            </ForceSuccess>
+          </RecoveryNode>
           <Sequence name="RefreshLocalCostmapAfterFollowPathFailure">
             <ClearEntireCostmap
               name="ClearLocalCostmapContext"

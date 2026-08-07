@@ -38,7 +38,7 @@ wz_max: 0.80      # 最大角速度 (rad/s)
 | 横移过多、路径摆动 | 降低 `vy_max`、`vy_std` |
 | 转弯时身体倾斜明显 | 降低 `wz_max` |
 
-> 当前 Humble MPPI 不读取 `ax_max/ax_min/ay_max/ay_min/az_max/vy_min`。本项目已启用 `velocity_smoother`：MPPI 输出 `/g1_robot/cmd_vel_nav_raw`，以 20 Hz 平滑后发布 `/g1_robot/cmd_vel_nav` 给 `twist_mux`。短于 `0.30s` 的单次控制调度间隙不会直接变成零速停顿；定位或扫描异常时，高优先级安全停止仍会立即覆盖导航速度。
+> 当前 Humble MPPI 不读取 `ax_max/ax_min/ay_max/ay_min/az_max/vy_min`。速度链为：MPPI 输出 `/g1_robot/cmd_vel_nav_raw`，连续性节点用 EMA 抑制抖动并保持最长 `0.18s` 的消息缺口，再交给 20 Hz `velocity_smoother` 发布 `/g1_robot/cmd_vel_nav`。MPPI 明确发布零速、命令超过保持窗口或定位安全停止时都不会继续保持旧速度。
 
 ---
 
@@ -130,7 +130,7 @@ allow_unknown: false          # 成品室内地图禁止穿越未知区
 | 地图边缘存在漏口 | 保持 `allow_unknown: false` 并在 PGM 中补虚拟墙 |
 | 目标点在障碍物附近，规划失败 | 先修地图/移动点位；导航点不建议把 `tolerance` 放大到 `0.3` 以上 |
 
-当前行为树只在目标更新时创建正常全局路径；局部控制持续失败并进入外层恢复后才重新做全局规划。瞬时 `/scan` 标记仍参与动态避障，但不会每 2 秒把一条正在执行的短路径改成另一条长路径。
+当前行为树以 2 Hz 检查全局路径，但不会无条件换路：新目标立即规划；已有路径第一次无效后继续执行局部控制，经过 `0.75s` 仍无效才重新规划。纯计时 `Delay` 不发布零速，因此瞬时 `/scan` 标记不会把一条正在执行的短路径立即改成地图级绕行，也不会为了确认障碍主动停车。
 
 ---
 
@@ -142,15 +142,15 @@ allow_unknown: false          # 成品室内地图禁止穿越未知区
 
 ```yaml
 PathAlignCritic:
-  cost_weight: 14.0      # 路径跟随紧密度
+  cost_weight: 12.0      # 路径跟随紧密度，降低转弯处 stop-turn-go
 CostCritic:
-  cost_weight: 3.81      # 障碍物代价惩罚
+  cost_weight: 6.0       # 障碍物代价惩罚
 GoalCritic:
   cost_weight: 5.0       # 趋向目标的驱动力
 GoalAngleCritic:
-  cost_weight: 3.0       # 到达目标时对准朝向
+  cost_weight: 2.0       # 到达目标时对准朝向
 PreferForwardCritic:
-  cost_weight: 5.0       # 偏好前向运动（减少倒退/原地旋转）
+  cost_weight: 1.0       # 正常控制不过度压制 Omni 转弯/横移
 PathFollowCritic:
   cost_weight: 5.0       # 跟踪路径上最近点
 PathAngleCritic:
@@ -165,7 +165,9 @@ PathAngleCritic:
 | 机器人经常原地旋转而不前进 | 提高 `PreferForwardCritic.cost_weight: 8.0` |
 | 机器人过于靠近障碍物 | 提高 `CostCritic.cost_weight: 6.0` |
 
-> 💡 调整 Critic 权重时，建议每次只改一个，步长不超过原值的 50%，观察效果后再调下一个
+正常 MPPI 连续失败后，行为树会先调用 `FollowPathFallback` 最长 1 秒：预测视野约 `1.25s`、前进速度上限 `0.20m/s`、禁止后退并加强前进方向偏置。它仍失败后才清 local costmap 并等待，不自动 spin/backup。
+
+> 💡 调整 Critic 权重时，建议每次只改一个，步长不超过原值的 50%，观察效果后再调下一个。
 
 ---
 
@@ -240,7 +242,7 @@ ros2 param set /g1_robot/controller_server FollowPath.PathAlignCritic.cost_weigh
 | 走廊通不过，规划失败 | `cost_scaling_factor`、静态地图噪点 | 先提高衰减系数并修图，保持 global `inflation_radius >= 0.29` |
 | 路径绕了很大的弯 | `allow_unknown`、`cost_travel_multiplier`、PGM 边界 | 禁止未知区、权重保持 2~5，并补虚拟墙 |
 | 速度太慢 | `vx_max` | 当前为 0.50；不要继续提速，先检查路径、控制周期和安全停止 |
-| 走几步就短暂停止，但 safety stop 没触发 | BT 重规划、`cmd_vel_nav_raw` | 确认新行为树已安装，velocity smoother 为 active |
+| 走几步就短暂停止，但 safety stop 没触发 | `cmd_vel_nav_raw/filtered/nav`、fallback 日志 | 区分 MPPI 明确零速、短时断流、滤波输出和局部降级触发 |
 | 启动/停止太猛，机器人不稳 | velocity smoother | 调整 smoother 的加减速度，不要添加 MPPI 不读取的参数 |
 | 路径还在但机器人突然停止 | BT action timeout、`/scan`、TF | 检查 `default_server_timeout`、扫描新鲜度和 FAST-LIO guard，不要只调 goal tolerance |
 | 到达目标后位置偏差大 | planner `tolerance` + `xy_goal_tolerance` | 两者都要降低，否则误差可叠加 |
@@ -252,4 +254,4 @@ ros2 param set /g1_robot/controller_server FollowPath.PathAlignCritic.cost_weigh
 
 ---
 
-*最后更新：2026-07-20*
+*最后更新：2026-08-07*

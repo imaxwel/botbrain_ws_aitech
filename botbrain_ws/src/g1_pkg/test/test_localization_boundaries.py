@@ -1007,10 +1007,30 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     controller = params["/**/controller_server"]["ros__parameters"]
     frequency = float(controller["controller_frequency"])
     mppi = controller["FollowPath"]
+    fallback = controller["FollowPathFallback"]
 
     assert float(mppi["model_dt"]) >= (1.0 / frequency) - 1e-12
     assert 2.0 <= float(mppi["model_dt"]) * int(mppi["time_steps"]) <= 3.0
     assert mppi["visualize"] is False
+    assert controller["controller_plugins"] == [
+        "FollowPath", "FollowPathFallback"]
+    assert math.isclose(float(
+        mppi["GoalCritic"]["threshold_to_consider"]), 0.9)
+    assert math.isclose(float(
+        mppi["PathFollowCritic"]["threshold_to_consider"]), 0.9)
+    assert float(mppi["PathAlignCritic"]["cost_weight"]) < 20.0
+    assert int(mppi["PathAlignCritic"]["offset_from_furthest"]) < 20
+    assert float(fallback["model_dt"]) >= (1.0 / frequency) - 1e-12
+    assert math.isclose(
+        float(fallback["model_dt"]) * int(fallback["time_steps"]),
+        1.25,
+        rel_tol=0.02,
+    )
+    assert int(fallback["batch_size"]) < int(mppi["batch_size"])
+    assert float(fallback["vx_max"]) < float(mppi["vx_max"])
+    assert math.isclose(float(fallback["vx_min"]), 0.0)
+    assert float(fallback["PreferForwardCritic"]["cost_weight"]) > float(
+        mppi["PreferForwardCritic"]["cost_weight"])
     assert "publish_optimal_trajectory" not in mppi
     for ignored_parameter in (
             "ax_max", "ax_min", "ay_max", "ay_min", "az_max", "vy_min"):
@@ -1244,6 +1264,8 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     launch = _read("botbrain_ws/src/bot_navigation/launch/nav2.launch.py")
     cmake = _read("botbrain_ws/src/bot_navigation/CMakeLists.txt")
     package = _read("botbrain_ws/src/bot_navigation/package.xml")
+    continuity = _read(
+        "botbrain_ws/src/bot_navigation/scripts/cmd_vel_continuity.py")
 
     assert 0.15 <= float(planner["tolerance"]) <= 0.25
     assert planner["allow_unknown"] is False
@@ -1251,7 +1273,7 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     goal_checker = controller["general_goal_checker"]
     assert goal_checker["stateful"] is True
     assert 0.20 <= float(goal_checker["xy_goal_tolerance"]) <= 0.30
-    assert 0.45 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.55
+    assert 0.15 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.20
     assert float(controller["progress_checker"]["required_movement_radius"]) <= 0.15
     assert controller["progress_checker"]["plugin"] == (
         "nav2_controller::PoseProgressChecker")
@@ -1265,42 +1287,77 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert float(controller["min_y_velocity_threshold"]) <= 0.01
     assert int(controller["FollowPath"]["iteration_count"]) == 1
     assert math.isclose(float(controller["FollowPath"]["vx_max"]), 0.50)
+    assert controller["controller_plugins"] == [
+        "FollowPath", "FollowPathFallback"]
     velocity_smoother = params["/**/velocity_smoother"]["ros__parameters"]
     assert float(velocity_smoother["smoothing_frequency"]) >= 20.0
     assert velocity_smoother["feedback"] == "OPEN_LOOP"
     assert velocity_smoother["max_velocity"] == [0.50, 0.15, 0.80]
     assert velocity_smoother["min_velocity"] == [-0.30, -0.15, -0.80]
     assert float(velocity_smoother["velocity_timeout"]) <= 0.30
+    constants = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in ast.parse(continuity).body
+        if isinstance(node, ast.Assign) and
+        len(node.targets) == 1 and
+        isinstance(node.targets[0], ast.Name) and
+        node.targets[0].id in {"COMMAND_HOLD_SEC", "EMA_ALPHA"}
+    }
+    assert 0.0 < constants["COMMAND_HOLD_SEC"] < float(
+        velocity_smoother["velocity_timeout"])
+    assert 0.0 < constants["EMA_ALPHA"] < 1.0
+    assert "elif _is_zero(command):" in continuity
+    assert "self._filtered = Twist()" in continuity
+    assert "Rejected non-finite navigation velocity command" in continuity
+    assert "OSCILLATION_MIN_REVERSALS" in continuity
+    assert "Navigation command oscillation detected" in continuity
+    assert "if self._oscillation_active else EMA_ALPHA" in continuity
     assert int(bt["bt_loop_duration"]) >= 20
     assert int(bt["default_server_timeout"]) >= 200
     assert int(bt["wait_for_service_timeout"]) >= 1000
     assert bt["default_nav_to_pose_bt_xml"] == "<nav_to_pose_bt_xml>"
-    assert "<IsPathValid" not in tree
-    assert "<GoalUpdatedController" in tree
+    assert '<RateController hz="2.0"' in tree
+    assert tree.count("<IsPathValid") == 2
+    assert '<GoalUpdatedController name="PlanOnGoalUpdate">' in tree
+    assert "ConfirmPathInvalidity" in tree
+    assert '<Delay delay_msec="750"' in tree
     assert "RefreshLocalCostmapAfterFollowPathFailure" in tree
-    assert tree.count("<ComputePathToPose") == 2
+    assert tree.count("<ComputePathToPose") == 3
     tree_root = ET.fromstring(tree)
     follow_recovery = next(
         node for node in tree_root.iter("RecoveryNode")
         if node.attrib.get("name") == "FollowPathRecovery"
     )
     follow_children = list(follow_recovery)
-    assert [node.tag for node in follow_children] == ["FollowPath", "Sequence"]
+    assert [node.tag for node in follow_children] == [
+        "RecoveryNode", "Sequence"]
+    local_degraded = follow_children[0]
+    assert local_degraded.attrib["name"] == "LocalControllerDegradedRecovery"
+    degraded_children = list(local_degraded)
+    assert [node.tag for node in degraded_children] == [
+        "FollowPath", "ForceSuccess"]
+    timeout = list(degraded_children[1])[0]
+    assert timeout.tag == "Timeout"
+    assert int(timeout.attrib["msec"]) == 1000
+    fallback_follow = list(timeout)[0]
+    assert fallback_follow.attrib["controller_id"] == "FollowPathFallback"
     recovery_steps = list(follow_children[1])
     assert [node.tag for node in recovery_steps] == [
         "ClearEntireCostmap", "Wait"]
     assert math.isclose(float(recovery_steps[-1].attrib["wait_duration"]), 0.5)
-    assert "<RateController" not in tree
     assert 'number_of_retries="4"' in tree
     assert "goal_checker_id=\"general_goal_checker\"" in tree
     assert "<Spin" not in tree
     assert "<BackUp" not in tree
     assert "<nav_to_pose_bt_xml>" in launch
     assert '("cmd_vel", "cmd_vel_nav_raw")' in launch
+    assert '("cmd_vel", "cmd_vel_nav_filtered")' in launch
     assert '("cmd_vel_smoothed", "cmd_vel_nav")' in launch
+    assert 'executable="cmd_vel_continuity.py"' in launch
     assert '"velocity_smoother",' in launch
     assert "\n        velocity_smoother," in launch
     assert "nav2_velocity_smoother" in package
+    assert "scripts/cmd_vel_continuity.py" in cmake
     assert "behavior_trees" in cmake
     assert "file(REMOVE" in cmake
     assert "goal_pose_bridge.py" in cmake

@@ -31,6 +31,7 @@ install(
 )
 
 install(PROGRAMS
+  scripts/cmd_vel_continuity.py
   scripts/costmap_center_check.py
   scripts/nav2_utils.py
   scripts/nav_odom_relay.py

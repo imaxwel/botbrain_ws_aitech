@@ -17,12 +17,12 @@ def test_mid360_rejects_motion_damaging_delivery_gaps():
         "botbrain_ws/src/fast_lio/config/mid360.yaml"
     ))["/**"]["ros__parameters"]
 
-    assert params["common"]["max_imu_gap"] == 0.06
-    assert 'declare_parameter<double>("common.max_imu_gap", 0.06)' in source
-    assert 'get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.06)' in source
+    assert params["common"]["max_imu_gap"] == 0.02
+    assert 'declare_parameter<double>("common.max_imu_gap", 0.02)' in source
+    assert 'get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.02)' in source
     assert "observed_max_imu_gap <= max_imu_gap" in source
     assert "limit=%.4fs" in source
-    assert "max_imu_gap=0.0600s max_range=0.0m guard=true" in runbook
+    assert "max_imu_gap=0.0200s max_range=0.0m guard=true" in runbook
     assert runbook.count("common.max_imu_gap") >= 2
 
 
@@ -35,6 +35,21 @@ def test_timing_gap_propagates_prediction_but_cannot_write_the_map():
     assert "this scan cannot update/write the map" in source
     assert "时序异常帧可以推进 IMU 预测" in runbook
     assert "不得提交 LiDAR 修正或写入 ikd-tree" in runbook
+
+
+def test_imu_initialization_aligns_gravity_only_from_a_stationary_window():
+    source = _read("botbrain_ws/src/fast_lio/src/IMU_Processing.hpp")
+
+    assert "MAX_INI_ATTEMPT_COUNT" in source
+    assert "cur_gyr.norm() <= kMaxInitialGyroNorm" in source
+    assert "std::abs(cur_acc.norm() - G_m_s2)" in source
+    assert "cov_acc.maxCoeff() <= kMaxInitialAccelVariance" in source
+    assert "cov_gyr.maxCoeff() <= kMaxInitialGyroVariance" in source
+    assert "N = 0;" in source
+    assert "Eigen::Quaterniond::FromTwoVectors" in source
+    assert "init_state.rot = SO3(gravity_alignment);" in source
+    assert "init_state.grav = S2(V3D(0.0, 0.0, -G_m_s2));" in source
+    assert "preserving initial world orientation" in source
 
 
 def test_laserscan_does_not_wait_for_a_future_transform():

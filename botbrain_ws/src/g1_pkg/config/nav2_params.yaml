@@ -42,7 +42,7 @@
     failure_tolerance: 1.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"]
-    controller_plugins: ["FollowPath"]
+    controller_plugins: ["FollowPath", "FollowPathFallback"]
     use_realtime_priority: false
     speed_limit_topic: "speed_limit"
     progress_checker:
@@ -53,12 +53,13 @@
       required_movement_angle: 0.20
       movement_time_allowance: 40.0
     general_goal_checker:
-      # Once XY is reached, finish the yaw check without re-entering a lateral
-      # micro-correction loop. The tolerances match repeatable G1 stopping error.
+      # A waypoint represents a pose, not only a position.  Ten degrees still
+      # avoids chasing tiny localization noise while requiring the robot to
+      # finish facing the recorded waypoint direction.
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.50
+      yaw_goal_tolerance: 0.17
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       # MPPI requires model_dt >= controller period. At 12 Hz the period is
@@ -107,17 +108,19 @@
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        threshold_to_consider: 1.4
+        # Keep following the path until the robot is genuinely near the goal;
+        # switching at 1.4 m caused an early brake-and-resume cycle.
+        threshold_to_consider: 0.9
       GoalAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 2.0           # 3.0→2.0: 降低终点朝向权重，减少到点后旋转微调冲动
-        threshold_to_consider: 0.5
+        threshold_to_consider: 0.35
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 2.0
-        threshold_to_consider: 0.5
+        cost_weight: 1.0
+        threshold_to_consider: 0.8
       CostCritic:
         enabled: true
         cost_power: 1
@@ -131,24 +134,114 @@
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 20.0
+        # A weight of 20 over-constrained the sampled Omni trajectories at
+        # corners and encouraged stop-turn-go motion.
+        cost_weight: 12.0
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
-        threshold_to_consider: 0.5
-        offset_from_furthest: 20
+        threshold_to_consider: 0.6
+        offset_from_furthest: 12
         use_path_orientations: false
       PathFollowCritic:
         enabled: true
         cost_power: 1
         cost_weight: 5.0
         offset_from_furthest: 5
-        threshold_to_consider: 1.4
+        threshold_to_consider: 0.9
       PathAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 2.0
         offset_from_furthest: 4
         threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+
+    # A short, slow recovery controller is invoked for one second before the
+    # behavior tree clears costmaps or waits.  It deliberately forbids reverse
+    # motion and biases forward progress, matching the G1 safety policy while
+    # giving a locally difficult corner a smaller optimization problem.
+    FollowPathFallback:
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 15
+      model_dt: 0.08333333333333333
+      batch_size: 900
+      vx_std: 0.25
+      vy_std: 0.06
+      wz_std: 0.35
+      vx_max: 0.20
+      vx_min: 0.0
+      vy_max: 0.08
+      wz_max: 0.45
+      iteration_count: 1
+      prune_distance: 1.0
+      transform_tolerance: 1.0
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "Omni"
+      visualize: false
+      regenerate_noises: true
+      critics:
+        [
+          "ConstraintCritic",
+          "CostCritic",
+          "GoalCritic",
+          "GoalAngleCritic",
+          "PathAlignCritic",
+          "PathFollowCritic",
+          "PathAngleCritic",
+          "PreferForwardCritic"
+        ]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.7
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 1.5
+        threshold_to_consider: 0.30
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+        threshold_to_consider: 0.25
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+        near_collision_cost: 253
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 0.7
+        trajectory_point_step: 1
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 2
+        threshold_to_consider: 0.4
+        offset_from_furthest: 6
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+        offset_from_furthest: 3
+        threshold_to_consider: 0.7
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.5
+        offset_from_furthest: 3
+        threshold_to_consider: 0.35
         max_angle_to_furthest: 1.0
         mode: 0
 

@@ -94,6 +94,7 @@ def navigate(
     scan_timeout: float,
     max_scan_age: float,
     success_distance_limit: float,
+    success_yaw_limit: float,
     scene: str,
     map_timeout: float,
     goal_grid_check_radius: float,
@@ -397,6 +398,17 @@ def navigate(
             )
             return False
 
+        wrong_final_heading = False
+        if last_yaw_error[0] is not None:
+            wrong_final_heading = last_yaw_error[0] > success_yaw_limit
+        if wrong_final_heading:
+            print(
+                f'  ✗ Nav2 reported success but "{name}" still has a '
+                f'{math.degrees(last_yaw_error[0]):.1f} deg heading error '
+                f'(limit={math.degrees(success_yaw_limit):.1f} deg)'
+            )
+            return False
+
         print(f'  ✓ Reached "{name}"{final_text}')
         return True
 
@@ -453,6 +465,7 @@ def main():
     p.add_argument('--scan-timeout', type=float, default=5.0)
     p.add_argument('--max-scan-age', type=float, default=1.0)
     p.add_argument('--success-distance-limit', type=float, default=0.35)
+    p.add_argument('--success-yaw-limit-deg', type=float, default=12.0)
     p.add_argument('--map-timeout', type=float, default=5.0)
     p.add_argument('--goal-grid-check-radius', type=float, default=0.10)
     p.add_argument('--occupied-threshold', type=int, default=65)
@@ -507,6 +520,7 @@ def main():
         max(0.0, args.scan_timeout),
         max(0.1, args.max_scan_age),
         max(0.05, args.success_distance_limit),
+        math.radians(max(1.0, args.success_yaw_limit_deg)),
         scene,
         max(0.1, args.map_timeout),
         max(0.0, args.goal_grid_check_radius),

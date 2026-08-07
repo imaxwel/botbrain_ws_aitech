@@ -172,9 +172,20 @@ def generate_launch_description():
         parameters=[configured_params],
         arguments=["--ros-args", "--log-level", log_level],
         remappings=remappings + [
-            ("cmd_vel", "cmd_vel_nav_raw"),
+            ("cmd_vel", "cmd_vel_nav_filtered"),
             ("cmd_vel_smoothed", "cmd_vel_nav"),
         ],
+    )
+
+    cmd_vel_continuity = Node(
+        package="bot_navigation",
+        executable="cmd_vel_continuity.py",
+        name="cmd_vel_continuity",
+        namespace=robot_name,
+        output="screen",
+        respawn=use_respawn,
+        respawn_delay=2.0,
+        arguments=["--ros-args", "--log-level", log_level],
     )
 
     lifecycle_manager = Node(
@@ -194,6 +205,7 @@ def generate_launch_description():
         behavior_server,
         bt_navigator,
         waypoint_follower,
+        cmd_vel_continuity,
         velocity_smoother,
         lifecycle_manager,
     ])

@@ -12,6 +12,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <condition_variable>
+#include <iostream>
 #include <nav_msgs/msg/odometry.hpp>
 #include <pcl/common/transforms.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -24,6 +25,12 @@
 /// *************Preconfiguration
 
 #define MAX_INI_COUNT (200)
+#define MAX_INI_ATTEMPT_COUNT (1200)
+
+constexpr double kMaxInitialGyroNorm = 0.08;          // rad/s
+constexpr double kMaxInitialAccelError = 0.60;        // m/s^2
+constexpr double kMaxInitialGyroVariance = 0.0004;    // (rad/s)^2
+constexpr double kMaxInitialAccelVariance = 0.08;     // (m/s^2)^2
 
 const bool time_list(PointType &x, PointType &y) {return (x.curvature < y.curvature);};
 
@@ -47,7 +54,6 @@ class ImuProcess
   void Reset();
   // void Reset(double start_timestamp, const sensor_msgs::ImuConstPtr &lastimu);
   void Reset(double start_timestamp, const sensor_msgs::msg::Imu::ConstSharedPtr &lastimu);
-  bool RebaseAfterGap(const MeasureGroup &meas, const state_ikfom &state);
   void set_extrinsic(const V3D &transl, const M3D &rot);
   void set_extrinsic(const V3D &transl);
   void set_extrinsic(const MD(4,4) &T);
@@ -70,7 +76,7 @@ class ImuProcess
   double first_lidar_time;
 
  private:
-  void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
+  bool IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
 
   PointCloudXYZI::Ptr cur_pcl_un_;
@@ -83,11 +89,15 @@ class ImuProcess
   V3D Lidar_T_wrt_IMU;
   V3D mean_acc;
   V3D mean_gyr;
+  V3D fallback_mean_acc;
+  V3D fallback_mean_gyr;
   V3D angvel_last;
   V3D acc_s_last;
   double start_timestamp_;
   double last_lidar_end_time_;
   int    init_iter_num = 1;
+  int    init_attempt_num_ = 0;
+  int    fallback_sample_count_ = 0;
   bool   b_first_frame_ = true;
   bool   imu_need_init_ = true;
 };
@@ -103,6 +113,8 @@ ImuProcess::ImuProcess()
   cov_bias_acc  = V3D(0.0001, 0.0001, 0.0001);
   mean_acc      = V3D(0, 0, -1.0);
   mean_gyr      = V3D(0, 0, 0);
+  fallback_mean_acc = Zero3d;
+  fallback_mean_gyr = Zero3d;
   angvel_last     = Zero3d;
   acc_s_last      = Zero3d;
   last_lidar_end_time_ = -1.0;
@@ -133,77 +145,21 @@ void ImuProcess::RestorePropagationCheckpoint(
   IMUpose.clear();
 }
 
-bool ImuProcess::RebaseAfterGap(const MeasureGroup &meas, const state_ikfom &state)
-{
-  if (meas.imu.empty() || !std::isfinite(meas.lidar_end_time))
-  {
-    return false;
-  }
-
-  const auto &latest_imu = meas.imu.back();
-  if (latest_imu == nullptr)
-  {
-    return false;
-  }
-  const double latest_imu_time = rclcpp::Time(latest_imu->header.stamp).seconds();
-  const double imu_lag_at_scan_end = meas.lidar_end_time - latest_imu_time;
-  if (!std::isfinite(latest_imu_time) ||
-      !std::isfinite(imu_lag_at_scan_end) ||
-      imu_lag_at_scan_end < -1e-3 || imu_lag_at_scan_end > 0.10)
-  {
-    return false;
-  }
-  V3D latest_gyro(
-      latest_imu->angular_velocity.x,
-      latest_imu->angular_velocity.y,
-      latest_imu->angular_velocity.z);
-  V3D latest_acc(
-      latest_imu->linear_acceleration.x,
-      latest_imu->linear_acceleration.y,
-      latest_imu->linear_acceleration.z);
-  const double mean_acc_norm = mean_acc.norm();
-  if (!latest_gyro.allFinite() || !latest_acc.allFinite() ||
-      !std::isfinite(mean_acc_norm) || mean_acc_norm < 1e-6)
-  {
-    return false;
-  }
-
-  latest_acc *= G_m_s2 / mean_acc_norm;
-  const V3D rebased_angvel = latest_gyro - state.bg;
-  V3D rebased_acc = state.rot * (latest_acc - state.ba);
-  for (int axis = 0; axis < 3; ++axis)
-  {
-    rebased_acc[axis] += state.grav[axis];
-  }
-  if (!rebased_angvel.allFinite() || !rebased_acc.allFinite())
-  {
-    return false;
-  }
-
-  last_imu_ = latest_imu;
-  last_lidar_end_time_ = meas.lidar_end_time;
-  angvel_last = rebased_angvel;
-  acc_s_last = rebased_acc;
-  v_imu_.clear();
-  IMUpose.clear();
-  if (cur_pcl_un_ != nullptr)
-  {
-    cur_pcl_un_->clear();
-  }
-  return true;
-}
-
 void ImuProcess::Reset() 
 {
   // ROS_WARN("Reset ImuProcess");
   mean_acc      = V3D(0, 0, -1.0);
   mean_gyr      = V3D(0, 0, 0);
+  fallback_mean_acc = Zero3d;
+  fallback_mean_gyr = Zero3d;
   angvel_last       = Zero3d;
   acc_s_last        = Zero3d;
   last_lidar_end_time_ = -1.0;
   imu_need_init_    = true;
   start_timestamp_  = -1;
   init_iter_num     = 1;
+  init_attempt_num_ = 0;
+  fallback_sample_count_ = 0;
   v_imu_.clear();
   IMUpose.clear();
   last_imu_.reset(new sensor_msgs::msg::Imu());
@@ -248,7 +204,7 @@ void ImuProcess::set_acc_bias_cov(const V3D &b_a)
   cov_bias_acc = b_a;
 }
 
-void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N)
+bool ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N)
 {
   /** 1. initializing the gravity, gyro bias, acc and gyro covariance
    ** 2. normalize the acceleration measurenments to unit gravity **/
@@ -258,12 +214,8 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   if (b_first_frame_)
   {
     Reset();
-    N = 1;
+    N = 0;
     b_first_frame_ = false;
-    const auto &imu_acc = meas.imu.front()->linear_acceleration;
-    const auto &gyr_acc = meas.imu.front()->angular_velocity;
-    mean_acc << imu_acc.x, imu_acc.y, imu_acc.z;
-    mean_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
     first_lidar_time = meas.lidar_beg_time;
   }
 
@@ -274,21 +226,96 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
     cur_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
 
-    mean_acc      += (cur_acc - mean_acc) / N;
-    mean_gyr      += (cur_gyr - mean_gyr) / N;
+    ++init_attempt_num_;
+    const bool finite_measurement = cur_acc.allFinite() && cur_gyr.allFinite();
+    if (finite_measurement)
+    {
+      ++fallback_sample_count_;
+      fallback_mean_acc +=
+          (cur_acc - fallback_mean_acc) /
+          static_cast<double>(fallback_sample_count_);
+      fallback_mean_gyr +=
+          (cur_gyr - fallback_mean_gyr) /
+          static_cast<double>(fallback_sample_count_);
+    }
 
-    cov_acc = cov_acc * (N - 1.0) / N + (cur_acc - mean_acc).cwiseProduct(cur_acc - mean_acc) * (N - 1.0) / (N * N);
-    cov_gyr = cov_gyr * (N - 1.0) / N + (cur_gyr - mean_gyr).cwiseProduct(cur_gyr - mean_gyr) * (N - 1.0) / (N * N);
+    const bool stationary_measurement =
+        finite_measurement &&
+        cur_gyr.norm() <= kMaxInitialGyroNorm &&
+        std::abs(cur_acc.norm() - G_m_s2) <= kMaxInitialAccelError;
+    if (!stationary_measurement)
+    {
+      // A moving sample invalidates the complete candidate window instead of
+      // contaminating a later stationary average with startup motion.
+      N = 0;
+      mean_acc = Zero3d;
+      mean_gyr = Zero3d;
+      cov_acc = Zero3d;
+      cov_gyr = Zero3d;
+      continue;
+    }
 
-    // cout<<"acc norm: "<<cur_acc.norm()<<" "<<mean_acc.norm()<<endl;
+    ++N;
+    if (N == 1)
+    {
+      mean_acc = cur_acc;
+      mean_gyr = cur_gyr;
+      cov_acc = Zero3d;
+      cov_gyr = Zero3d;
+      continue;
+    }
 
-    N ++;
+    mean_acc += (cur_acc - mean_acc) / static_cast<double>(N);
+    mean_gyr += (cur_gyr - mean_gyr) / static_cast<double>(N);
+    cov_acc = cov_acc * (N - 1.0) / N +
+      (cur_acc - mean_acc).cwiseProduct(cur_acc - mean_acc) *
+      (N - 1.0) / (N * N);
+    cov_gyr = cov_gyr * (N - 1.0) / N +
+      (cur_gyr - mean_gyr).cwiseProduct(cur_gyr - mean_gyr) *
+      (N - 1.0) / (N * N);
   }
+
+  const bool stationary_window_ready =
+      N >= MAX_INI_COUNT &&
+      cov_acc.maxCoeff() <= kMaxInitialAccelVariance &&
+      cov_gyr.maxCoeff() <= kMaxInitialGyroVariance;
+  const bool initialization_timed_out =
+      init_attempt_num_ >= MAX_INI_ATTEMPT_COUNT &&
+      fallback_sample_count_ > 0 && fallback_mean_acc.norm() > 1.0e-6;
+  if (!stationary_window_ready && !initialization_timed_out)
+  {
+    return false;
+  }
+
   state_ikfom init_state = kf_state.get_x();
-  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
-  
-  //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
-  init_state.bg  = mean_gyr;
+  if (stationary_window_ready)
+  {
+    const Eigen::Quaterniond gravity_alignment =
+        Eigen::Quaterniond::FromTwoVectors(
+        (-mean_acc).normalized(), V3D(0.0, 0.0, -1.0));
+    init_state.rot = SO3(gravity_alignment);
+    init_state.grav = S2(V3D(0.0, 0.0, -G_m_s2));
+    init_state.bg = mean_gyr;
+    std::cout << "IMU stationary initialization accepted after "
+              << init_attempt_num_ << " samples: acc_var="
+              << cov_acc.transpose() << ", gyr_var="
+              << cov_gyr.transpose() << std::endl;
+  }
+  else
+  {
+    // Continuous motion during startup must not create a false world tilt.
+    // Preserve the existing rotation and use the original gravity-state
+    // initialization so FAST-LIO can still start safely.
+    mean_acc = fallback_mean_acc;
+    mean_gyr = fallback_mean_gyr;
+    init_state.grav = S2(-mean_acc / mean_acc.norm() * G_m_s2);
+    // A moving average is not a gyro bias estimate.  Keep the filter's prior
+    // bias (zero at first startup) instead of subtracting real body rotation.
+    std::cout << "IMU stationary initialization timed out after "
+              << init_attempt_num_
+              << " samples; preserving initial world orientation"
+              << std::endl;
+  }
   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   init_state.offset_R_L_I = Lidar_R_wrt_IMU;
   kf_state.change_x(init_state);
@@ -302,7 +329,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   init_P(21,21) = init_P(22,22) = 0.00001; 
   kf_state.change_P(init_P);
   last_imu_ = meas.imu.back();
-
+  return true;
 }
 
 void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_out)
@@ -450,14 +477,12 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
   if (imu_need_init_)
   {
     /// The very first lidar frame
-    IMU_init(meas, kf_state, init_iter_num);
-
-    imu_need_init_ = true;
+    const bool initialization_complete =
+        IMU_init(meas, kf_state, init_iter_num);
     
     last_imu_   = meas.imu.back();
 
-    state_ikfom imu_state = kf_state.get_x();
-    if (init_iter_num > MAX_INI_COUNT)
+    if (initialization_complete)
     {
       cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);
       imu_need_init_ = false;
