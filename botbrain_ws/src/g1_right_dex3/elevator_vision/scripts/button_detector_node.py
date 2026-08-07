@@ -88,9 +88,6 @@ class ButtonDetectorNode(Node):
         self._capture = None
         self._last_no_floor_log = 0.0
         self._last_image_time = 0.0   # 用于检测图像断流
-        self._pose_buffer = []        # 多帧平均缓冲
-        self._POSE_BUF_SIZE = 5
-        self._POSE_STD_THRESH = 0.005  # 5mm 稳定阈值
         # 后台推理线程（避免YOLO阻塞rgb_cb导致RealSense停流）
         self._latest_frame = None     # (img_bgr, depth_snapshot)
         self._frame_lock = threading.Lock()
@@ -254,19 +251,11 @@ class ButtonDetectorNode(Node):
         depth_mm = float(np.percentile(valid_depths, 25))
 
         if depth_mm <= 0 or depth_mm > 3000:
-            self.get_logger().warn(f'invalid depth {depth_mm:.0f}mm for bbox ({x1b},{y1b},{x2b},{y2b})')
+            self.get_logger().warn(f'invalid depth {depth_mm:.0f}mm at ({dx},{dy})')
             return
 
         fx, fy, cx, cy = self.camera_info
         d = depth_mm / 1000.0
-
-        # 用有效深度像素的质心作为投影光线方向，比用bbox中心更准确
-        ys_valid, xs_valid = np.where(roi > 0)
-        if len(xs_valid) > 0:
-            cx_depth = float(np.mean(xs_valid + rx1))
-            cy_depth = float(np.mean(ys_valid + ry1))
-            cx_px = cx_depth / sx
-            cy_px = cy_depth / sy
 
         # 相机坐标系中的3D点（用Time(0)请求最新TF，避免时间戳过期）
         pose_cam = PoseStamped()
@@ -282,31 +271,12 @@ class ButtonDetectorNode(Node):
             timeout = Duration(seconds=self.tf_timeout_s)
             pose_robot = self.tf_buffer.transform(pose_cam, self.output_frame, timeout=timeout)
 
-            # 多帧平均：收集 N 帧后在标准差小于阈值时发布稳定均值
-            p = pose_robot.pose.position
-            self._pose_buffer.append((p.x, p.y, p.z))
-            if len(self._pose_buffer) > self._POSE_BUF_SIZE:
-                self._pose_buffer.pop(0)
+            self.pose_pub.publish(pose_robot)
 
-            if len(self._pose_buffer) >= self._POSE_BUF_SIZE:
-                arr = np.array(self._pose_buffer)
-                std = float(np.max(np.std(arr, axis=0)))
-                if std < self._POSE_STD_THRESH:
-                    mean_x, mean_y, mean_z = arr.mean(axis=0)
-                    pose_robot.pose.position.x = float(mean_x)
-                    pose_robot.pose.position.y = float(mean_y)
-                    pose_robot.pose.position.z = float(mean_z)
-                    self.pose_pub.publish(pose_robot)
-                    self.get_logger().info(
-                        f"==== [可以按G] 楼层'{candidate['text']}' conf={candidate['score']:.2f} "
-                        f"depth={d:.3f}m  torso({mean_x:.3f},{mean_y:.3f},{mean_z:.3f}) std={std*1000:.1f}mm ====")
-                else:
-                    self.get_logger().info(
-                        f"[检测] 楼层'{candidate['text']}' 位置不稳定 std={std*1000:.1f}mm，等待稳定...")
-            else:
-                self.get_logger().info(
-                    f"[检测] 楼层'{candidate['text']}' conf={candidate['score']:.2f} "
-                    f"depth={d:.3f}m  累积帧{len(self._pose_buffer)}/{self._POSE_BUF_SIZE}")
+            self.get_logger().info(
+                f"floor='{candidate['text']}' conf={candidate['score']:.2f} "
+                f"depth={d:.3f}m  torso({pose_robot.pose.position.x:.3f},"
+                f"{pose_robot.pose.position.y:.3f},{pose_robot.pose.position.z:.3f})")
         except tf2_ros.TransformException as ex:
             self.get_logger().warn(f'TF transform failed: {ex}')
 

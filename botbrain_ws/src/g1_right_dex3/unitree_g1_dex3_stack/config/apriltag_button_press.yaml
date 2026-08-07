@@ -10,12 +10,12 @@ v4l2_apriltag_trigger:
     tag_family: "tag36h11"
     tag_size: 0.05
     target_tag_id: 0
-    offset_xyz: [0.01, 0.17, 0.04]
+    offset_xyz: [0.00, 0.00, 0.00]
     decision_margin_min: 25.0
     quad_decimate: 1.0
 
     camera_matrix: [602.0224609375, 0.0, 330.956695556641, 0.0, 601.472839355469, 256.269927978516, 0.0, 0.0, 1.0]
-    dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+    dist_coeffs: [0.02, 0.0, 0.0, 0.0, 0.0]
     camera_info_topic: "/g1_robot/front_camera/depth/camera_info"
     use_live_camera_info: true
     camera_frame: "camera_color_optical_frame"
@@ -67,7 +67,7 @@ apriltag_button_press_node:
     close_wait_s: 3.0
     capture_wait_timeout_s: 12.0
     target_pose_stale_s: 1.5
-    traj_wait_timeout_s: 6.0
+    traj_wait_timeout_s: 60.0
     traj_completion_buffer_s: 1.2
     ramp_wait_s: 3.5
     dry_run: false
@@ -87,4 +87,4 @@ ik_fcl_ompl_planner:
     ik_timeout: 0.1
     
     ik_random_seed_tries: 3
-    fallback_total_timeout_s: 2.0
+    fallback_total_timeout_s: 8.0

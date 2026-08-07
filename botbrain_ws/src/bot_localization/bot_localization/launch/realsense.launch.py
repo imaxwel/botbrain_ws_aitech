@@ -101,6 +101,8 @@ def generate_launch_description():
                     camera_side="front"
                 )
             ],
+            respawn=True,
+            respawn_delay=5.0,
             output='screen'
         )
         nodes.append(front_camera_node)
