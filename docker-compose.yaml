@@ -211,13 +211,8 @@ services:
       - /usr/local/include:/opt/robot_sdk/include:ro
       - /usr/local/lib:/opt/robot_sdk/lib:ro
     environment:
-      # ROS safety topics share Zenoh with bringup/twist_mux. The Unitree SDK
-      # continues to use CycloneDDS directly for rt/lowstate and rt/arm_sdk.
-      RMW_IMPLEMENTATION: rmw_zenoh_cpp
-      ZENOH_CONFIG_OVERRIDE: 'mode="client";connect/endpoints=["tcp/127.0.0.1:7448"]'
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
       UNITREE_SDK2_ROOT: /opt/robot_sdk
-    depends_on:
-      - zenoh
     container_name: g1_robot_manipulation
     command: ["bash", "/botbrain_ws/src/g1_manipulation_pkg/scripts/start_manipulation.sh"]
     restart: no
