@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <math.h>
 #include <deque>
@@ -13,6 +14,7 @@
 #include <pcl/point_types.h>
 #include <condition_variable>
 #include <iostream>
+#include <limits>
 #include <nav_msgs/msg/odometry.hpp>
 #include <pcl/common/transforms.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -31,6 +33,8 @@ constexpr double kMaxInitialGyroNorm = 0.08;          // rad/s
 constexpr double kMaxInitialAccelError = 0.60;        // m/s^2
 constexpr double kMaxInitialGyroVariance = 0.0004;    // (rad/s)^2
 constexpr double kMaxInitialAccelVariance = 0.08;     // (m/s^2)^2
+constexpr double kMaxInitialGravityTiltRad = 0.5235987756; // 30 deg
+constexpr double kMaxGravityAlignmentError = 1.0e-3;  // rad
 
 const bool time_list(PointType &x, PointType &y) {return (x.curvature < y.curvature);};
 
@@ -288,18 +292,54 @@ bool ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   }
 
   state_ikfom init_state = kf_state.get_x();
+  bool gravity_alignment_valid = false;
+  double measured_tilt = std::numeric_limits<double>::infinity();
+  Eigen::Quaterniond gravity_alignment = Eigen::Quaterniond::Identity();
   if (stationary_window_ready)
   {
-    const Eigen::Quaterniond gravity_alignment =
-        Eigen::Quaterniond::FromTwoVectors(
-        (-mean_acc).normalized(), V3D(0.0, 0.0, -1.0));
+    // At rest the accelerometer measures specific force opposite gravity.
+    // state.rot maps body vectors into the world frame, so align the measured
+    // specific force with world up and keep gravity explicitly world down.
+    const V3D measured_specific_force = mean_acc.normalized();
+    const V3D world_up(0.0, 0.0, 1.0);
+    const double measured_up_cosine = std::max(
+        -1.0, std::min(1.0, measured_specific_force.dot(world_up)));
+    measured_tilt = std::acos(measured_up_cosine);
+    gravity_alignment = Eigen::Quaterniond::FromTwoVectors(
+        measured_specific_force, world_up).normalized();
+    const V3D aligned_specific_force =
+        gravity_alignment * measured_specific_force;
+    const double alignment_cosine = std::max(
+        -1.0, std::min(1.0, aligned_specific_force.dot(world_up)));
+    const double alignment_error = std::acos(alignment_cosine);
+    gravity_alignment_valid =
+        gravity_alignment.coeffs().allFinite() &&
+        aligned_specific_force.allFinite() &&
+        std::isfinite(measured_tilt) &&
+        measured_tilt <= kMaxInitialGravityTiltRad &&
+        std::isfinite(alignment_error) &&
+        alignment_error <= kMaxGravityAlignmentError;
+
+    if (!gravity_alignment_valid)
+    {
+      std::cout << "IMU gravity alignment validation failed: mean_acc="
+                << mean_acc.transpose() << ", measured_tilt="
+                << measured_tilt << " rad, residual=" << alignment_error
+                << " rad; preserving initial world orientation" << std::endl;
+    }
+  }
+
+  if (stationary_window_ready && gravity_alignment_valid)
+  {
     init_state.rot = SO3(gravity_alignment);
     init_state.grav = S2(V3D(0.0, 0.0, -G_m_s2));
     init_state.bg = mean_gyr;
     std::cout << "IMU stationary initialization accepted after "
               << init_attempt_num_ << " samples: acc_var="
               << cov_acc.transpose() << ", gyr_var="
-              << cov_gyr.transpose() << std::endl;
+              << cov_gyr.transpose() << ", mean_acc="
+              << mean_acc.transpose() << ", initial_tilt="
+              << measured_tilt << " rad" << std::endl;
   }
   else
   {
@@ -311,10 +351,13 @@ bool ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     init_state.grav = S2(-mean_acc / mean_acc.norm() * G_m_s2);
     // A moving average is not a gyro bias estimate.  Keep the filter's prior
     // bias (zero at first startup) instead of subtracting real body rotation.
-    std::cout << "IMU stationary initialization timed out after "
-              << init_attempt_num_
-              << " samples; preserving initial world orientation"
-              << std::endl;
+    if (!stationary_window_ready)
+    {
+      std::cout << "IMU stationary initialization timed out after "
+                << init_attempt_num_
+                << " samples; preserving initial world orientation"
+                << std::endl;
+    }
   }
   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   init_state.offset_R_L_I = Lidar_R_wrt_IMU;

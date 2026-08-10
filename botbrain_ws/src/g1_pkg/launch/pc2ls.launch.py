@@ -33,7 +33,11 @@ def generate_launch_description():
             output='screen',
             parameters=[params_file, {'target_frame': target_frame}],
             remappings=[
-                ('cloud_in', '/cloud_registered_body_1'),
+                # The world cloud is published only after FAST-LIO accepts the
+                # scan and publishes the matching timestamped odometry/TF.
+                # Guarded/recovery frames publish no world cloud, so they
+                # cannot enter navigation as obstacle observations.
+                ('cloud_in', '/cloud_registered_1'),
                 ('scan', '/scan'),
             ],
         )

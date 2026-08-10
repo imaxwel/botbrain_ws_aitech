@@ -718,13 +718,14 @@ def test_localization_republishes_static_pcd_and_publishes_candidate_preview():
     assert preview < quality_rejection
 
 
-def test_g1_laserscan_filters_body_cloud_for_navigation_obstacles():
+def test_g1_laserscan_uses_only_accepted_world_cloud_for_navigation_obstacles():
     launch = _read("botbrain_ws/src/g1_pkg/launch/pc2ls.launch.py")
     params = yaml.safe_load(_read(
         "botbrain_ws/src/g1_pkg/config/pointcloud_to_laserscan_params.yaml"))
     scan_params = params["pointcloud_to_laserscan_node"]["ros__parameters"]
 
-    assert "('cloud_in', '/cloud_registered_body_1')" in launch
+    assert "('cloud_in', '/cloud_registered_1')" in launch
+    assert "('cloud_in', '/cloud_registered_body_1')" not in launch
     assert "('scan', '/scan')" in launch
     assert "/livox/lidar" not in launch
     assert "f'{robot_name}/base_footprint'" in launch
@@ -733,9 +734,9 @@ def test_g1_laserscan_filters_body_cloud_for_navigation_obstacles():
     assert 1.20 <= float(scan_params["max_height"]) <= 1.50
     assert float(scan_params["range_min"]) >= 0.40
     assert float(scan_params["range_max"]) >= 3.0
-    assert 0.05 <= float(scan_params["transform_tolerance"]) <= 0.15
+    assert float(scan_params["transform_tolerance"]) == 0.0
     assert scan_params["use_inf"] is True
-    assert int(scan_params["queue_size"]) >= 5
+    assert int(scan_params["queue_size"]) == 1
     assert "concurrency_level" not in scan_params
 
     compose_localization_launch = _read(
@@ -913,6 +914,32 @@ def test_fast_lio_live_clouds_do_not_queue_stale_zenoh_frames():
     assert "rclcpp::QoS(rclcpp::KeepLast(1)).best_effort()" in source
     assert '"cloud_registered_1", latest_cloud_qos' in source
     assert '"cloud_registered_body_1", latest_cloud_qos' in source
+    assert "bool published_unconfirmed_pose = false;" in source
+    assert (
+        "if (published_unconfirmed_pose && scan_pub_en && scan_body_pub_en)"
+        in source
+    )
+    reject_block = source[
+        source.index("if (reject_update)"):
+        source.index("if (recovery_update)")
+    ]
+    recovery_block = source[
+        source.index("if (recovery_update)"):
+        source.index("state_point = updated_state;", source.index(
+            "if (recovery_update)")) + len("state_point = updated_state;")
+    ]
+    assert "publish_frame_world" not in reject_block
+    assert "publish_frame_world" not in recovery_block
+
+    recovery_start = source.index("if (recovery_update)")
+    recovery_state = source.index("state_point = updated_state;", recovery_start)
+    strict_accept = source.index(
+        "state_point = updated_state;", recovery_state + 1)
+    accepted_odom = source.index(
+        "publish_odometry(pubOdomAftMapped_, tf_broadcaster_);", strict_accept)
+    accepted_world = source.index(
+        "publish_frame_world(pubLaserCloudFull_);", accepted_odom)
+    assert accepted_odom < accepted_world
 
 
 def test_open3d_initializes_from_current_cloud_without_persisted_pose():
@@ -1064,17 +1091,18 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert global_scan["inf_is_valid"] is True
     assert 0.5 <= float(global_scan["expected_update_rate"]) <= 1.0
     assert global_costmap["denoise_layer"]["minimal_group_size"] == 2
-    assert float(global_costmap["inflation_layer"]["cost_scaling_factor"]) >= 60.0
+    assert 8.0 <= float(
+        global_costmap["inflation_layer"]["cost_scaling_factor"]) <= 15.0
     global_footprint = ast.literal_eval(global_costmap["footprint"])
     global_padding = float(global_costmap["footprint_padding"])
-    assert math.isclose(global_padding, 0.0, abs_tol=1e-9)
+    assert math.isclose(global_padding, 0.02, abs_tol=1e-9)
     global_circumscribed_radius = max(
         math.hypot(abs(x) + global_padding, abs(y) + global_padding)
         for x, y in global_footprint)
     assert global_costmap["inflation_layer"]["inflation_radius"] >= global_circumscribed_radius
     assert math.isclose(
         float(global_costmap["inflation_layer"]["inflation_radius"]),
-        0.29,
+        0.38,
         abs_tol=1e-9,
     )
     assert local_costmap["plugins"] == [
@@ -1091,14 +1119,14 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert local_costmap["denoise_layer"]["minimal_group_size"] == 2
     local_footprint = ast.literal_eval(local_costmap["footprint"])
     local_padding = float(local_costmap["footprint_padding"])
-    assert math.isclose(local_padding, 0.02, abs_tol=1e-9)
+    assert math.isclose(local_padding, 0.03, abs_tol=1e-9)
     local_circumscribed_radius = max(
         math.hypot(abs(x) + local_padding, abs(y) + local_padding)
         for x, y in local_footprint)
     assert local_costmap["inflation_layer"]["inflation_radius"] >= local_circumscribed_radius
     assert math.isclose(
         float(local_costmap["inflation_layer"]["inflation_radius"]),
-        0.35,
+        0.40,
         abs_tol=1e-9,
     )
     assert global_footprint == local_footprint
@@ -1282,10 +1310,12 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
         0.20,
         abs_tol=1e-9,
     )
-    assert planner["use_final_approach_orientation"] is True
+    assert planner["use_final_approach_orientation"] is False
     assert math.isclose(float(controller["failure_tolerance"]), 1.0)
     assert float(controller["min_y_velocity_threshold"]) <= 0.01
     assert int(controller["FollowPath"]["iteration_count"]) == 1
+    assert int(controller["FollowPath"]["CostCritic"][
+        "trajectory_point_step"]) == 1
     assert math.isclose(float(controller["FollowPath"]["vx_max"]), 0.50)
     assert controller["controller_plugins"] == [
         "FollowPath", "FollowPathFallback"]

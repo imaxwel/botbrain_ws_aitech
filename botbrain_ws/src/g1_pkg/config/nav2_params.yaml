@@ -15,14 +15,15 @@
       # a 0.25 m stopping envelope, while the planner only relaxes by 0.15 m
       # when the requested cell is genuinely occupied or unreachable.
       tolerance: 0.15
-      # Use the direction of the final path segment instead of forcing a
-      # recorded waypoint yaw that can make the robot oscillate at the goal.
-      use_final_approach_orientation: true
+      # A recorded waypoint is a full pose.  Replacing its yaw with the final
+      # path segment made Nav2 report success while the G1 was still facing
+      # 30--50 degrees away from the requested direction.
+      use_final_approach_orientation: false
       max_iterations: 500000
-      # Keep hard collision checks intact while preferring a 2 m corridor path
-      # over a 20+ m low-cost loop. The old value (15) let a transient scan
-      # cost dominate geometric distance.
-      cost_travel_multiplier: 3.0
+      # Keep a middle ground between the old value of 15 (large detours from
+      # transient scan costs) and 3 (paths that were observed hugging inflated
+      # obstacles closely enough for the walking G1 to make contact).
+      cost_travel_multiplier: 5.0
 
 
 /**/controller_server:
@@ -124,13 +125,15 @@
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 6.0
+        cost_weight: 8.0
         near_collision_cost: 253
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
-        trajectory_point_step: 2
+        # Check every predicted pose.  Skipping alternate poses can step over
+        # a thin obstacle at the configured 0.5 m/s maximum speed.
+        trajectory_point_step: 1
       PathAlignCritic:
         enabled: true
         cost_power: 1
@@ -292,10 +295,10 @@
       # allow_unknown=false policy actually prevents out-of-map detours.
       track_unknown_space: true
 
-      footprint: "[[0.175, 0.225], [0.175, -0.225], [-0.175, -0.225], [-0.175, 0.225]]"
-      # Use the measured footprint without an extra global margin; local
-      # control retains the larger padding below for dynamic-obstacle safety.
-      footprint_padding: 0.0
+      # Include the torso/arm envelope and normal lateral body sway, not only
+      # the nominal 0.45 m standing width.
+      footprint: "[[0.175, 0.255], [0.175, -0.255], [-0.175, -0.255], [-0.175, 0.255]]"
+      footprint_padding: 0.02
 
       # Keep global planning aware of nearby dynamic obstacles, but use the
       # filtered /scan source with explicit clearing instead of raw PointCloud2.
@@ -338,11 +341,12 @@
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Cover the unpadded footprint's ~0.285 m circumscribed radius. The
-        # higher scaling factor narrows the soft cost halo without reducing
-        # the hard footprint collision envelope.
-        inflation_radius: 0.29
-        cost_scaling_factor: 60.0
+        # The previous 0.29 m / scaling 60 halo decayed within a few cells, so
+        # it was visible in RViz but had little influence on Smac's path cost.
+        # Retain a moderate soft buffer without restoring the old value 15
+        # planner weighting that produced map-sized detours.
+        inflation_radius: 0.38
+        cost_scaling_factor: 12.0
 
 /**/local_costmap:
   local_costmap:
@@ -359,8 +363,10 @@
       update_frequency: 10.0
       publish_frequency: 5.0
 
-      footprint: "[[0.175, 0.225], [0.175, -0.225], [-0.175, -0.225], [-0.175, 0.225]]"
-      footprint_padding: 0.02
+      footprint: "[[0.175, 0.255], [0.175, -0.255], [-0.175, -0.255], [-0.175, 0.255]]"
+      # The local controller gets one extra centimetre for gait sway and
+      # tracking lag beyond the global planner's already padded footprint.
+      footprint_padding: 0.03
 
       track_unknown_space: false
       plugins: ["obstacle_layer", "denoise_layer", "inflation_layer"]
@@ -392,9 +398,8 @@
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Cover the local padded footprint's ~0.32 m circumscribed radius.
-        inflation_radius: 0.35
-        cost_scaling_factor: 10.0
+        inflation_radius: 0.40
+        cost_scaling_factor: 8.0
 
 /**/behavior_server:
   ros__parameters:

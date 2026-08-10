@@ -47,15 +47,18 @@ def test_imu_initialization_aligns_gravity_only_from_a_stationary_window():
     assert "cov_gyr.maxCoeff() <= kMaxInitialGyroVariance" in source
     assert "N = 0;" in source
     assert "Eigen::Quaterniond::FromTwoVectors" in source
+    assert "measured_specific_force, world_up" in source
+    assert "measured_tilt <= kMaxInitialGravityTiltRad" in source
+    assert "alignment_error <= kMaxGravityAlignmentError" in source
     assert "init_state.rot = SO3(gravity_alignment);" in source
     assert "init_state.grav = S2(V3D(0.0, 0.0, -G_m_s2));" in source
     assert "preserving initial world orientation" in source
 
 
-def test_laserscan_does_not_wait_for_a_future_transform():
+def test_laserscan_drops_untransformable_history_instead_of_replaying_it():
     params = yaml.safe_load(_read(
         "botbrain_ws/src/g1_pkg/config/pointcloud_to_laserscan_params.yaml"
     ))["pointcloud_to_laserscan_node"]["ros__parameters"]
 
-    assert 0.05 <= float(params["transform_tolerance"]) <= 0.15
-    assert params["queue_size"] >= 5
+    assert float(params["transform_tolerance"]) == 0.0
+    assert params["queue_size"] == 1

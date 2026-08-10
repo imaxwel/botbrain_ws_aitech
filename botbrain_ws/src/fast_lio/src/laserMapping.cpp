@@ -86,8 +86,8 @@ bool runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrins
 std::size_t last_saved_point_count = std::numeric_limits<std::size_t>::max();
 bool imu_flip_yz = false;
 bool lidar_update_guard_enable = true;
-int imu_queue_depth = 400, lidar_queue_depth = 20;
-double max_imu_gap = 0.06, preprocess_max_range = 0.0;
+int imu_queue_depth = 2000, lidar_queue_depth = 100;
+double max_imu_gap = 0.02, preprocess_max_range = 0.0;
 int guard_min_effective_points = 100, consecutive_guard_rejections = 0;
 int guard_recovery_min_rejections = 5, guard_recovery_min_effective_points = 60;
 int guard_max_unconfirmed_odometry_frames = 3, guard_max_consecutive_rejections = 30;
@@ -938,9 +938,9 @@ public:
         this->declare_parameter<bool>("common.time_sync_en", false);
         this->declare_parameter<double>("common.time_offset_lidar_to_imu", 0.0);
         this->declare_parameter<bool>("common.imu_flip_yz", false);
-        this->declare_parameter<int>("common.imu_queue_depth", 400);
-        this->declare_parameter<int>("common.lidar_queue_depth", 20);
-        this->declare_parameter<double>("common.max_imu_gap", 0.06);
+        this->declare_parameter<int>("common.imu_queue_depth", 2000);
+        this->declare_parameter<int>("common.lidar_queue_depth", 100);
+        this->declare_parameter<double>("common.max_imu_gap", 0.02);
         this->declare_parameter<double>("filter_size_corner", 0.5);
         this->declare_parameter<double>("filter_size_surf", 0.5);
         this->declare_parameter<double>("filter_size_map", 0.5);
@@ -998,9 +998,9 @@ public:
         this->get_parameter_or<bool>("common.time_sync_en", time_sync_en, false);
         this->get_parameter_or<double>("common.time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
         this->get_parameter_or<bool>("common.imu_flip_yz", imu_flip_yz, false);
-        this->get_parameter_or<int>("common.imu_queue_depth", imu_queue_depth, 400);
-        this->get_parameter_or<int>("common.lidar_queue_depth", lidar_queue_depth, 20);
-        this->get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.06);
+        this->get_parameter_or<int>("common.imu_queue_depth", imu_queue_depth, 2000);
+        this->get_parameter_or<int>("common.lidar_queue_depth", lidar_queue_depth, 100);
+        this->get_parameter_or<double>("common.max_imu_gap", max_imu_gap, 0.02);
         this->get_parameter_or<double>("filter_size_corner", filter_size_corner_min, 0.5);
         this->get_parameter_or<double>("filter_size_surf", filter_size_surf_min, 0.5);
         this->get_parameter_or<double>("filter_size_map", filter_size_map_min, 0.5);
@@ -1567,11 +1567,16 @@ private:
                 // Bridge only a short transient with IMU-predicted odometry. Once
                 // the configured limit is exceeded, stop TF/odometry so Nav2's
                 // sensor freshness checks stop the robot instead of consuming an
-                // unconstrained IMU trajectory. The body cloud remains diagnostic.
+                // unconstrained IMU trajectory. A body-frame cloud without its
+                // matching timestamped TF must not be published: downstream
+                // message filters would queue it and later project stale floor
+                // points into the navigation obstacle band.
+                bool published_unconfirmed_pose = false;
                 if (!suppress_unconfirmed_odometry_after_timing_gap &&
                     consecutive_guard_rejections <= guard_max_unconfirmed_odometry_frames)
                 {
                     publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
+                    published_unconfirmed_pose = true;
                     if (path_en)
                         publish_path(pubPath_);
                 }
@@ -1583,7 +1588,7 @@ private:
                         "rejected scans",
                         consecutive_guard_rejections);
                 }
-                if (scan_pub_en && scan_body_pub_en)
+                if (published_unconfirmed_pose && scan_pub_en && scan_body_pub_en)
                     publish_frame_body(pubLaserCloudFull_body_);
                 return;
             }

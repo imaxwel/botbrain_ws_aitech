@@ -4,10 +4,10 @@ pointcloud_to_laserscan_node:
     # height filtering. Filtering in body would let normal gait roll/pitch make
     # the floor look sloped and leak into the obstacle band.
     target_frame: "g1_robot/base_footprint"
-    # FAST-LIO cloud and the planar localization TF cross container/Zenoh
-    # boundaries. A small lookup wait prevents an occasional missing /scan
-    # frame without reintroducing the old 0.20 s scan latency.
-    transform_tolerance: 0.10
+    # Require the transform for the cloud's own timestamp. A positive tf2
+    # tolerance waits for a future transform and can retain a cloud after a
+    # localization gap, which is exactly the stale-floor failure mode here.
+    transform_tolerance: 0.0
     min_height: 0.20
     max_height: 1.35
     angle_min: -3.1415926
@@ -19,5 +19,7 @@ pointcloud_to_laserscan_node:
     range_max: 5.0
     use_inf: true
     inf_epsilon: 1.0
-    # Buffer clouds briefly while the matching planar TF arrives over Zenoh.
-    queue_size: 10
+    # Navigation must never consume a historical cloud after TF recovers.
+    # Keep only the newest accepted FAST-LIO frame; its matching odometry/TF is
+    # published before cloud_registered_1 in the same processing cycle.
+    queue_size: 1
