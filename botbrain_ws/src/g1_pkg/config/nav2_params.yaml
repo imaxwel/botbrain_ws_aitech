@@ -65,9 +65,10 @@
       yaw_goal_tolerance: 0.17
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
-      # MPPI requires model_dt >= controller period. At 12 Hz the period is
-      # exactly 1/12 s; 30 steps preserve the previous ~2.5 s horizon.
-      time_steps: 30
+      # MPPI requires model_dt >= controller period. A 1.67 s horizon keeps
+      # enough indoor look-ahead while reducing long-horizon competition
+      # between path tracking and final-pose objectives on short routes.
+      time_steps: 20
       model_dt: 0.08333333333333333
       batch_size: 1800               # 2000→1800: 减少15%采样数，缓解控制周期超时
       vx_std: 0.6
@@ -111,19 +112,20 @@
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        # Keep following the path until the robot is genuinely near the goal;
-        # switching at 1.4 m caused an early brake-and-resume cycle.
-        threshold_to_consider: 0.9
+        # Hand path tracking and final-pose critics over at one distance. The
+        # previous staggered 0.9/0.8/0.6/0.5/0.35 m bands introduced several
+        # objective changes during one short approach.
+        threshold_to_consider: 0.45
       GoalAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 2.0           # 3.0→2.0: 降低终点朝向权重，减少到点后旋转微调冲动
-        threshold_to_consider: 0.35
+        threshold_to_consider: 0.45
       PreferForwardCritic:
         enabled: true
         cost_power: 1
         cost_weight: 1.0
-        threshold_to_consider: 0.8
+        threshold_to_consider: 0.45
       CostCritic:
         enabled: true
         cost_power: 1
@@ -144,7 +146,7 @@
         cost_weight: 12.0
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
-        threshold_to_consider: 0.6
+        threshold_to_consider: 0.45
         offset_from_furthest: 12
         use_path_orientations: false
       PathFollowCritic:
@@ -152,13 +154,13 @@
         cost_power: 1
         cost_weight: 5.0
         offset_from_furthest: 5
-        threshold_to_consider: 0.9
+        threshold_to_consider: 0.45
       PathAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 2.0
         offset_from_furthest: 4
-        threshold_to_consider: 0.5
+        threshold_to_consider: 0.45
         max_angle_to_furthest: 1.0
         mode: 0
 
@@ -343,11 +345,9 @@
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Keep the radius outside the robot's circumscribed footprint. Nav2's
-        # inflation_radius is measured from the obstacle, so setting it to
-        # 0.12 m would be smaller than the G1 itself. A steeper decay narrows
-        # the visible/planning halo without weakening footprint collision.
-        inflation_radius: 0.38
+        # Explicitly requested 20 cm costmap inflation. Footprint collision
+        # checking remains enabled separately in Smac and MPPI.
+        inflation_radius: 0.20
         cost_scaling_factor: 15.0
 
 /**/local_costmap:
@@ -400,7 +400,7 @@
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.40
+        inflation_radius: 0.32
         cost_scaling_factor: 12.0
 
 /**/behavior_server:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Remove short navigation command gaps without delaying explicit stops."""
+"""Bridge brief Nav2 optimizer gaps while keeping bounded stop behavior."""
 
 import copy
 import math
@@ -15,6 +15,7 @@ from rclpy.node import Node
 
 PUBLISH_PERIOD_SEC = 1.0 / 30.0
 COMMAND_HOLD_SEC = 0.18
+ZERO_COMMAND_GRACE_SEC = 0.12
 EMA_ALPHA = 0.45
 OSCILLATION_ALPHA = 0.22
 OSCILLATION_WINDOW_SEC = 0.8
@@ -70,12 +71,14 @@ class CmdVelContinuity(Node):
 
         self._filtered = Twist()
         self._last_input_time = None
+        self._zero_command_since = None
         self._stale = True
         self._direction_history = deque()
         self._oscillation_active = False
         self.get_logger().info(
-            "Navigation command continuity active: alpha=%.2f, hold=%.2fs"
-            % (EMA_ALPHA, COMMAND_HOLD_SEC))
+            "Navigation command continuity active: alpha=%.2f, hold=%.2fs, "
+            "zero_grace=%.2fs"
+            % (EMA_ALPHA, COMMAND_HOLD_SEC, ZERO_COMMAND_GRACE_SEC))
 
     def _command_callback(self, command: Twist) -> None:
         now = time.monotonic()
@@ -85,17 +88,28 @@ class CmdVelContinuity(Node):
             self._filtered = Twist()
             self._direction_history.clear()
             self._oscillation_active = False
+            self._zero_command_since = None
         elif _is_zero(command):
-            # An explicit zero is a controller decision, not packet loss.  Do
-            # not hold a previous walking command over it.
-            self._filtered = copy.deepcopy(command)
-            self._direction_history.clear()
-            self._oscillation_active = False
+            if self._zero_command_since is None:
+                self._zero_command_since = now
+            zero_duration = now - self._zero_command_since
+            if (
+                self._stale or _is_zero(self._filtered) or
+                zero_duration >= ZERO_COMMAND_GRACE_SEC
+            ):
+                # A persistent zero is a real controller stop. The separate
+                # high-priority navigation safety topic bypasses this grace
+                # period and remains immediate.
+                self._filtered = copy.deepcopy(command)
+                self._direction_history.clear()
+                self._oscillation_active = False
         elif self._stale:
             # The Nav2 velocity smoother already owns acceleration limiting;
             # avoid adding an extra startup ramp after a real stop.
             self._filtered = copy.deepcopy(command)
+            self._zero_command_since = None
         else:
+            self._zero_command_since = None
             self._record_direction(now, command)
             alpha = (
                 OSCILLATION_ALPHA
@@ -144,14 +158,21 @@ class CmdVelContinuity(Node):
 
     def _publish(self) -> None:
         now = time.monotonic()
-        if (
+        input_timed_out = (
             self._last_input_time is None or
             now - self._last_input_time > COMMAND_HOLD_SEC
-        ):
+        )
+        zero_grace_expired = (
+            self._zero_command_since is not None and
+            now - self._zero_command_since >= ZERO_COMMAND_GRACE_SEC
+        )
+        if input_timed_out or zero_grace_expired:
             self._filtered = Twist()
-            self._stale = True
             self._direction_history.clear()
             self._oscillation_active = False
+            if input_timed_out:
+                self._stale = True
+                self._zero_command_since = None
         self._publisher.publish(self._filtered)
 
 

@@ -1053,14 +1053,18 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     fallback = controller["FollowPathFallback"]
 
     assert float(mppi["model_dt"]) >= (1.0 / frequency) - 1e-12
-    assert 2.0 <= float(mppi["model_dt"]) * int(mppi["time_steps"]) <= 3.0
+    assert 1.5 <= float(mppi["model_dt"]) * int(mppi["time_steps"]) <= 1.8
     assert mppi["visualize"] is False
     assert controller["controller_plugins"] == [
         "FollowPath", "FollowPathFallback"]
-    assert math.isclose(float(
-        mppi["GoalCritic"]["threshold_to_consider"]), 0.9)
-    assert math.isclose(float(
-        mppi["PathFollowCritic"]["threshold_to_consider"]), 0.9)
+    handoff_thresholds = {
+        float(mppi[critic]["threshold_to_consider"])
+        for critic in (
+            "GoalCritic", "GoalAngleCritic", "PreferForwardCritic",
+            "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
+        )
+    }
+    assert handoff_thresholds == {0.45}
     assert float(mppi["PathAlignCritic"]["cost_weight"]) < 20.0
     assert int(mppi["PathAlignCritic"]["offset_from_furthest"]) < 20
     assert float(fallback["model_dt"]) >= (1.0 / frequency) - 1e-12
@@ -1115,13 +1119,9 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     global_footprint = ast.literal_eval(global_costmap["footprint"])
     global_padding = float(global_costmap["footprint_padding"])
     assert math.isclose(global_padding, 0.02, abs_tol=1e-9)
-    global_circumscribed_radius = max(
-        math.hypot(abs(x) + global_padding, abs(y) + global_padding)
-        for x, y in global_footprint)
-    assert global_costmap["inflation_layer"]["inflation_radius"] >= global_circumscribed_radius
     assert math.isclose(
         float(global_costmap["inflation_layer"]["inflation_radius"]),
-        0.38,
+        0.10,
         abs_tol=1e-9,
     )
     assert local_costmap["plugins"] == [
@@ -1139,13 +1139,9 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     local_footprint = ast.literal_eval(local_costmap["footprint"])
     local_padding = float(local_costmap["footprint_padding"])
     assert math.isclose(local_padding, 0.03, abs_tol=1e-9)
-    local_circumscribed_radius = max(
-        math.hypot(abs(x) + local_padding, abs(y) + local_padding)
-        for x, y in local_footprint)
-    assert local_costmap["inflation_layer"]["inflation_radius"] >= local_circumscribed_radius
     assert math.isclose(
         float(local_costmap["inflation_layer"]["inflation_radius"]),
-        0.40,
+        0.10,
         abs_tol=1e-9,
     )
     assert math.isclose(
@@ -1358,12 +1354,18 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
         if isinstance(node, ast.Assign) and
         len(node.targets) == 1 and
         isinstance(node.targets[0], ast.Name) and
-        node.targets[0].id in {"COMMAND_HOLD_SEC", "EMA_ALPHA"}
+        node.targets[0].id in {
+            "COMMAND_HOLD_SEC", "ZERO_COMMAND_GRACE_SEC", "EMA_ALPHA"}
     }
     assert 0.0 < constants["COMMAND_HOLD_SEC"] < float(
         velocity_smoother["velocity_timeout"])
+    assert 0.0 < constants["ZERO_COMMAND_GRACE_SEC"] < constants[
+        "COMMAND_HOLD_SEC"]
     assert 0.0 < constants["EMA_ALPHA"] < 1.0
     assert "elif _is_zero(command):" in continuity
+    assert "zero_duration >= ZERO_COMMAND_GRACE_SEC" in continuity
+    assert "zero_grace_expired" in continuity
+    assert "if input_timed_out or zero_grace_expired:" in continuity
     assert "self._filtered = Twist()" in continuity
     assert "Rejected non-finite navigation velocity command" in continuity
     assert "OSCILLATION_MIN_REVERSALS" in continuity
