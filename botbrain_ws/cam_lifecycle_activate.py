@@ -72,7 +72,7 @@ def do_configure_activate():
         return
     # USB reset happens during configure — wait for device to fully re-initialize
     log('waiting for USB device stabilization...')
-    time.sleep(8)
+    time.sleep(15)
     log('activating...')
     change_state(TRANSITION_ACTIVATE, timeout=15)
     time.sleep(2)
@@ -117,7 +117,7 @@ while True:
                 log(f'frame file stale {age:.0f}s — deactivating to reset Zenoh publisher...')
                 change_state(TRANSITION_DEACTIVATE, timeout=15)
                 wait_for_state('inactive', timeout_s=10)
-                time.sleep(2)
+                time.sleep(10)
                 do_configure_activate()
             else:
                 time.sleep(20)

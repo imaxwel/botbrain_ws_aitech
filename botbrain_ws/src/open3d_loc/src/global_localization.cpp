@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -231,6 +232,9 @@ private:
         double &fitness,
         double &inlier_rmse,
         double &ransac_fitness);
+    void UpdateLocalizationConfidence(double confidence);
+    void ClearLocalizationConfidence();
+    double LocalizationConfidenceForPublish() const;
 
     /// @brief 订阅baselink2odom,即fast_lio的里程计信息
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_baselink2odom_;
@@ -374,6 +378,8 @@ private:
 
     /// @brief 当前定位overlap，confidence
     std::atomic<double> loc_fitness_{0.0};
+    std::atomic<std::int64_t> loc_fitness_update_steady_ns_{0};
+    double loc_fitness_stale_timeout_sec_ = 2.0;
 
     /// @brief 定位置信度阈值
     double confidence_loc_th_;
@@ -906,6 +912,39 @@ GloabalLocalization::~GloabalLocalization()
     }
 }
 
+void GloabalLocalization::UpdateLocalizationConfidence(double confidence)
+{
+    loc_fitness_.store(std::isfinite(confidence) ? confidence : 0.0);
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    loc_fitness_update_steady_ns_.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+void GloabalLocalization::ClearLocalizationConfidence()
+{
+    UpdateLocalizationConfidence(0.0);
+}
+
+double GloabalLocalization::LocalizationConfidenceForPublish() const
+{
+    const std::int64_t updated_ns = loc_fitness_update_steady_ns_.load();
+    if (updated_ns <= 0)
+    {
+        return 0.0;
+    }
+
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    const std::int64_t now_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    const double age_sec = static_cast<double>(now_ns - updated_ns) * 1e-9;
+    if (!std::isfinite(age_sec) || age_sec < 0.0 ||
+        age_sec > loc_fitness_stale_timeout_sec_)
+    {
+        return 0.0;
+    }
+    return loc_fitness_.load();
+}
+
 Eigen::Matrix4d GloabalLocalization::ConstrainMapOdom(
     const Eigen::Matrix4d &transform) const
 {
@@ -1403,7 +1442,7 @@ void GloabalLocalization::CallbackBaselink2Odom(const nav_msgs::msg::Odometry::S
                              "Skipping map->motion_link TF: invalid quaternion");
     }
 
-    localization_3d_confidence_.data = loc_fitness_.load();
+    localization_3d_confidence_.data = LocalizationConfidenceForPublish();
     pub_localization_3d_confidence_->publish(localization_3d_confidence_);
     localization_3d_delay_ms_.data =
         (this->now() - baselink2odom->header.stamp).seconds() * 1000.0;
@@ -1426,7 +1465,7 @@ void GloabalLocalization::CallbackScan(
             "Rejecting cloud_registered_1 frame '%s': Open3D requires world-frame cloud '%s'; never remap cloud_registered_body_1 here",
             scan_in_baselink->header.frame_id.c_str(),
             registered_cloud_world_frame_.c_str());
-        loc_fitness_.store(0.0);
+        ClearLocalizationConfidence();
         return;
     }
 
@@ -1884,7 +1923,7 @@ void GloabalLocalization::LocalizationInitialize()
                 continue;
             }
 
-            loc_fitness_.store(fitness);
+            UpdateLocalizationConfidence(fitness);
             const Eigen::Vector2d roll_pitch_deg = RollPitchDegrees(
                 pending_initialization_candidate.block<3, 3>(0, 0));
             const double elapsed_ms = std::chrono::duration<double, std::milli>(
@@ -2065,7 +2104,6 @@ void GloabalLocalization::Localization()
         if (pcd_scan->IsEmpty() ||
             current_scan_generation == last_processed_scan_generation)
         {
-            loc_fitness_.store(0.0);
             continue;
         }
 
@@ -2079,7 +2117,6 @@ void GloabalLocalization::Localization()
                 current_odom2map, current_odom_stamp,
                 iteration_manual_pose_generation))
         {
-            loc_fitness_.store(0.0);
             pending_large_correction_count = 0;
             RCLCPP_WARN_THROTTLE(
                 this->get_logger(), *this->get_clock(), 2000,
@@ -2110,7 +2147,6 @@ void GloabalLocalization::Localization()
             current_scan_stamp <= 0.0 || current_odom_stamp <= 0.0 ||
             scan_odom_skew > max_scan_odom_time_skew_sec_)
         {
-            loc_fitness_.store(0.0);
             pending_large_correction_count = 0;
             RCLCPP_WARN_THROTTLE(
                 this->get_logger(), *this->get_clock(), 2000,
@@ -2126,7 +2162,6 @@ void GloabalLocalization::Localization()
         {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                                  "Skipping ICP: invalid pose snapshot");
-            loc_fitness_.store(0.0);
             pending_large_correction_count = 0;
             continue;
         }
@@ -2166,7 +2201,6 @@ void GloabalLocalization::Localization()
                 "Skipping ICP: insufficient points (source=%zu/%d target=%zu/%d)",
                 source->points_.size(), min_icp_source_points_,
                 target->points_.size(), min_icp_target_points_);
-            loc_fitness_.store(0.0);
             pending_large_correction_count = 0;
             continue;
         }
@@ -2282,7 +2316,16 @@ void GloabalLocalization::Localization()
         {
             pending_large_correction_count = 0;
         }
-        loc_fitness_.store(accepted ? fitness : 0.0);
+        // Confidence describes the latest actual scan-to-map measurement,
+        // not whether this cycle applied a correction. A high-quality medium
+        // correction may be held for temporal confirmation and is still a
+        // valid overlap measurement. Cycles with no new scan keep this value;
+        // the publisher turns it into zero only after it is genuinely stale.
+        const bool confidence_measurement_valid =
+            !stale_after_manual_pose && valid_result && within_step_gate &&
+            inlier_rmse <= max_icp_inlier_rmse_;
+        UpdateLocalizationConfidence(
+            confidence_measurement_valid ? fitness : 0.0);
 
         if (stale_after_manual_pose || accepted)
         {
@@ -2455,7 +2498,7 @@ void GloabalLocalization::CallbackInitialPose(
         // atomically prove that their snapshot was not superseded by this pose.
         manual_pose_generation_.fetch_add(1);
     }
-    loc_fitness_.store(0.0);
+    ClearLocalizationConfidence();
     RCLCPP_WARN(this->get_logger(),
                 "Manual relocalization applied: requested map->base=(%.3f, %.3f, %.3f), map->odom=(%.3f, %.3f, %.3f)",
                 requested_baselink2map(0, 3), requested_baselink2map(1, 3),

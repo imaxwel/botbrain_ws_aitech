@@ -19,7 +19,8 @@ pointcloud_to_laserscan_node:
     range_max: 5.0
     use_inf: true
     inf_epsilon: 1.0
-    # Navigation must never consume a historical cloud after TF recovers.
-    # Keep only the newest accepted FAST-LIO frame; its matching odometry/TF is
-    # published before cloud_registered_1 in the same processing cycle.
-    queue_size: 1
+    # The accepted world cloud and its same-stamp planar TF are published by
+    # different processes. Keep a very short queue so normal container/Zenoh
+    # jitter does not drop the cloud while preserving the proven world-cloud
+    # height filtering and avoiding a backlog of historical frames.
+    queue_size: 3

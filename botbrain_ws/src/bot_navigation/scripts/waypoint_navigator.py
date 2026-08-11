@@ -107,6 +107,7 @@ def navigate(
     from rclpy.node import Node
     from rclpy.action import ActionClient
     from rclpy.qos import qos_profile_sensor_data
+    from rclpy.time import Time
     from nav2_msgs.action import NavigateToPose
     from geometry_msgs.msg import PoseStamped
     from sensor_msgs.msg import LaserScan
@@ -114,10 +115,13 @@ def navigate(
     from action_msgs.msg import GoalStatus
     from rclpy.signals import SignalHandlerOptions
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from tf2_ros import Buffer, TransformException, TransformListener
 
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = Node('waypoint_navigator')
     client = ActionClient(node, NavigateToPose, f'/{robot}/navigate_to_pose')
+    tf_buffer = Buffer()
+    tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
     active_goal_handle = [None]
 
     last_scan_received = [None]
@@ -227,12 +231,12 @@ def navigate(
             return False
         if result['occupied_count']:
             print(
-                f'  ✗ Refusing "{name}": target overlaps '
+                f'  ! Warning for "{name}": target is near '
                 f'{result["occupied_count"]} occupied grid cell(s) within '
                 f'{goal_grid_check_radius:.2f} m '
-                f'(max occupancy={result["max_occupancy"]})'
+                f'(max occupancy={result["max_occupancy"]}); '
+                'sending it to Nav2 to resolve against the live costmaps'
             )
-            return False
         return True
 
     try:
@@ -368,6 +372,44 @@ def navigate(
             GoalStatus.STATUS_CANCELED: 'CANCELED',
             GoalStatus.STATUS_ABORTED: 'ABORTED',
         }
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            base_frame = (
+                f'{robot}/base_footprint' if robot else 'base_footprint'
+            )
+            final_pose_deadline = time.monotonic() + 0.5
+            final_tf = None
+            while rclpy.ok() and time.monotonic() < final_pose_deadline:
+                rclpy.spin_once(node, timeout_sec=0.05)
+                try:
+                    final_tf = tf_buffer.lookup_transform(
+                        goal.pose.header.frame_id,
+                        base_frame,
+                        Time(),
+                    )
+                    break
+                except TransformException:
+                    continue
+            if final_tf is not None:
+                translation = final_tf.transform.translation
+                dx = translation.x - float(wp['x'])
+                dy = translation.y - float(wp['y'])
+                last_distance[0] = math.hypot(dx, dy)
+                orientation = final_tf.transform.rotation
+                final_yaw = _quaternion_yaw(
+                    orientation.x,
+                    orientation.y,
+                    orientation.z,
+                    orientation.w,
+                )
+                last_yaw_error[0] = abs(
+                    _angle_error(target_yaw, final_yaw)
+                )
+            else:
+                node.get_logger().warn(
+                    f'No final TF {goal.pose.header.frame_id} <- '
+                    f'{base_frame}; validating success with the last '
+                    'NavigateToPose feedback.'
+                )
         final_distance = last_distance[0]
         final_details = []
         if final_distance is not None:
@@ -436,6 +478,7 @@ def navigate(
                 rclpy.spin_once(node, timeout_sec=0.05)
         completed = False
     finally:
+        del tf_listener
         node.destroy_subscription(map_subscription)
         node.destroy_subscription(scan_subscription)
         node.destroy_node()

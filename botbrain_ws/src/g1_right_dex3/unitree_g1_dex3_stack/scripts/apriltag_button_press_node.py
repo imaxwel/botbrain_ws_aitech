@@ -251,7 +251,7 @@ class AprilTagButtonPressNode(Node):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=max(5.0, wait_s + 5.0),
+                timeout=max(15.0, wait_s + 12.0),
                 env=os.environ.copy(),
             )
         except subprocess.TimeoutExpired as ex:

@@ -736,7 +736,7 @@ def test_g1_laserscan_uses_only_accepted_world_cloud_for_navigation_obstacles():
     assert float(scan_params["range_max"]) >= 3.0
     assert float(scan_params["transform_tolerance"]) == 0.0
     assert scan_params["use_inf"] is True
-    assert int(scan_params["queue_size"]) == 1
+    assert int(scan_params["queue_size"]) == 3
     assert "concurrency_level" not in scan_params
 
     compose_localization_launch = _read(
@@ -748,6 +748,22 @@ def test_g1_laserscan_uses_only_accepted_world_cloud_for_navigation_obstacles():
     assert "remappings=[('scan', '/scan_loc')]" in generic_localization_launch
     assert "('/scan', '/scan_loc')" not in compose_localization_launch
     assert "remappings=[('/scan', '/scan_loc')]" not in generic_localization_launch
+
+
+def test_icp_confidence_holds_the_last_measurement_until_it_is_stale():
+    source = _read("botbrain_ws/src/open3d_loc/src/global_localization.cpp")
+    localization = source.split(
+        "void GloabalLocalization::Localization()", 1
+    )[1].split("void GloabalLocalization::StartLoc()", 1)[0]
+    no_new_scan_branch = localization.split(
+        "if (pcd_scan->IsEmpty() ||", 1
+    )[1].split("double current_odom_stamp", 1)[0]
+
+    assert "LocalizationConfidenceForPublish()" in source
+    assert "age_sec > loc_fitness_stale_timeout_sec_" in source
+    assert "UpdateLocalizationConfidence(" in localization
+    assert "confidence_measurement_valid" in localization
+    assert "loc_fitness_" not in no_new_scan_branch
 
 
 def test_mapping_disables_unbounded_laser_map_publication():
@@ -1091,8 +1107,11 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert global_scan["inf_is_valid"] is True
     assert 0.5 <= float(global_scan["expected_update_rate"]) <= 1.0
     assert global_costmap["denoise_layer"]["minimal_group_size"] == 2
-    assert 8.0 <= float(
-        global_costmap["inflation_layer"]["cost_scaling_factor"]) <= 15.0
+    assert math.isclose(
+        float(global_costmap["inflation_layer"]["cost_scaling_factor"]),
+        15.0,
+        abs_tol=1e-9,
+    )
     global_footprint = ast.literal_eval(global_costmap["footprint"])
     global_padding = float(global_costmap["footprint_padding"])
     assert math.isclose(global_padding, 0.02, abs_tol=1e-9)
@@ -1127,6 +1146,11 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert math.isclose(
         float(local_costmap["inflation_layer"]["inflation_radius"]),
         0.40,
+        abs_tol=1e-9,
+    )
+    assert math.isclose(
+        float(local_costmap["inflation_layer"]["cost_scaling_factor"]),
+        12.0,
         abs_tol=1e-9,
     )
     assert global_footprint == local_footprint
@@ -1168,6 +1192,9 @@ def test_waypoints_are_planar_and_never_reanchor_localization():
     assert "Waypoints file:" in navigator
     assert "live_map_scene" in navigator
     assert "goal_grid_occupancy" in navigator
+    assert 'sending it to Nav2 to resolve against the live costmaps' in navigator
+    assert "tf_buffer.lookup_transform(" in navigator
+    assert "validating success with the last" in navigator
     assert waypoint_database["format_version"] == 2
     for waypoint in waypoints.values():
         assert float(waypoint["z"]) == 0.0
@@ -1295,7 +1322,7 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     continuity = _read(
         "botbrain_ws/src/bot_navigation/scripts/cmd_vel_continuity.py")
 
-    assert 0.15 <= float(planner["tolerance"]) <= 0.25
+    assert 0.0 <= float(planner["tolerance"]) <= 0.05
     assert planner["allow_unknown"] is False
     assert 1.0 <= float(planner["cost_travel_multiplier"]) <= 5.0
     goal_checker = controller["general_goal_checker"]

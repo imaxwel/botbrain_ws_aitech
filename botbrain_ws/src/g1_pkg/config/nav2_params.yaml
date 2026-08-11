@@ -11,10 +11,10 @@
       use_astar: true
       motion_model_for_search: "VON_NEUMANN"
       downsample_costmap: false
-      # Keep the endpoint close to a free recorded goal. The controller accepts
-      # a 0.25 m stopping envelope, while the planner only relaxes by 0.15 m
-      # when the requested cell is genuinely occupied or unreachable.
-      tolerance: 0.15
+      # Keep a recorded waypoint close to its requested cell. The previous
+      # 0.15 m planner relaxation could combine with the controller tolerance
+      # and make a successful result visibly short of the saved pose.
+      tolerance: 0.05
       # A recorded waypoint is a full pose.  Replacing its yaw with the final
       # path segment made Nav2 report success while the G1 was still facing
       # 30--50 degrees away from the requested direction.
@@ -59,7 +59,9 @@
       # finish facing the recorded waypoint direction.
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
+      # Combined with the planner's 0.05 m endpoint tolerance, this caps the
+      # normal successful stopping envelope near 0.25 m instead of 0.40 m.
+      xy_goal_tolerance: 0.20
       yaw_goal_tolerance: 0.17
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
@@ -341,12 +343,12 @@
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # The previous 0.29 m / scaling 60 halo decayed within a few cells, so
-        # it was visible in RViz but had little influence on Smac's path cost.
-        # Retain a moderate soft buffer without restoring the old value 15
-        # planner weighting that produced map-sized detours.
+        # Keep the radius outside the robot's circumscribed footprint. Nav2's
+        # inflation_radius is measured from the obstacle, so setting it to
+        # 0.12 m would be smaller than the G1 itself. A steeper decay narrows
+        # the visible/planning halo without weakening footprint collision.
         inflation_radius: 0.38
-        cost_scaling_factor: 12.0
+        cost_scaling_factor: 15.0
 
 /**/local_costmap:
   local_costmap:
@@ -399,7 +401,7 @@
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.40
-        cost_scaling_factor: 8.0
+        cost_scaling_factor: 12.0
 
 /**/behavior_server:
   ros__parameters:

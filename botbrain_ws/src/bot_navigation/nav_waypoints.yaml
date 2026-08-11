@@ -166,66 +166,75 @@ scenes:
         qz: 0.13254
         qw: 0.991178
         frame: g1_robot/map
-      aitech_v2_1:
-        x: 2.9238
-        y: 1.2764
-        z: 0.0
-        qx: 0.0
-        qy: 0.0
-        qz: 0.761639
-        qw: 0.648002
-        frame: g1_robot/map
       aitech_v2_2:
-        x: 3.2607
-        y: 0.2915
+        x: 1.0611
+        y: -1.3849
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: -0.104129
-        qw: 0.994564
+        qz: -0.101458
+        qw: 0.99484
         frame: g1_robot/map
       aitech_v2_3:
-        x: 5.7545
-        y: 0.6486
+        x: 3.266
+        y: -1.4305
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: -0.022871
-        qw: 0.999738
+        qz: -0.001278
+        qw: 0.999999
         frame: g1_robot/map
       aitech_v2_4:
-        x: 11.378
-        y: 1.0312
+        x: 9.1162
+        y: -1.7597
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: 0.045668
-        qw: 0.998957
+        qz: 0.011015
+        qw: 0.999939
         frame: g1_robot/map
       aitech_v2_turn:
-        x: 10.0435
-        y: 0.9269
+        x: 7.8705
+        y: -1.8469
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: -0.999841
-        qw: 0.017819
+        qz: 0.999726
+        qw: 0.023416
         frame: g1_robot/map
       aitech_v2_5:
-        x: 5.8166
-        y: 0.4151
+        x: 5.1637
+        y: -1.5414
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: -0.99988
-        qw: 0.015487
+        qz: -0.999772
+        qw: 0.021359
         frame: g1_robot/map
       aitech_v2_6:
-        x: 3.5731
-        y: 0.2146
+        x: 1.1494
+        y: -1.7284
         z: 0.0
         qx: 0.0
         qy: 0.0
-        qz: -0.997003
-        qw: 0.077357
+        qz: -0.999978
+        qw: 0.006595
+        frame: g1_robot/map
+      aitech_v2_0:
+        x: 0.1097
+        y: -0.195
+        z: 0.0
+        qx: 0.0
+        qy: 0.0
+        qz: -0.07585
+        qw: 0.997119
+        frame: g1_robot/map
+      aitech_v2_1:
+        x: 0.8318
+        y: -0.6219
+        z: 0.0
+        qx: 0.0
+        qy: 0.0
+        qz: -0.675305
+        qw: 0.737539
         frame: g1_robot/map
