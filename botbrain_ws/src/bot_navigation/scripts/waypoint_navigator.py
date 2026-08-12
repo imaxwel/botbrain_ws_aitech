@@ -507,7 +507,7 @@ def main():
     p.add_argument('--scan-topic', default='/scan')
     p.add_argument('--scan-timeout', type=float, default=5.0)
     p.add_argument('--max-scan-age', type=float, default=1.0)
-    p.add_argument('--success-distance-limit', type=float, default=0.35)
+    p.add_argument('--success-distance-limit', type=float, default=0.15)
     p.add_argument('--success-yaw-limit-deg', type=float, default=12.0)
     p.add_argument('--map-timeout', type=float, default=5.0)
     p.add_argument('--goal-grid-check-radius', type=float, default=0.10)

@@ -40,7 +40,7 @@ class LocalizationMonitor(Node):
         self.declare_parameter('nav_odom_topic', '/g1_robot/nav_odom')
         self.declare_parameter('nav_odom_timeout_sec', 0.75)
         self.declare_parameter('max_twist_variance', 100.0)
-        self.declare_parameter('low_confidence_duration_sec', 5.0)
+        self.declare_parameter('low_confidence_duration_sec', 12.0)
         # Stop immediately on unhealthy inputs, but only cancel a goal after
         # the fault persists. A short scheduling hiccup can then recover and
         # continue the same goal instead of becoming ABORTED.
@@ -305,10 +305,16 @@ class LocalizationMonitor(Node):
                     'cannot continue safely.')
                 self._last_nav_odom_alert = now
 
-        navigation_unhealthy = (
-            self._scan_unhealthy or self._nav_odom_unhealthy or
-            self._localization_unhealthy or
-            self._confidence_stream_unhealthy)
+        fault_reasons = []
+        if self._scan_unhealthy:
+            fault_reasons.append('stale scan')
+        if self._nav_odom_unhealthy:
+            fault_reasons.append('invalid navigation odometry')
+        if self._confidence_stream_unhealthy:
+            fault_reasons.append('missing localization confidence')
+        if self._localization_unhealthy:
+            fault_reasons.append('low ICP confidence')
+        navigation_unhealthy = bool(fault_reasons)
         if navigation_unhealthy:
             if self._navigation_unhealthy_since is None:
                 self._navigation_unhealthy_since = now
@@ -320,7 +326,8 @@ class LocalizationMonitor(Node):
             if not self._safety_stop_active:
                 self.get_logger().error(
                     f'Navigation safety stop engaged on '
-                    f'{self.safety_stop_topic}')
+                    f'{self.safety_stop_topic}; '
+                    f'reason={", ".join(fault_reasons)}')
             self._safety_stop_active = True
         elif self._safety_stop_active:
             self.get_logger().info(
@@ -335,14 +342,7 @@ class LocalizationMonitor(Node):
             self.auto_cancel and navigation_unhealthy and
             fault_duration >= self.cancel_after
         ):
-            reason = (
-                'stale scan'
-                if self._scan_unhealthy else
-                'invalid navigation odometry'
-                if self._nav_odom_unhealthy else
-                'missing localization confidence'
-                if self._confidence_stream_unhealthy else
-                'low ICP confidence')
+            reason = fault_reasons[0]
             self._cancel_navigation(reason)
 
     def _poll_cancel_result(self, now):

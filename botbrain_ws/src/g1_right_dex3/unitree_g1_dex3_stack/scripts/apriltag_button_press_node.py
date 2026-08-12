@@ -207,6 +207,16 @@ class AprilTagButtonPressNode(Node):
             time.sleep(min(0.05, deadline - time.monotonic()))
         return not self._shutdown
 
+    @staticmethod
+    def _tag_z_in_torso(orientation):
+        """Tag Z axis (button normal toward robot) in torso_link from orientation quaternion."""
+        qx, qy, qz, qw = orientation.x, orientation.y, orientation.z, orientation.w
+        return (
+            2.0 * (qx * qz + qw * qy),
+            2.0 * (qy * qz - qw * qx),
+            1.0 - 2.0 * (qx * qx + qy * qy),
+        )
+
     def _make_goal(self, source, x=None, y=None, z=None):
         goal = PoseStamped()
         goal.header.frame_id = source.header.frame_id or 'torso_link'
@@ -284,7 +294,7 @@ class AprilTagButtonPressNode(Node):
         self.get_logger().info('[apriltag_button_press_node] published /executor/return_to_standing')
 
     def _run_sequence(self):
-        _CACHE_TTL = 30.0  # 电梯面板位置不变，允许30s内缓存复用（覆盖手臂按压动作期间的相机断流）
+        _CACHE_TTL = 0.0  # 每次强制重新检测，避免机器人移动后坐标失效
         try:
             with self._lock:
                 cached_age = (time.monotonic() - self._last_target_time) if self._last_target else float('inf')
@@ -303,7 +313,7 @@ class AprilTagButtonPressNode(Node):
             with self._lock:
                 target = _copy_pose_stamped(self._last_target)
                 age_s = time.monotonic() - self._last_target_time
-            if age_s > _CACHE_TTL:
+            if age_s > self.target_pose_stale_s:
                 self.get_logger().warn(f'[apriltag_button_press_node] target stale ({age_s:.2f}s)')
                 return
             self.get_logger().info(
@@ -311,11 +321,12 @@ class AprilTagButtonPressNode(Node):
                 f'({target.pose.position.x:.3f}, {target.pose.position.y:.3f}, {target.pose.position.z:.3f}) '
                 f'@ {target.header.frame_id or "torso_link"}')
 
+            _tz = self._tag_z_in_torso(target.pose.orientation)
             pre = self._make_goal(
                 target,
-                x=target.pose.position.x - self.pre_contact_offset_x + self.press_x_offset,
-                y=target.pose.position.y + self.press_y_offset,
-                z=target.pose.position.z + self.press_z_offset,
+                x=target.pose.position.x - self.pre_contact_offset_x * _tz[0] + self.press_x_offset,
+                y=target.pose.position.y - self.pre_contact_offset_x * _tz[1] + self.press_y_offset,
+                z=target.pose.position.z - self.pre_contact_offset_x * _tz[2] + self.press_z_offset,
             )
             press = self._make_goal(
                 target,

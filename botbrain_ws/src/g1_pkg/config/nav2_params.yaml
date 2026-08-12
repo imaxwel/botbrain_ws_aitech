@@ -57,11 +57,15 @@
       # A waypoint represents a pose, not only a position.  Ten degrees still
       # avoids chasing tiny localization noise while requiring the robot to
       # finish facing the recorded waypoint direction.
-      stateful: true
+      # Re-check XY while finishing yaw.  With stateful=true, entering the XY
+      # radius once permanently satisfied position even if final rotation or
+      # localization motion carried the robot back outside it.
+      stateful: false
       plugin: "nav2_controller::SimpleGoalChecker"
-      # Combined with the planner's 0.05 m endpoint tolerance, this caps the
-      # normal successful stopping envelope near 0.25 m instead of 0.40 m.
-      xy_goal_tolerance: 0.20
+      # The planner already targets within 0.05 m.  Require the controller to
+      # finish within another 0.10 m instead of accepting the observed 0.20 m
+      # short stop.
+      xy_goal_tolerance: 0.10
       yaw_goal_tolerance: 0.17
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"

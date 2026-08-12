@@ -33,7 +33,11 @@ def generate_launch_description():
             'robot': robot_name,
             'confidence_threshold': 0.50,
             'consecutive_count': 3,
-            'low_confidence_duration_sec': 5.0,
+            # A single weak ICP window must not interrupt an otherwise valid
+            # path.  Missing scan/odometry/confidence streams still stop
+            # immediately; only finite, continuously low overlap gets this
+            # longer confirmation window.
+            'low_confidence_duration_sec': 12.0,
             'confidence_timeout_sec': 2.0,
             # Keep the goal alive across short sensor/TF interruptions. The
             # monitor still publishes a higher-priority zero velocity while

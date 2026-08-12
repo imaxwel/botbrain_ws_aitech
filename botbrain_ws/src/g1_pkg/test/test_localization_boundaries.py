@@ -707,7 +707,11 @@ def test_localization_republishes_static_pcd_and_publishes_candidate_preview():
     assert source.index("Published localization PCD for RViz") < source.index(
         "Prepared global FPFH scale"
     )
-    assert "Refresh the map\n            // between scales" in source
+    preparation = source.index("bool GloabalLocalization::PrepareGlobalFeatureLevels")
+    first_scale_publish = source.index(
+        "pub_map_->publish(map_refresh);", preparation)
+    prepared_scale = source.index("Prepared global FPFH scale", preparation)
+    assert first_scale_publish < prepared_scale
     assert 'message.header.frame_id = "map"' in source
     assert "pub_scan2map_->publish(message)" in source
     assert "rclcpp::QoS(rclcpp::KeepLast(1)).best_effort()" in source
@@ -979,6 +983,15 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "global_min_ransac_fitness_" in source
     assert '"global_voxel_sizes"' in source
     assert "global_feature_levels_" in source
+    assert "ParseInitialPosePriors" in source
+    assert "ComputePriorInitializationCandidate" in source
+    assert "Known startup poses exhausted; preparing whole-map FPFH fallback" in source
+    assert source.index("ParseInitialPosePriors();") < source.index(
+        "PrepareGlobalFeatureLevels();")
+    assert "{1.0, 2.5}" in source
+    assert "kPriorInitializationConfirmations = 2" in source
+    assert "kPriorMaxConfirmationAttempts = 4" in source
+    assert "retrying with the next scan" in source
     assert "mutual_filter" in source
     assert "Global RANSAC rejected" in source
     assert "Global registration seed=" in source
@@ -991,6 +1004,11 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "RegistrationRANSACBasedOnFeatureMatching" in registration
     assert "global_ransac_max_iterations_" in source
     assert "'enable_global_initialization': True" in launch
+    assert "f'{scene}_0', f'{scene}_2', f'{scene}_1'" in launch
+    assert "priors = [('map_origin', 0.0, 0.0, 0.0)]" in launch
+    assert "initial_pose_priors" in launch
+    assert "initial_pose_prior_names" in launch
+    assert "nav_waypoints.yaml" in launch
     assert "'global_voxel_sizes':         [0.25, 0.40, 0.60]" in launch
     assert "'global_initialization_confirmations': 3" in launch
     assert params["enable_global_initialization"] is False
@@ -1000,7 +1018,8 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "ransac_fitness <= global_min_ransac_fitness_" in source
     subscription = source.index(
         "sub_baselink2odom_ = this->create_subscription")
-    assert subscription > source.index("if (enable_global_initialization_)")
+    assert subscription > source.index(
+        "if (enable_global_initialization_ && !initial_pose_priors_.empty())")
     assert subscription < source.index("\n    StartLoc();", subscription)
     assert "global_retry_interval_sec_));" in source
     assert "'global_retry_interval_sec':  2.0" in launch
@@ -1121,7 +1140,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert math.isclose(global_padding, 0.02, abs_tol=1e-9)
     assert math.isclose(
         float(global_costmap["inflation_layer"]["inflation_radius"]),
-        0.10,
+        0.20,
         abs_tol=1e-9,
     )
     assert local_costmap["plugins"] == [
@@ -1141,7 +1160,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert math.isclose(local_padding, 0.03, abs_tol=1e-9)
     assert math.isclose(
         float(local_costmap["inflation_layer"]["inflation_radius"]),
-        0.10,
+        0.32,
         abs_tol=1e-9,
     )
     assert math.isclose(
@@ -1296,7 +1315,7 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
     assert "Navigation safety stop engaged" in monitor
     assert "executable='localization_monitor.py'" in nav_utils_launch
     assert "'auto_cancel': False" in nav_utils_launch
-    assert "'low_confidence_duration_sec': 5.0" in nav_utils_launch
+    assert "'low_confidence_duration_sec': 12.0" in nav_utils_launch
     assert "'publish_safety_stop': True" in nav_utils_launch
     assert "'scan_topic': '/scan'" in nav_utils_launch
     assert "'startup_grace_sec': 2.0" in nav_utils_launch
@@ -1322,8 +1341,8 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert planner["allow_unknown"] is False
     assert 1.0 <= float(planner["cost_travel_multiplier"]) <= 5.0
     goal_checker = controller["general_goal_checker"]
-    assert goal_checker["stateful"] is True
-    assert 0.20 <= float(goal_checker["xy_goal_tolerance"]) <= 0.30
+    assert goal_checker["stateful"] is False
+    assert 0.08 <= float(goal_checker["xy_goal_tolerance"]) <= 0.12
     assert 0.15 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.20
     assert float(controller["progress_checker"]["required_movement_radius"]) <= 0.15
     assert controller["progress_checker"]["plugin"] == (
@@ -1420,6 +1439,10 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert "behavior_trees" in cmake
     assert "file(REMOVE" in cmake
     assert "goal_pose_bridge.py" in cmake
+    waypoint_navigator = _read(
+        "botbrain_ws/src/bot_navigation/scripts/waypoint_navigator.py")
+    assert "--success-distance-limit', type=float, default=0.15" in (
+        waypoint_navigator)
     twist_mux = yaml.safe_load(_read(
         "botbrain_ws/src/bot_bringup/config/twist_mux.yaml"))
     mux_params = twist_mux["/**"]["ros__parameters"]

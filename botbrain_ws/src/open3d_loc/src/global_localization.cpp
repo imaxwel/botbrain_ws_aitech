@@ -20,7 +20,9 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -41,6 +43,10 @@
 
 namespace
 {
+constexpr double kPriorInitializationMinFitness = 0.60;
+constexpr int kPriorInitializationConfirmations = 2;
+constexpr int kPriorMaxConfirmationAttempts = 4;
+
 bool IsRigidTransform(const Eigen::Matrix4d &transform)
 {
     if (!transform.allFinite())
@@ -218,6 +224,14 @@ private:
         std::shared_ptr<open3d::pipelines::registration::Feature> features;
     };
 
+    struct InitialPosePrior
+    {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        std::string name;
+        Eigen::Matrix4d baselink_to_map;
+        bool exact;
+    };
+
     Eigen::Matrix4d ConstrainMapOdom(const Eigen::Matrix4d &transform) const;
     bool SnapshotForScan(
         double scan_stamp,
@@ -232,6 +246,15 @@ private:
         double &fitness,
         double &inlier_rmse,
         double &ransac_fitness);
+    bool ComputePriorInitializationCandidate(
+        const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+        const Eigen::Matrix4d &baselink_to_odom,
+        const InitialPosePrior &prior,
+        Eigen::Matrix4d &candidate_odom2map,
+        double &fitness,
+        double &inlier_rmse);
+    void ParseInitialPosePriors();
+    bool PrepareGlobalFeatureLevels();
     void UpdateLocalizationConfidence(double confidence);
     void ClearLocalizationConfidence();
     double LocalizationConfidenceForPublish() const;
@@ -366,6 +389,11 @@ private:
     double global_min_ransac_fitness_ = 0.0;
     std::vector<GlobalFeatureLevel> global_feature_levels_;
     std::atomic<unsigned long long> global_attempt_sequence_{0};
+    bool global_feature_preparation_attempted_ = false;
+    std::string initial_pose_priors_serialized_;
+    std::string initial_pose_prior_names_serialized_;
+    std::vector<InitialPosePrior, Eigen::aligned_allocator<InitialPosePrior>>
+        initial_pose_priors_;
 
     /// @brief source点云最大点数量
     int maxpoints_source_ = 50000;
@@ -542,6 +570,8 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->declare_parameter<int>("global_min_target_points", 1000);
     this->declare_parameter<int>("global_scan_window_size", 3);
     this->declare_parameter<double>("global_min_ransac_fitness", 0.0);
+    this->declare_parameter<std::string>("initial_pose_priors", "");
+    this->declare_parameter<std::string>("initial_pose_prior_names", "");
 
     /// 定位阈值
     this->declare_parameter<double>("confidence_loc_th", 0.6);
@@ -625,6 +655,10 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->get_parameter("global_min_target_points", global_min_target_points_);
     this->get_parameter("global_scan_window_size", global_scan_window_size_);
     this->get_parameter("global_min_ransac_fitness", global_min_ransac_fitness_);
+    this->get_parameter(
+        "initial_pose_priors", initial_pose_priors_serialized_);
+    this->get_parameter(
+        "initial_pose_prior_names", initial_pose_prior_names_serialized_);
     this->get_parameter("confidence_loc_th", confidence_loc_th_);
     this->get_parameter("kf_baselink2map_x", kf_param_x_);
     this->get_parameter("kf_baselink2map_y", kf_param_y_);
@@ -738,6 +772,7 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     global_scan_window_size_ = std::max(1, std::min(global_scan_window_size_, 30));
     global_min_ransac_fitness_ = std::max(
         0.0, std::min(1.0, global_min_ransac_fitness_));
+    ParseInitialPosePriors();
     RCLCPP_INFO(this->get_logger(), "Registered cloud world frame: %s",
                 registered_cloud_world_frame_.c_str());
     RCLCPP_INFO(this->get_logger(),
@@ -767,6 +802,11 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
                 global_ransac_confidence_, global_min_ransac_fitness_,
                 global_min_fitness_, global_max_inlier_rmse_,
                 global_initialization_confirmations_, global_scan_window_size_);
+    RCLCPP_INFO(this->get_logger(),
+                "Prior-first initialization: candidates=%zu quality>=%.2f confirmations=%d",
+                initial_pose_priors_.size(),
+                kPriorInitializationMinFitness,
+                kPriorInitializationConfirmations);
 
     // 读取地图
     std::string path_map = "";
@@ -816,52 +856,16 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     pcd_map_republish_timer_ = this->create_wall_timer(
         std::chrono::seconds(5), [this]()
         {
-            pcd_map_message_.header.stamp = this->now();
-            pub_map_->publish(pcd_map_message_);
+            auto map_refresh = pcd_map_message_;
+            map_refresh.header.stamp = this->now();
+            pub_map_->publish(map_refresh);
         });
 
-    if (enable_global_initialization_)
+    if (enable_global_initialization_ && !initial_pose_priors_.empty())
     {
-        for (const double voxel_size : global_voxel_sizes_)
-        {
-            // The constructor is not in an executor yet, so the wall timer
-            // above cannot fire during feature preparation. Refresh the map
-            // between scales so a Zenoh RViz subscriber that joined after the
-            // first sample still receives the operator reference cloud.
-            pcd_map_message_.header.stamp = this->now();
-            pub_map_->publish(pcd_map_message_);
-            auto map_for_features =
-                std::make_shared<open3d::geometry::PointCloud>(*pcd_map_ori_);
-            GlobalFeatureLevel level;
-            level.voxel_size = voxel_size;
-            if (!PrepareFpfhCloud(
-                    map_for_features, voxel_size,
-                    level.map, level.features) ||
-                level.map->points_.size() <
-                    static_cast<std::size_t>(global_min_target_points_))
-            {
-                RCLCPP_WARN(
-                    this->get_logger(),
-                    "Skipping global FPFH scale %.2fm: map features=%zu required=%d",
-                    voxel_size, level.map ? level.map->points_.size() : 0,
-                    global_min_target_points_);
-                continue;
-            }
-            RCLCPP_INFO(
-                this->get_logger(),
-                "Prepared global FPFH scale %.2fm with %zu map points",
-                voxel_size, level.map->points_.size());
-            global_feature_levels_.push_back(std::move(level));
-            pcd_map_message_.header.stamp = this->now();
-            pub_map_->publish(pcd_map_message_);
-        }
-        if (global_feature_levels_.empty())
-        {
-            RCLCPP_ERROR(
-                this->get_logger(),
-                "Disabling global initialization: no configured FPFH scale has enough map features");
-            enable_global_initialization_ = false;
-        }
+        RCLCPP_INFO(this->get_logger(),
+                    "Deferring whole-map FPFH preparation until %zu prior/nearby candidates are exhausted",
+                    initial_pose_priors_.size());
     }
     pcd_map_message_.header.stamp = this->now();
     pub_map_->publish(pcd_map_message_);
@@ -877,9 +881,9 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     std::cout << "mat_baselink2motionlink_:\n"
               << mat_baselink2motionlink_ << std::endl;
 
-    // Create reliable inputs only after the expensive whole-map feature
-    // preparation. The constructor is not in an executor yet, so subscribing
-    // earlier lets DDS queues accumulate while no callback can consume them.
+    // Create inputs after the lightweight map/downsample setup. Whole-map
+    // features are now prepared lazily only after the known-pose search, so
+    // startup can begin consuming the newest synchronized sensor pair early.
     const auto odom_input_qos =
         rclcpp::QoS(rclcpp::KeepLast(20)).reliable();
     // FAST-LIO publishes live clouds as BEST_EFFORT depth-1.  Matching that
@@ -999,6 +1003,253 @@ bool GloabalLocalization::SnapshotForScan(
     odom_to_map = mat_odom2map_;
     manual_pose_generation = manual_pose_generation_.load();
     return IsRigidTransform(baselink_to_odom);
+}
+
+void GloabalLocalization::ParseInitialPosePriors()
+{
+    initial_pose_priors_.clear();
+    std::vector<std::string> names;
+    std::stringstream names_stream(initial_pose_prior_names_serialized_);
+    std::string item;
+    while (std::getline(names_stream, item, ';'))
+    {
+        names.push_back(item);
+    }
+
+    std::vector<InitialPosePrior, Eigen::aligned_allocator<InitialPosePrior>>
+        exact_priors;
+    std::stringstream priors_stream(initial_pose_priors_serialized_);
+    std::size_t index = 0;
+    while (std::getline(priors_stream, item, ';'))
+    {
+        std::stringstream record(item);
+        std::string field;
+        std::vector<double> values;
+        bool valid = true;
+        while (std::getline(record, field, ','))
+        {
+            try
+            {
+                std::size_t parsed = 0;
+                const double value = std::stod(field, &parsed);
+                valid = valid && parsed == field.size() && std::isfinite(value);
+                values.push_back(value);
+            }
+            catch (const std::exception &)
+            {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid || values.size() != 3)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "Ignoring malformed initial-pose prior record '%s'",
+                        item.c_str());
+            ++index;
+            continue;
+        }
+
+        InitialPosePrior prior;
+        prior.name = index < names.size() && !names[index].empty()
+            ? names[index]
+            : "prior_" + std::to_string(index);
+        prior.baselink_to_map = Eigen::Matrix4d::Identity();
+        const double yaw = values[2] * M_PI / 180.0;
+        prior.baselink_to_map.block<3, 3>(0, 0) = Eigen::AngleAxisd(
+            yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+        prior.baselink_to_map.block<3, 1>(0, 3) = Eigen::Vector3d(
+            values[0], values[1], map_odom_z_);
+        prior.exact = true;
+        exact_priors.push_back(prior);
+        ++index;
+    }
+
+    // Exact recorded starts are always exhausted before their neighbourhood.
+    initial_pose_priors_.insert(
+        initial_pose_priors_.end(), exact_priors.begin(), exact_priors.end());
+    const std::vector<Eigen::Vector3d> nearby_offsets = {
+        {0.60, 0.0, 0.0}, {-0.60, 0.0, 0.0},
+        {0.0, 0.60, 0.0}, {0.0, -0.60, 0.0},
+        {0.0, 0.0, 25.0}, {0.0, 0.0, -25.0},
+    };
+    for (const auto &exact : exact_priors)
+    {
+        const double exact_yaw = std::atan2(
+            exact.baselink_to_map(1, 0), exact.baselink_to_map(0, 0));
+        for (const auto &offset : nearby_offsets)
+        {
+            InitialPosePrior nearby = exact;
+            nearby.exact = false;
+            nearby.name = exact.name + "/nearby";
+            nearby.baselink_to_map(0, 3) += offset.x();
+            nearby.baselink_to_map(1, 3) += offset.y();
+            nearby.baselink_to_map.block<3, 3>(0, 0) = Eigen::AngleAxisd(
+                exact_yaw + offset.z() * M_PI / 180.0,
+                Eigen::Vector3d::UnitZ()).toRotationMatrix();
+            initial_pose_priors_.push_back(std::move(nearby));
+        }
+    }
+
+    for (const auto &prior : exact_priors)
+    {
+        const double yaw_deg = std::atan2(
+            prior.baselink_to_map(1, 0), prior.baselink_to_map(0, 0)) *
+            180.0 / M_PI;
+        RCLCPP_INFO(this->get_logger(),
+                    "Startup pose prior '%s': map->base=(%.3f, %.3f, yaw %.1fdeg)",
+                    prior.name.c_str(), prior.baselink_to_map(0, 3),
+                    prior.baselink_to_map(1, 3), yaw_deg);
+    }
+}
+
+bool GloabalLocalization::PrepareGlobalFeatureLevels()
+{
+    if (global_feature_preparation_attempted_)
+    {
+        return !global_feature_levels_.empty();
+    }
+    global_feature_preparation_attempted_ = true;
+    if (!enable_global_initialization_)
+    {
+        return false;
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+                "Known startup poses exhausted; preparing whole-map FPFH fallback");
+    const auto refresh_map_preview = [this]()
+    {
+        // The executor's periodic RViz republisher may run concurrently with
+        // this deferred preparation.  Publish a local message copy instead of
+        // racing on pcd_map_message_.header.
+        auto map_refresh = pcd_map_message_;
+        map_refresh.header.stamp = this->now();
+        pub_map_->publish(map_refresh);
+    };
+    for (const double voxel_size : global_voxel_sizes_)
+    {
+        refresh_map_preview();
+        auto map_for_features =
+            std::make_shared<open3d::geometry::PointCloud>(*pcd_map_ori_);
+        GlobalFeatureLevel level;
+        level.voxel_size = voxel_size;
+        if (!PrepareFpfhCloud(
+                map_for_features, voxel_size,
+                level.map, level.features) ||
+            level.map->points_.size() <
+                static_cast<std::size_t>(global_min_target_points_))
+        {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Skipping global FPFH scale %.2fm: map features=%zu required=%d",
+                voxel_size, level.map ? level.map->points_.size() : 0,
+                global_min_target_points_);
+            continue;
+        }
+        RCLCPP_INFO(this->get_logger(),
+                    "Prepared global FPFH scale %.2fm with %zu map points",
+                    voxel_size, level.map->points_.size());
+        global_feature_levels_.push_back(std::move(level));
+    }
+    refresh_map_preview();
+    if (global_feature_levels_.empty())
+    {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Whole-map fallback unavailable: no FPFH scale has enough map features");
+        enable_global_initialization_ = false;
+        return false;
+    }
+    return true;
+}
+
+bool GloabalLocalization::ComputePriorInitializationCandidate(
+    const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+    const Eigen::Matrix4d &baselink_to_odom,
+    const InitialPosePrior &prior,
+    Eigen::Matrix4d &candidate_odom2map,
+    double &fitness,
+    double &inlier_rmse)
+{
+    fitness = 0.0;
+    inlier_rmse = std::numeric_limits<double>::infinity();
+    if (!scan || scan->IsEmpty() || !IsRigidTransform(baselink_to_odom) ||
+        !IsRigidTransform(prior.baselink_to_map))
+    {
+        return false;
+    }
+
+    const Eigen::Matrix4d seed_odom2map = ConstrainMapOdom(
+        prior.baselink_to_map * baselink_to_odom.inverse());
+    if (!IsRigidTransform(seed_odom2map))
+    {
+        return false;
+    }
+
+    auto source = std::make_shared<open3d::geometry::PointCloud>(*scan);
+    if (source->points_.size() > static_cast<std::size_t>(maxpoints_source_))
+    {
+        source = source->RandomDownSample(
+            static_cast<double>(maxpoints_source_) / source->points_.size());
+    }
+    auto crop = open3d::geometry::AxisAlignedBoundingBox(
+        Eigen::Vector3d(
+            prior.baselink_to_map(0, 3) - 15.0,
+            prior.baselink_to_map(1, 3) - 15.0, -20.0),
+        Eigen::Vector3d(
+            prior.baselink_to_map(0, 3) + 15.0,
+            prior.baselink_to_map(1, 3) + 15.0, 20.0));
+    auto target = pcd_map_fine_->Crop(crop);
+    if (!target ||
+        source->points_.size() < static_cast<std::size_t>(min_icp_source_points_) ||
+        target->points_.size() < static_cast<std::size_t>(min_icp_target_points_))
+    {
+        return false;
+    }
+    if (target->points_.size() > static_cast<std::size_t>(maxpoints_target_))
+    {
+        target = target->RandomDownSample(
+            static_cast<double>(maxpoints_target_) / target->points_.size());
+    }
+
+    source->Transform(seed_odom2map);
+    // The G1 launch uses a 0.20 m normal localization voxel.  Start at
+    // 0.50 m, then tighten to that normal 0.20 m scale.  The wider first basin
+    // is intentional here: a recorded startup pose is a useful prior, not an
+    // exact measurement.
+    const Eigen::Matrix4d refinement = pcd_tools::RegistrationMultiScaleIcp(
+        source, target, voxelsize_fine_, 1, {1.0, 2.5});
+    candidate_odom2map = ConstrainMapOdom(refinement * seed_odom2map);
+    if (!IsRigidTransform(refinement) || !IsRigidTransform(candidate_odom2map))
+    {
+        return false;
+    }
+
+    const Eigen::Matrix4d correction_from_seed =
+        candidate_odom2map * seed_odom2map.inverse();
+    const double seed_translation =
+        correction_from_seed.block<3, 1>(0, 3).norm();
+    const double seed_rotation = RotationAngleDegrees(
+        correction_from_seed.block<3, 3>(0, 0));
+    // A local prior is a bounded search basin, not permission to jump to a
+    // different repeated corridor that happened to score well.
+    if (!std::isfinite(seed_translation) || !std::isfinite(seed_rotation) ||
+        seed_translation > 2.0 || seed_rotation > 45.0)
+    {
+        return false;
+    }
+
+    auto evaluation_source =
+        std::make_shared<open3d::geometry::PointCloud>(*scan);
+    const auto evaluation = open3d::pipelines::registration::EvaluateRegistration(
+        *evaluation_source, *target, voxelsize_fine_ * 2.0,
+        candidate_odom2map);
+    fitness = evaluation.fitness_;
+    inlier_rmse = evaluation.inlier_rmse_;
+    RCLCPP_INFO(this->get_logger(),
+                "Prior registration '%s' exact=%s fitness=%.3f rmse=%.3f refinement=%.3fm/%.1fdeg",
+                prior.name.c_str(), prior.exact ? "true" : "false",
+                fitness, inlier_rmse, seed_translation, seed_rotation);
+    return std::isfinite(fitness) && std::isfinite(inlier_rmse);
 }
 
 bool GloabalLocalization::ComputeGlobalInitializationCandidate(
@@ -1548,6 +1799,8 @@ void GloabalLocalization::LocalizationInitialize()
     unsigned long long last_processed_scan_generation = 0;
     unsigned int observed_manual_pose_generation = manual_pose_generation_.load();
     int global_attempt_failures = 0;
+    std::size_t prior_candidate_index = 0;
+    int prior_confirmation_attempts = 0;
     const auto clear_pending_candidate = [&]()
     {
         consecutive_successes = 0;
@@ -1649,9 +1902,24 @@ void GloabalLocalization::LocalizationInitialize()
             continue;
         }
 
-        const bool used_global_initialization =
-            enable_global_initialization_ &&
+        const bool automatic_initialization =
             iteration_manual_pose_generation == 0;
+        const bool used_prior_initialization =
+            automatic_initialization &&
+            prior_candidate_index < initial_pose_priors_.size();
+        if (automatic_initialization && !used_prior_initialization &&
+            enable_global_initialization_ &&
+            !global_feature_preparation_attempted_)
+        {
+            PrepareGlobalFeatureLevels();
+            // Feature preparation can take seconds. Use a cloud/odometry pair
+            // received after it completes instead of the stale snapshot above.
+            continue;
+        }
+        const bool used_global_initialization =
+            automatic_initialization && !used_prior_initialization &&
+            enable_global_initialization_ &&
+            !global_feature_levels_.empty();
 
         // Always expose the current live scan in the map RViz, even before
         // global registration finds a candidate.  Before initialization this
@@ -1669,7 +1937,43 @@ void GloabalLocalization::LocalizationInitialize()
         double ransac_fitness = 0.0;
         unsigned int ransac_seed = 0;
 
-        if (used_global_initialization)
+        if (used_prior_initialization)
+        {
+            const auto &prior = initial_pose_priors_[prior_candidate_index];
+            ++prior_confirmation_attempts;
+            if (!ComputePriorInitializationCandidate(
+                    pcd_scan, mat_baselink2odom_cur, prior,
+                    candidate_odom2map, fitness, inlier_rmse))
+            {
+                loc_fitness_.store(0.0);
+                if (prior_confirmation_attempts >=
+                    kPriorMaxConfirmationAttempts)
+                {
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "Startup prior %zu/%zu '%s' produced no verified registration in %d attempts; trying next candidate",
+                        prior_candidate_index + 1,
+                        initial_pose_priors_.size(), prior.name.c_str(),
+                        prior_confirmation_attempts);
+                    ++prior_candidate_index;
+                    prior_confirmation_attempts = 0;
+                    clear_pending_candidate();
+                }
+                else
+                {
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "Startup prior %zu/%zu '%s' produced no valid registration (attempt %d/%d); retrying with the next scan",
+                        prior_candidate_index + 1,
+                        initial_pose_priors_.size(), prior.name.c_str(),
+                        prior_confirmation_attempts,
+                        kPriorMaxConfirmationAttempts);
+                }
+                continue;
+            }
+            raw_correction = candidate_odom2map * current_odom2map.inverse();
+        }
+        else if (used_global_initialization)
         {
             ransac_seed = static_cast<unsigned int>(
                 (current_scan_generation * 2654435761ULL) & 0xffffffffULL);
@@ -1763,11 +2067,15 @@ void GloabalLocalization::LocalizationInitialize()
             std::isfinite(translation_step) && std::isfinite(rotation_step_deg);
         const double required_fitness = used_global_initialization
             ? std::max(min_initialization_fitness_, global_min_fitness_)
-            : min_initialization_fitness_;
+            : used_prior_initialization
+                ? std::max(min_initialization_fitness_,
+                           kPriorInitializationMinFitness)
+                : min_initialization_fitness_;
         const double allowed_rmse = used_global_initialization
             ? std::min(max_icp_inlier_rmse_, global_max_inlier_rmse_)
             : max_icp_inlier_rmse_;
-        const bool step_is_safe = used_global_initialization ||
+        const bool step_is_safe =
+            used_global_initialization || used_prior_initialization ||
             (translation_step <= max_initialization_translation_step_ &&
              rotation_step_deg <= max_initialization_rotation_step_deg_);
         const bool safe_initialization_step =
@@ -1790,11 +2098,39 @@ void GloabalLocalization::LocalizationInitialize()
             RCLCPP_WARN_THROTTLE(
                 this->get_logger(), *this->get_clock(), 2000,
                 "LocalizationInitialize: rejecting %s candidate fitness=%.3f rmse=%.3f RANSAC=%.3f step=%.3fm/%.2fdeg (min fitness %.3f, max rmse %.3f)",
-                used_global_initialization ? "global" : "local",
+                used_global_initialization ? "global" :
+                    used_prior_initialization ? "prior" : "local",
                 fitness, inlier_rmse, ransac_fitness,
                 translation_step, rotation_step_deg,
                 required_fitness, allowed_rmse);
-            if (used_global_initialization)
+            if (used_prior_initialization)
+            {
+                const auto &prior = initial_pose_priors_[prior_candidate_index];
+                if (prior_confirmation_attempts >=
+                    kPriorMaxConfirmationAttempts)
+                {
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "Startup prior %zu/%zu '%s' remained below the verification gate after %d attempts; trying next candidate",
+                        prior_candidate_index + 1,
+                        initial_pose_priors_.size(), prior.name.c_str(),
+                        prior_confirmation_attempts);
+                    ++prior_candidate_index;
+                    prior_confirmation_attempts = 0;
+                    clear_pending_candidate();
+                }
+                else
+                {
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "Startup prior %zu/%zu '%s' failed verification (attempt %d/%d); retaining any fresh confirmation and retrying",
+                        prior_candidate_index + 1,
+                        initial_pose_priors_.size(), prior.name.c_str(),
+                        prior_confirmation_attempts,
+                        kPriorMaxConfirmationAttempts);
+                }
+            }
+            else if (used_global_initialization)
             {
                 // Keep a recent, previously accepted global candidate across
                 // intermittent low-quality RANSAC attempts. It still needs the
@@ -1842,16 +2178,22 @@ void GloabalLocalization::LocalizationInitialize()
             candidate_time - loc_start).count();
         const double candidate_max_age = used_global_initialization
             ? global_candidate_max_age_sec_
-            : icp_candidate_max_age_sec_ + candidate_processing_sec;
-        const double candidate_consistency_translation = used_global_initialization
-            ? global_candidate_consistency_translation_
-            : icp_candidate_consistency_translation_;
-        const double candidate_consistency_rotation = used_global_initialization
-            ? global_candidate_consistency_rotation_deg_
-            : icp_candidate_consistency_rotation_deg_;
+            : used_prior_initialization
+                ? 10.0 + candidate_processing_sec
+                : icp_candidate_max_age_sec_ + candidate_processing_sec;
+        const double candidate_consistency_translation =
+            used_global_initialization || used_prior_initialization
+                ? global_candidate_consistency_translation_
+                : icp_candidate_consistency_translation_;
+        const double candidate_consistency_rotation =
+            used_global_initialization || used_prior_initialization
+                ? global_candidate_consistency_rotation_deg_
+                : icp_candidate_consistency_rotation_deg_;
         const int required_confirmations = used_global_initialization
             ? global_initialization_confirmations_
-            : std::max(2, large_correction_confirmations_);
+            : used_prior_initialization
+                ? kPriorInitializationConfirmations
+                : std::max(2, large_correction_confirmations_);
         const bool pending_is_fresh =
             consecutive_successes > 0 &&
             pending_initialization_time != std::chrono::steady_clock::time_point::min() &&
@@ -1880,7 +2222,6 @@ void GloabalLocalization::LocalizationInitialize()
             consecutive_successes = 1;
         }
         pending_initialization_time = candidate_time;
-
         if (manual_pose_generation_.load() != iteration_manual_pose_generation)
         {
             // A user-provided /initialpose arrived while ICP was running. Never
@@ -1930,7 +2271,8 @@ void GloabalLocalization::LocalizationInitialize()
                 std::chrono::steady_clock::now() - loc_start).count();
             RCLCPP_INFO(this->get_logger(),
                         "%s localization initialization succeeded: fitness=%.3f, consistent confirmations=%d, map_odom_z=%.3f, map_odom_rp=%.2f/%.2f deg, last iteration=%.1f ms",
-                        used_global_initialization ? "Global" : "Local",
+                        used_global_initialization ? "Global" :
+                            used_prior_initialization ? "Prior" : "Local",
                         fitness, consecutive_successes,
                         pending_initialization_candidate(2, 3),
                         roll_pitch_deg.x(), roll_pitch_deg.y(), elapsed_ms);
@@ -1941,10 +2283,23 @@ void GloabalLocalization::LocalizationInitialize()
         RCLCPP_INFO_THROTTLE(
             this->get_logger(), *this->get_clock(), 2000,
             "LocalizationInitialize: holding consistent %s candidate (%d/%d), fitness=%.3f rmse=%.3f RANSAC=%.3f",
-            used_global_initialization ? "global" : "local",
+            used_global_initialization ? "global" :
+                used_prior_initialization ? "prior" : "local",
             consecutive_successes, required_confirmations,
             fitness, inlier_rmse, ransac_fitness);
-        if (used_global_initialization)
+        if (used_prior_initialization &&
+            prior_confirmation_attempts >= kPriorMaxConfirmationAttempts)
+        {
+            const auto &prior = initial_pose_priors_[prior_candidate_index];
+            RCLCPP_WARN(this->get_logger(),
+                        "Startup prior '%s' did not produce %d consistent confirmations in %d attempts; trying next candidate",
+                        prior.name.c_str(), kPriorInitializationConfirmations,
+                        prior_confirmation_attempts);
+            ++prior_candidate_index;
+            prior_confirmation_attempts = 0;
+            clear_pending_candidate();
+        }
+        else if (used_global_initialization)
         {
             std::this_thread::sleep_for(std::chrono::duration<double>(
                 global_retry_interval_sec_));

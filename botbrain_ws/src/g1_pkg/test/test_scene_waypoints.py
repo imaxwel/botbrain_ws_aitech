@@ -1,3 +1,6 @@
+import ast
+import math
+import re
 import sys
 import types
 from pathlib import Path
@@ -19,6 +22,21 @@ from bot_navigation.waypoint_store import (  # noqa: E402
 )
 
 
+def _load_launch_prior_helper():
+    path = PROJECT_ROOT / "botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py"
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    functions = [
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "_waypoint_yaw_degrees", "_scene_initial_pose_priors"
+        }
+    ]
+    namespace = {"Path": Path, "math": math, "re": re, "yaml": yaml}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(path), "exec"),
+         namespace)
+    return namespace["_scene_initial_pose_priors"]
+
+
 def test_scene_resolution_uses_explicit_state_env_then_ug(tmp_path):
     scene_file = tmp_path / "map_scene"
     scene_file.write_text("floor4\n", encoding="utf-8")
@@ -32,6 +50,31 @@ def test_scene_resolution_uses_explicit_state_env_then_ug(tmp_path):
     assert current_scene(
         None, tmp_path / "missing", {"MAP_SCENE": "aitech"}
     ) == ("aitech", "MAP_SCENE")
+
+
+def test_localization_startup_priors_prefer_origin_and_scene_start_points(
+        tmp_path):
+    waypoint = lambda x, y, qz=0.0, qw=1.0: {
+        "frame": "g1_robot/map", "x": x, "y": y,
+        "qz": qz, "qw": qw,
+    }
+    path = tmp_path / "waypoints.yaml"
+    path.write_text(yaml.safe_dump({
+        "scenes": {"aitech_v2": {"waypoints": {
+            "later": waypoint(8.0, 9.0),
+            "home": waypoint(4.0, 5.0),
+            "aitech_v2_1": waypoint(3.0, 1.0),
+            "aitech_v2_2": waypoint(2.0, 1.0),
+            "aitech_v2_0": waypoint(1.0, 1.0),
+        }}}
+    }), encoding="utf-8")
+
+    priors = _load_launch_prior_helper()(path, "aitech_v2")
+
+    assert [item[0] for item in priors[:5]] == [
+        "map_origin", "aitech_v2_0", "aitech_v2_2", "aitech_v2_1", "home"
+    ]
+    assert priors[0][1:] == (0.0, 0.0, 0.0)
 
 
 def test_scene_database_isolates_name_and_migrates_legacy(tmp_path):

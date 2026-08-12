@@ -1,4 +1,5 @@
 import os
+import math
 import re
 from pathlib import Path
 
@@ -20,7 +21,90 @@ def _pcd_scene_name(path):
     return stem[:-6] if stem.endswith('_scans') else stem
 
 
-def _validate_map_pair(context, maps_dir):
+def _waypoint_yaw_degrees(waypoint):
+    qx = float(waypoint.get('qx', 0.0))
+    qy = float(waypoint.get('qy', 0.0))
+    qz = float(waypoint.get('qz', 0.0))
+    qw = float(waypoint.get('qw', 1.0))
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if not math.isfinite(norm) or norm < 1.0e-9:
+        raise ValueError('invalid waypoint quaternion')
+    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
+    yaw = math.atan2(
+        2.0 * (qw * qz + qx * qy),
+        1.0 - 2.0 * (qy * qy + qz * qz),
+    )
+    return math.degrees(yaw)
+
+
+def _scene_initial_pose_priors(waypoints_file, scene):
+    """Return a small, ordered set of likely map-frame startup poses."""
+    priors = [('map_origin', 0.0, 0.0, 0.0)]
+    path = Path(waypoints_file)
+    if not path.is_file():
+        return priors
+    try:
+        document = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+    except (OSError, yaml.YAMLError):
+        return priors
+    if not isinstance(document, dict):
+        return priors
+    scenes = document.get('scenes') or {}
+    if not isinstance(scenes, dict):
+        return priors
+    scene_data = scenes.get(scene) or {}
+    if not isinstance(scene_data, dict):
+        return priors
+    waypoints = scene_data.get('waypoints') or {}
+    if not isinstance(waypoints, dict):
+        return priors
+
+    preferred_names = [
+        f'{scene}_0', f'{scene}_2', f'{scene}_1',
+        'home', 'origin', 'start', 'spawn',
+    ]
+    ordered_names = []
+    for name in preferred_names:
+        if name in waypoints and name not in ordered_names:
+            ordered_names.append(name)
+    # Maps without explicit start-point names still get a bounded set of
+    # scene-specific recorded poses before the whole-map search is attempted.
+    for name in sorted(waypoints):
+        if name not in ordered_names:
+            ordered_names.append(name)
+        if len(ordered_names) >= 5:
+            break
+
+    for name in ordered_names[:5]:
+        waypoint = waypoints.get(name)
+        if not isinstance(waypoint, dict):
+            continue
+        frame = str(waypoint.get('frame', 'map')).lstrip('/')
+        if frame not in {'map', 'g1_robot/map'}:
+            continue
+        try:
+            x = float(waypoint['x'])
+            y = float(waypoint['y'])
+            yaw_deg = _waypoint_yaw_degrees(waypoint)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for value in (x, y, yaw_deg)):
+            continue
+        if any(
+            math.hypot(x - old_x, y - old_y) < 0.05 and
+            abs(math.remainder(yaw_deg - old_yaw, 360.0)) < 2.0
+            for _, old_x, old_y, old_yaw in priors
+        ):
+            continue
+        # The C++ parameter uses ';' and ',' as record delimiters.  Waypoint
+        # names are only diagnostic, so make an unusual user-provided name
+        # safe without changing the waypoint stored on disk.
+        safe_name = re.sub(r'[,;\r\n]+', '_', str(name)).strip() or 'waypoint'
+        priors.append((safe_name, x, y, yaw_deg))
+    return priors
+
+
+def _validate_map_pair(context, maps_dir, waypoints_file):
     scene = LaunchConfiguration('map_scene').perform(context).strip()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', scene):
         raise RuntimeError(
@@ -106,19 +190,33 @@ def _validate_map_pair(context, maps_dir):
             f'Requested map_scene={scene}. '
             'Select matching <scene>_scans.pcd, <scene>.yaml and <scene>.pgm files.'
         )
+    priors = _scene_initial_pose_priors(waypoints_file, scene)
+    serialized_priors = ';'.join(
+        f'{x:.9g},{y:.9g},{yaw_deg:.9g}'
+        for _, x, y, yaw_deg in priors
+    )
+    serialized_names = ';'.join(name for name, _, _, _ in priors)
     return [
         LogInfo(msg=(
             f'Map selection: scene={grid_scene} PCD={resolved_pcd} '
             f'YAML={resolved_grid} PGM={image_path}'
         )),
+        LogInfo(msg=(
+            f'Localization startup priors for scene={scene}: '
+            f'{serialized_names}'
+        )),
         SetLaunchConfiguration('map_file', str(resolved_pcd)),
         SetLaunchConfiguration('grid_map_file', str(resolved_grid)),
+        SetLaunchConfiguration('initial_pose_priors', serialized_priors),
+        SetLaunchConfiguration('initial_pose_prior_names', serialized_names),
     ]
 
 
 def generate_launch_description():
     workspace_dir = '/botbrain_ws'
     maps_dir = os.path.join(workspace_dir, 'src', 'g1_pkg', 'maps')
+    waypoints_file = os.path.join(
+        workspace_dir, 'src', 'bot_navigation', 'nav_waypoints.yaml')
 
     map_scene_arg = DeclareLaunchArgument('map_scene', default_value='ug')
     pcd_arg = DeclareLaunchArgument('map_file', default_value='')
@@ -214,6 +312,12 @@ def generate_launch_description():
                 # A short rolling world-frame window adds corners observed
                 # during a slow turn; voxel filtering removes stationary duplicates.
                 'global_scan_window_size':    10,
+                # Try known scene starts and their immediate neighbourhood
+                # before paying for ambiguous whole-map FPFH/RANSAC.
+                'initial_pose_priors': LaunchConfiguration(
+                    'initial_pose_priors'),
+                'initial_pose_prior_names': LaunchConfiguration(
+                    'initial_pose_prior_names'),
                 'save_scan':                False,
                 'maxpoints_source':         80000,
                 'maxpoints_target':         400000,
@@ -321,7 +425,10 @@ def generate_launch_description():
         use_sim_time_arg,
         OpaqueFunction(
             function=_validate_map_pair,
-            kwargs={'maps_dir': maps_dir},
+            kwargs={
+                'maps_dir': maps_dir,
+                'waypoints_file': waypoints_file,
+            },
         ),
         initialpose_z_fix,
         global_localization,
