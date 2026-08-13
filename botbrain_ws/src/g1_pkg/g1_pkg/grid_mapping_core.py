@@ -339,9 +339,24 @@ def navigation_scan_ranges(
         min_obstacle_height=0.20,
         max_obstacle_height=1.35,
         ground_coefficients=None,
+        structure_cell_size=0.30,
+        structure_min_vertical_span=0.16,
+        structure_neighbor_cells=1,
         max_bridge_angle=0.18,
         max_bridge_distance=0.45):
-    """Project base-frame points into a ground-relative navigation scan."""
+    """Project geometrically verified obstacles into a navigation scan.
+
+    A point being above one fitted floor plane is not sufficient evidence of
+    an obstacle.  FAST-LIO floor warping can leave a thin, persistent sheet
+    above that plane, which also defeats a temporal persistence filter.  We
+    therefore require each obstacle endpoint to be next to a local XY column
+    with real vertical extent.  Walls, people and furniture sides satisfy this
+    condition; a lifted but locally thin floor sheet does not.
+
+    The small neighbor radius lets a box top inherit evidence from its visible
+    side without flooding a broad horizontal floor patch.  This geometric gate
+    deliberately runs before the later near-range/temporal safety policy.
+    """
     points = np.asarray(points, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("points must have shape (N, 3)")
@@ -351,6 +366,10 @@ def navigation_scan_ranges(
         raise ValueError("invalid scan range limits")
     if max_obstacle_height <= min_obstacle_height:
         raise ValueError("invalid obstacle height limits")
+    if structure_cell_size <= 0.0:
+        raise ValueError("structure_cell_size must be positive")
+    if structure_min_vertical_span <= 0.0:
+        raise ValueError("structure_min_vertical_span must be positive")
 
     bin_count = int(math.floor(
         (angle_max - angle_min) / angle_increment)) + 1
@@ -359,6 +378,9 @@ def navigation_scan_ranges(
         return scan, {
             "finite_points": 0,
             "obstacle_points": 0,
+            "height_candidate_points": 0,
+            "rejected_thin_points": 0,
+            "structure_cells": 0,
             "measured_bins": 0,
             "bridged_bins": 0,
         }
@@ -372,7 +394,7 @@ def navigation_scan_ranges(
             ground_coefficients, filtered[:, 0], filtered[:, 1])
     planar_ranges = np.hypot(filtered[:, 0], filtered[:, 1])
     angles = np.arctan2(filtered[:, 1], filtered[:, 0])
-    obstacle = (
+    height_candidate = (
         (heights >= min_obstacle_height) &
         (heights <= max_obstacle_height) &
         (planar_ranges >= range_min) &
@@ -380,6 +402,54 @@ def navigation_scan_ranges(
         (angles >= angle_min) &
         (angles <= angle_max)
     )
+
+    # Aggregate vertical evidence in fixed base-frame XY columns. Only points
+    # around the navigable floor-to-obstacle band participate; deep floor
+    # outliers and ceiling returns must not manufacture a large span.
+    structure_domain = (
+        (heights >= -0.10) &
+        (heights <= max_obstacle_height) &
+        (planar_ranges >= range_min) &
+        (planar_ranges <= range_max)
+    )
+    cell_x = np.floor(filtered[:, 0] / structure_cell_size).astype(np.int64)
+    cell_y = np.floor(filtered[:, 1] / structure_cell_size).astype(np.int64)
+    domain_indices = np.flatnonzero(structure_domain)
+    structural_cells = set()
+    if len(domain_indices):
+        domain_cells = np.column_stack((
+            cell_x[domain_indices], cell_y[domain_indices]))
+        unique_cells, inverse = np.unique(
+            domain_cells, axis=0, return_inverse=True)
+        cell_min = np.full(len(unique_cells), np.inf, dtype=np.float64)
+        cell_max = np.full(len(unique_cells), -np.inf, dtype=np.float64)
+        cell_count = np.zeros(len(unique_cells), dtype=np.int32)
+        np.minimum.at(cell_min, inverse, heights[domain_indices])
+        np.maximum.at(cell_max, inverse, heights[domain_indices])
+        np.add.at(cell_count, inverse, 1)
+        structural = (
+            (cell_count >= 2) &
+            ((cell_max - cell_min) >= structure_min_vertical_span) &
+            (cell_max >= min_obstacle_height)
+        )
+        structural_cells = {
+            (int(x), int(y)) for x, y in unique_cells[structural]
+        }
+
+    obstacle = np.zeros(len(filtered), dtype=bool)
+    candidate_indices = np.flatnonzero(height_candidate)
+    neighbor_radius = max(0, int(structure_neighbor_cells))
+    for point_index in candidate_indices:
+        cx = int(cell_x[point_index])
+        cy = int(cell_y[point_index])
+        supported = any(
+            (cx + dx, cy + dy) in structural_cells
+            for dx in range(-neighbor_radius, neighbor_radius + 1)
+            for dy in range(-neighbor_radius, neighbor_radius + 1)
+        )
+        if supported:
+            obstacle[point_index] = True
+
     obstacle_ranges = planar_ranges[obstacle]
     obstacle_angles = angles[obstacle]
     if len(obstacle_ranges):
@@ -400,6 +470,9 @@ def navigation_scan_ranges(
     return scan, {
         "finite_points": int(len(filtered)),
         "obstacle_points": int(len(obstacle_ranges)),
+        "height_candidate_points": int(height_candidate.sum()),
+        "rejected_thin_points": int(height_candidate.sum() - obstacle.sum()),
+        "structure_cells": int(len(structural_cells)),
         "measured_bins": measured_bins,
         "bridged_bins": int(bridged_bins),
     }
@@ -414,20 +487,31 @@ def confirm_temporal_scan_obstacles(
         angle_window_bins=8,
         range_tolerance=0.25,
         immediate_range=0.90):
-    """Reject isolated scan returns while preserving immediate hazards.
+    """Accumulate obstacle evidence and decay it across short dropouts.
 
-    Far obstacle endpoints must agree with a nearby endpoint from the previous
-    scan. The angular window tolerates normal G1 translation/yaw between scan
-    frames; the range gate prevents unrelated surfaces from confirming each
-    other. Obstacles close enough to require an immediate stop bypass the
-    temporal delay.
+    This is an occupancy-evidence filter rather than a Kalman position filter:
+    hits add two units, misses remove one, and publication uses hysteresis.
+    Thus one- and two-frame returns never become obstacles when three frames
+    are required, while an already confirmed wall/person can survive one lost
+    scan without making the costmap blink. Far endpoints are associated within
+    an angular/range window to tolerate normal robot and obstacle motion.
+
+    Returns within ``immediate_range`` bypass only the temporal confirmation.
+    The caller must apply geometric ground rejection before this function.
+
+    Returns ``(published, tracked_ranges, evidence, published_count)``. The
+    tracked state, not the published output, must be supplied on the next call
+    so unconfirmed candidates and one-frame held obstacles retain evidence.
     """
     current = np.asarray(current_ranges, dtype=np.float64)
     if current.ndim != 1:
         raise ValueError("current_ranges must be one-dimensional")
     if required_frames <= 1:
         confirmations = np.where(np.isfinite(current), 1, 0).astype(np.uint8)
-        return current.copy(), confirmations, int(np.isfinite(current).sum())
+        return (
+            current.copy(), current.copy(), confirmations,
+            int(np.isfinite(current).sum()),
+        )
 
     previous = None
     previous_counts = None
@@ -441,46 +525,70 @@ def confirm_temporal_scan_obstacles(
             previous_counts = None
 
     output = np.full(current.shape, np.inf, dtype=np.float64)
+    tracked = np.full(current.shape, np.inf, dtype=np.float64)
     confirmations = np.zeros(current.shape, dtype=np.uint8)
     finite_indices = np.flatnonzero(np.isfinite(current))
     confirmed_count = 0
     window = max(0, int(angle_window_bins))
     tolerance = max(0.0, float(range_tolerance))
+    hit_increment = 2
+    publish_threshold = max(1, 2 * int(required_frames) - 1)
+    matched_previous = set()
 
     for index in finite_indices:
         distance = float(current[index])
-        if distance <= immediate_range:
-            confirmations[index] = min(255, required_frames)
-            output[index] = distance
-            confirmed_count += 1
-            continue
-        if previous is None:
-            confirmations[index] = 1
-            continue
+        previous_count = 0
+        if previous is not None:
+            start = max(0, int(index) - window)
+            stop = min(len(current), int(index) + window + 1)
+            candidates = np.flatnonzero(
+                np.isfinite(previous[start:stop]) &
+                (np.abs(previous[start:stop] - distance) <= tolerance)
+            )
+            if len(candidates):
+                candidate_indices = candidates + start
+                best = int(candidate_indices[np.argmin(
+                    np.abs(previous[candidate_indices] - distance)
+                )])
+                matched_previous.add(best)
+                previous_count = (
+                    int(previous_counts[best])
+                    if previous_counts is not None else hit_increment
+                )
 
-        start = max(0, int(index) - window)
-        stop = min(len(current), int(index) + window + 1)
-        candidates = np.flatnonzero(
-            np.isfinite(previous[start:stop]) &
-            (np.abs(previous[start:stop] - distance) <= tolerance)
+        confirmations[index] = (
+            min(255, publish_threshold + 1)
+            if distance <= immediate_range else
+            min(255, previous_count + hit_increment)
         )
-        if not len(candidates):
-            confirmations[index] = 1
-            continue
-
-        candidate_indices = candidates + start
-        best = int(candidate_indices[np.argmin(
-            np.abs(previous[candidate_indices] - distance)
-        )])
-        previous_count = (
-            int(previous_counts[best]) if previous_counts is not None else 1
-        )
-        confirmations[index] = min(255, previous_count + 1)
-        if confirmations[index] >= required_frames:
+        tracked[index] = distance
+        if confirmations[index] >= publish_threshold:
             output[index] = distance
-            confirmed_count += 1
 
-    return output, confirmations, confirmed_count
+    # Decay unmatched tracks instead of clearing them abruptly. One missed
+    # scan is held after confirmation; a second consecutive miss falls below
+    # the publication threshold with the default three-frame policy.
+    if previous is not None:
+        for previous_index in np.flatnonzero(np.isfinite(previous)):
+            previous_index = int(previous_index)
+            if previous_index in matched_previous:
+                continue
+            if np.isfinite(tracked[previous_index]):
+                continue
+            old_count = (
+                int(previous_counts[previous_index])
+                if previous_counts is not None else hit_increment
+            )
+            decayed = max(0, old_count - 1)
+            if decayed <= 0:
+                continue
+            tracked[previous_index] = previous[previous_index]
+            confirmations[previous_index] = decayed
+            if decayed >= publish_threshold:
+                output[previous_index] = previous[previous_index]
+
+    confirmed_count = int(np.isfinite(output).sum())
+    return output, tracked, confirmations, confirmed_count
 
 
 def unique_cell_ids(ix, iy, width):

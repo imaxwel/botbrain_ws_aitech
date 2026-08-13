@@ -42,10 +42,17 @@ navigation_scan_projector:
     # continuous through the costmap denoiser; doorways are not bridged.
     max_bridge_angle: 0.18
     max_bridge_distance: 0.45
-    # Dynamic observations beyond immediate collision range must persist for
-    # two consecutive scans. This keeps people and changed furniture while
-    # preventing a one-frame floor return from invalidating the active path.
-    temporal_confirmation_frames: 2
+    # Height alone cannot distinguish a persistent warped floor patch from an
+    # obstacle. Require local vertical structure first: walls, people and box
+    # sides have it, while a thin lifted floor sheet does not. One neighboring
+    # cell lets a low box top inherit evidence from its visible side.
+    structure_cell_size: 0.30
+    structure_min_vertical_span: 0.16
+    structure_neighbor_cells: 1
+    # Remaining dynamic observations must survive three scans. This filters
+    # both one- and two-frame residuals; near obstacles bypass only this delay,
+    # never the geometric floor rejection above.
+    temporal_confirmation_frames: 3
     temporal_angle_window_bins: 16
     temporal_range_tolerance: 0.25
     immediate_obstacle_range: 0.90

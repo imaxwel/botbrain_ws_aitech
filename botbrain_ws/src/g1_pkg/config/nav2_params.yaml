@@ -317,6 +317,9 @@
       robot_base_frame: <prefix>base_footprint
       update_frequency: 5.0
       publish_frequency: 2.0
+      # Publish complete grids so remote RViz clients do not depend on a
+      # lossless costmap_updates sequence to reconstruct the map.
+      always_send_full_costmap: true
       rolling_window: false
       resolution: 0.05
       # Preserve unknown cells from the saved occupancy map so the planner's
@@ -388,6 +391,9 @@
       resolution: 0.05
       update_frequency: 10.0
       publish_frequency: 5.0
+      # The local map is viewed over the container/host transport; full
+      # snapshots avoid a stale Warn state when an incremental update is lost.
+      always_send_full_costmap: true
 
       footprint: "[[0.175, 0.255], [0.175, -0.255], [-0.175, -0.255], [-0.175, 0.255]]"
       # The local controller gets one extra centimetre for gait sway and

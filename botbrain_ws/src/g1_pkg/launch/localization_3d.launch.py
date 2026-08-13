@@ -262,7 +262,10 @@ def generate_launch_description():
                 # Allow medium-quality recovery matches; dis_updatemap=5.0
                 # limits how quickly a bad alignment can enter the submap.
                 'threshold_fitness':        0.5,
-                'threshold_fitness_init':   0.5,
+                # A repeated corridor section can score 0.8x while visibly
+                # misaligned. Initialization must keep searching until 0.90;
+                # normal tracking remains at threshold_fitness=0.5 below.
+                'threshold_fitness_init':   0.90,
                 'loc_frequence':            4.0,    # 真实 4 Hz，即约每 250 ms 尝试一次 ICP
                 'max_icp_translation_step':  1.0,
                 'max_icp_rotation_step_deg': 15.0,
@@ -287,7 +290,7 @@ def generate_launch_description():
                 'max_icp_inlier_rmse':         0.30,
                 'min_icp_fitness_improvement': 0.010,
                 'min_icp_rmse_improvement':    0.005,
-                'min_initialization_fitness':  0.50,
+                'min_initialization_fitness':  0.90,
                 'max_initialization_translation_step': 2.0,
                 'max_initialization_rotation_step_deg': 45.0,
                 'min_icp_source_points':     100,
@@ -305,8 +308,11 @@ def generate_launch_description():
                 # then let fine ICP quality and three consistent confirmations
                 # decide whether the absolute pose is safe to publish.
                 'global_min_ransac_fitness':  0.0,
-                'global_min_fitness':         0.72,
-                'global_max_inlier_rmse':     0.20,
+                # Fitness alone is insufficient: wrong repeated indoor
+                # geometry reached 0.965/0.19, while verified alignment was
+                # 0.996+/0.13. Automatic global commit requires both gates.
+                'global_min_fitness':         0.98,
+                'global_max_inlier_rmse':     0.16,
                 'global_retry_interval_sec':  2.0,
                 'global_initialization_confirmations': 3,
                 'global_candidate_consistency_translation': 0.35,

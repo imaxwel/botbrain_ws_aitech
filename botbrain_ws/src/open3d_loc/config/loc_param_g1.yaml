@@ -24,7 +24,7 @@ global_localization_node:
     voxelsize_coarse: 0.15
     voxelsize_fine: 0.20
     threshold_fitness: 0.50
-    threshold_fitness_init: 0.50
+    threshold_fitness_init: 0.90
     min_icp_source_points: 100
     min_icp_target_points: 1000
 
@@ -53,7 +53,10 @@ global_localization_node:
 
     # Initialization uses the same high-quality floor as threshold_fitness_init;
     # low-quality ICP must never walk map->odom away one iteration at a time.
-    min_initialization_fitness: 0.50
+    # Indoor corridors can produce 0.8x overlap at a wrong repeated wall
+    # segment. Do not publish localization_ready until the absolute alignment
+    # reaches the empirically verified 0.90 floor.
+    min_initialization_fitness: 0.90
     max_initialization_translation_step: 2.0
     max_initialization_rotation_step_deg: 45.0
 
@@ -64,11 +67,13 @@ global_localization_node:
     global_voxel_sizes: [0.25, 0.40, 0.60]
     global_ransac_max_iterations: 100000
     global_ransac_confidence: 0.999
-    # Raw RANSAC only seeds ICP. The final 0.65 fitness / 0.30 m RMSE gates and
+    # Raw RANSAC only seeds ICP. Wrong indoor placements have been observed at
+    # 0.92-0.965 fitness with about 0.19 m RMSE; correct alignment is around
+    # 0.996-0.998 / 0.13 m. Require both metrics before automatic commit.
     # three consistent confirmations remain responsible for pose acceptance.
     global_min_ransac_fitness: 0.0
-    global_min_fitness: 0.72
-    global_max_inlier_rmse: 0.20
+    global_min_fitness: 0.98
+    global_max_inlier_rmse: 0.16
     global_retry_interval_sec: 2.0
     global_initialization_confirmations: 3
     global_candidate_consistency_translation: 0.35

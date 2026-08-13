@@ -81,7 +81,7 @@ def generate_launch_description():
                 # matching ROS1 coarsest voxel 0.6 for robust sparse-point matching
                 'voxelsize_fine': 0.2,
                 'threshold_fitness': 0.5,
-                'threshold_fitness_init': 0.5,
+                'threshold_fitness_init': 0.90,
                 'loc_frequence': 4.0,  # Hz: one ICP attempt about every 250 ms
                 'max_icp_translation_step': 1.0,
                 'max_icp_rotation_step_deg': 15.0,
@@ -95,7 +95,7 @@ def generate_launch_description():
                 # odometry first, so an ICP timer can otherwise mix N and N+1.
                 'max_scan_odom_time_skew_sec': 0.03,
                 'max_icp_inlier_rmse': 0.30,
-                'min_initialization_fitness': 0.50,
+                'min_initialization_fitness': 0.90,
                 'max_initialization_translation_step': 2.0,
                 'max_initialization_rotation_step_deg': 45.0,
                 'min_icp_source_points': 100,

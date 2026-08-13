@@ -43,8 +43,11 @@
 
 namespace
 {
-constexpr double kPriorInitializationMinFitness = 0.72;
-constexpr double kPriorInitializationMaxRmse = 0.20;
+// Scan-to-map fitness is one-way: repeated indoor planes can still score
+// 0.92-0.96 at a wrong absolute pose. Real aligned captures on the G1 map are
+// around 0.996 fitness / 0.13 m RMSE, so automatic priors need both gates.
+constexpr double kPriorInitializationMinFitness = 0.98;
+constexpr double kPriorInitializationMaxRmse = 0.16;
 constexpr int kPriorInitializationConfirmations = 2;
 constexpr int kPriorMaxConfirmationAttempts = 6;
 constexpr double kExactPriorMaxRefinementTranslation = 0.90;
@@ -262,6 +265,7 @@ private:
     void UpdateLocalizationConfidence(double confidence);
     void ClearLocalizationConfidence();
     double LocalizationConfidenceForPublish() const;
+    void CacheAndPublishScan2Map(sensor_msgs::msg::PointCloud2 message);
 
     /// @brief 订阅baselink2odom,即fast_lio的里程计信息
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_baselink2odom_;
@@ -320,6 +324,7 @@ private:
     std::mutex lock_scan_;
     double timestamp_scan_seconds_ = 0.0;
     std::atomic<unsigned long long> scan_generation_{0};
+    std::atomic<std::int64_t> scan_receive_steady_ns_{0};
     std::string registered_cloud_world_frame_;
     bool publish_planar_base_tf_ = false;
     std::string planar_base_frame_ = "g1_robot/base_footprint";
@@ -340,6 +345,12 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_submap_;
     sensor_msgs::msg::PointCloud2 pcd_map_message_;
     rclcpp::TimerBase::SharedPtr pcd_map_republish_timer_;
+    // Keep the operator scan preview alive while the ICP worker is busy with
+    // a multi-scale/global registration attempt.
+    rclcpp::TimerBase::SharedPtr scan2map_preview_timer_;
+    std::mutex lock_scan2map_preview_;
+    sensor_msgs::msg::PointCloud2 scan2map_preview_message_;
+    bool scan2map_preview_available_ = false;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_localization_3d_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_3d_confidence_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_localization_3d_delay_ms_;
@@ -502,6 +513,38 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     std_msgs::msg::Bool localization_ready;
     localization_ready.data = false;
     pub_localization_ready_->publish(localization_ready);
+
+    // /scan2map is diagnostic only. Refresh the last preview from an executor
+    // timer so RViz does not lose it while LocalizationInitialize is blocked
+    // in Open3D ICP/RANSAC for longer than the display decay time.
+    scan2map_preview_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(250), [this]()
+        {
+            const std::int64_t received_ns =
+                scan_receive_steady_ns_.load();
+            const std::int64_t now_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+            const double scan_age_sec =
+                static_cast<double>(now_ns - received_ns) * 1e-9;
+            if (received_ns <= 0 || !std::isfinite(scan_age_sec) ||
+                scan_age_sec < 0.0 || scan_age_sec > 1.0)
+            {
+                return;
+            }
+            sensor_msgs::msg::PointCloud2 message;
+            {
+                std::lock_guard<std::mutex> preview_guard(
+                    lock_scan2map_preview_);
+                if (!scan2map_preview_available_)
+                {
+                    return;
+                }
+                message = scan2map_preview_message_;
+            }
+            message.header.stamp = this->now();
+            pub_scan2map_->publish(message);
+        });
 
     loc_frequence_ = 2.0; //
     loc_fitness_ = 0.0;
@@ -963,6 +1006,22 @@ double GloabalLocalization::LocalizationConfidenceForPublish() const
         return 0.0;
     }
     return loc_fitness_.load();
+}
+
+void GloabalLocalization::CacheAndPublishScan2Map(
+    sensor_msgs::msg::PointCloud2 message)
+{
+    message.header.frame_id = "map";
+    if (message.header.stamp.sec == 0 && message.header.stamp.nanosec == 0)
+    {
+        message.header.stamp = this->now();
+    }
+    {
+        std::lock_guard<std::mutex> preview_guard(lock_scan2map_preview_);
+        scan2map_preview_message_ = message;
+        scan2map_preview_available_ = true;
+    }
+    pub_scan2map_->publish(message);
 }
 
 Eigen::Matrix4d GloabalLocalization::ConstrainMapOdom(
@@ -1777,6 +1836,9 @@ void GloabalLocalization::CallbackScan(
     // instead of accidentally combining scan N with odometry N+1 during the
     // publish-order window (odometry is published before the cloud).
     timestamp_scan_seconds_ = rclcpp::Time(scan_in_baselink->header.stamp).seconds();
+    scan_receive_steady_ns_.store(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     // ICP confirmations must be based on distinct incoming cloud windows, not
     // repeated processing of the same scan while only odometry timestamps move.
     scan_generation_.fetch_add(1);
@@ -1808,9 +1870,8 @@ void GloabalLocalization::LocalizationInitialize()
         preview->Transform(odom2map);
         sensor_msgs::msg::PointCloud2 message;
         open3d_conversions::open3dToRos(*preview, message);
-        message.header.frame_id = "map";
         message.header.stamp = this->now();
-        pub_scan2map_->publish(message);
+        CacheAndPublishScan2Map(std::move(message));
     };
 
     int consecutive_successes = 0;
@@ -1927,6 +1988,13 @@ void GloabalLocalization::LocalizationInitialize()
         const bool used_prior_initialization =
             automatic_initialization &&
             prior_candidate_index < initial_pose_priors_.size();
+
+        // Seed the independent RViz refresh cache before any whole-map feature
+        // preparation. That preparation can take several seconds after all
+        // known-pose priors are exhausted; the live scan must remain visible
+        // throughout so the operator can still place a 2D Pose Estimate.
+        publish_scan_preview(pcd_scan, current_odom2map);
+
         if (automatic_initialization && !used_prior_initialization &&
             enable_global_initialization_ &&
             !global_feature_preparation_attempted_)
@@ -1940,15 +2008,6 @@ void GloabalLocalization::LocalizationInitialize()
             automatic_initialization && !used_prior_initialization &&
             enable_global_initialization_ &&
             !global_feature_levels_.empty();
-
-        // Always expose the current live scan in the map RViz, even before
-        // global registration finds a candidate.  Before initialization this
-        // uses the current (usually identity) map<-odom guess, so it is an
-        // explicitly unverified placement for visualization only.  A finite
-        // global/local candidate below replaces it later in this iteration.
-        // This keeps the robot point cloud visible so the operator can inspect
-        // the scan and place 2D Pose Estimate; it never commits map->odom.
-        publish_scan_preview(pcd_scan, current_odom2map);
 
         Eigen::Matrix4d raw_correction = Eigen::Matrix4d::Identity();
         Eigen::Matrix4d candidate_odom2map = Eigen::Matrix4d::Identity();
@@ -2710,6 +2769,16 @@ void GloabalLocalization::Localization()
         else if (accepted)
         {
             pending_large_correction_count = 0;
+            if (!immediate_step)
+            {
+                // The cached target was cropped around the pose before this
+                // confirmed correction. Rebuild it around the corrected
+                // absolute pose on the next distinct scan; otherwise a stale
+                // submap center can keep subsequent ICP in the same shifted
+                // local optimum until dis_updatemap is exceeded.
+                map_fine_crop->Clear();
+                last_loc_ = Eigen::Vector3d(0.0, 0.0, -5000.0);
+            }
         }
         // Confidence describes the latest actual scan-to-map measurement,
         // not whether this cycle applied a correction. A high-quality medium
@@ -2721,6 +2790,27 @@ void GloabalLocalization::Localization()
             inlier_rmse <= max_icp_inlier_rmse_;
         UpdateLocalizationConfidence(
             confidence_measurement_valid ? fitness : 0.0);
+
+        // Keep /scan2map live after initialization as well. Previously this
+        // topic stopped on the last initialization preview, so RViz displayed
+        // an increasingly offset stale cloud even while TF/ICP kept updating.
+        // Visualize exactly the transform that remains authoritative: the new
+        // candidate only when it was committed, otherwise the pose snapshot
+        // that was active for this timestamped scan.
+        if (!stale_after_manual_pose)
+        {
+            auto live_scan2map = pcd_scan->VoxelDownSample(voxelsize_fine_);
+            if (live_scan2map && !live_scan2map->IsEmpty())
+            {
+                live_scan2map->Transform(
+                    accepted ? candidate_odom2map : current_odom2map);
+                sensor_msgs::msg::PointCloud2 message;
+                open3d_conversions::open3dToRos(*live_scan2map, message);
+                message.header.stamp = rclcpp::Time(
+                    static_cast<int64_t>(current_scan_stamp * 1e9));
+                CacheAndPublishScan2Map(std::move(message));
+            }
+        }
 
         if (stale_after_manual_pose || accepted)
         {
@@ -2778,9 +2868,13 @@ void GloabalLocalization::Localization()
             candidate_odom2map.block<3, 3>(0, 0));
         RCLCPP_INFO(
             this->get_logger(),
-            "ICP: accepted=%s fitness=%.3f rmse=%.3f correction=%.3f m/%.2f deg map_odom_z=%.3f map_odom_rp=%.2f/%.2f deg cost=%.1f ms",
+            "ICP: accepted=%s fitness=%.3f rmse=%.3f current=%.3f/%.3f correction=%.3f m/%.2f deg map_odom=(%.3f,%.3f,%.2fdeg) z=%.3f rp=%.2f/%.2f deg cost=%.1f ms",
             accepted ? "true" : "false", fitness, inlier_rmse,
+            current_fitness, current_inlier_rmse,
             translation_step, rotation_step_deg,
+            candidate_odom2map(0, 3), candidate_odom2map(1, 3),
+            std::atan2(candidate_odom2map(1, 0), candidate_odom2map(0, 0)) *
+                180.0 / M_PI,
             candidate_odom2map(2, 3), roll_pitch_deg.x(),
             roll_pitch_deg.y(), elapsed_ms);
     }

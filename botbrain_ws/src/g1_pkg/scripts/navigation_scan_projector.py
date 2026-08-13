@@ -77,6 +77,12 @@ class NavigationScanProjector(Node):
             self.get_parameter('max_bridge_angle').value)
         self.max_bridge_distance = float(
             self.get_parameter('max_bridge_distance').value)
+        self.structure_cell_size = float(
+            self.get_parameter('structure_cell_size').value)
+        self.structure_min_vertical_span = float(
+            self.get_parameter('structure_min_vertical_span').value)
+        self.structure_neighbor_cells = max(
+            0, int(self.get_parameter('structure_neighbor_cells').value))
         self.temporal_confirmation_frames = max(
             1, int(self.get_parameter(
                 'temporal_confirmation_frames').value))
@@ -117,7 +123,7 @@ class NavigationScanProjector(Node):
         self._ground_candidate_count = 0
         self._active_ground = None
         self._active_ground_time = None
-        self._previous_raw_ranges = None
+        self._tracked_obstacle_ranges = None
         self._previous_confirmations = None
         self.get_logger().info(
             'Navigation scan projection active: cloud -> %s, height '
@@ -158,7 +164,13 @@ class NavigationScanProjector(Node):
             'ground_plane_max_age': 0.50,
             'max_bridge_angle': 0.18,
             'max_bridge_distance': 0.45,
-            'temporal_confirmation_frames': 2,
+            # A persistent lifted floor is rejected geometrically before this
+            # temporal stage. Three hits then remove one- and two-frame
+            # residuals while adding only about 0.2 s at the 10 Hz scan rate.
+            'structure_cell_size': 0.30,
+            'structure_min_vertical_span': 0.16,
+            'structure_neighbor_cells': 1,
+            'temporal_confirmation_frames': 3,
             'temporal_angle_window_bins': 16,
             'temporal_range_tolerance': 0.25,
             'immediate_obstacle_range': 0.90,
@@ -289,14 +301,16 @@ class NavigationScanProjector(Node):
             min_obstacle_height=self.min_height,
             max_obstacle_height=self.max_height,
             ground_coefficients=ground_coefficients,
+            structure_cell_size=self.structure_cell_size,
+            structure_min_vertical_span=self.structure_min_vertical_span,
+            structure_neighbor_cells=self.structure_neighbor_cells,
             max_bridge_angle=self.max_bridge_angle,
             max_bridge_distance=self.max_bridge_distance,
         )
-        raw_ranges = ranges
-        ranges, confirmations, confirmed_bins = (
+        ranges, tracked_ranges, confirmations, confirmed_bins = (
             confirm_temporal_scan_obstacles(
-                raw_ranges,
-                self._previous_raw_ranges,
+                ranges,
+                self._tracked_obstacle_ranges,
                 self._previous_confirmations,
                 required_frames=self.temporal_confirmation_frames,
                 angle_window_bins=self.temporal_angle_window_bins,
@@ -304,7 +318,7 @@ class NavigationScanProjector(Node):
                 immediate_range=self.immediate_obstacle_range,
             )
         )
-        self._previous_raw_ranges = raw_ranges
+        self._tracked_obstacle_ranges = tracked_ranges
         self._previous_confirmations = confirmations
         scan = LaserScan()
         scan.header.stamp = msg.header.stamp
@@ -331,11 +345,16 @@ class NavigationScanProjector(Node):
                 f'{ground_metrics.get("reason", "awaiting_confirmation")})'
             )
             self.get_logger().info(
-                'Navigation scan: points=%d obstacles=%d measured_bins=%d '
+                'Navigation scan: points=%d height_candidates=%d obstacles=%d '
+                'thin_rejected=%d structure_cells=%d measured_bins=%d '
                 'surface_fill=%d confirmed_bins=%d %s tf_drops=%d '
                 'ground_failures=%d'
                 % (
-                    metrics['finite_points'], metrics['obstacle_points'],
+                    metrics['finite_points'],
+                    metrics['height_candidate_points'],
+                    metrics['obstacle_points'],
+                    metrics['rejected_thin_points'],
+                    metrics['structure_cells'],
                     metrics['measured_bins'], metrics['bridged_bins'],
                     confirmed_bins, plane_text, self._dropped_transform_clouds,
                     self._ground_fit_failures,

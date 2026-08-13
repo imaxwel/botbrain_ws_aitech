@@ -819,8 +819,40 @@ class V4L2AprilTagTrigger(Node):
         return best_result
 
     def _make_poses(self, detection, capture_stamp):
-        tvec = np.asarray(detection.pose_t, dtype=np.float64).reshape(3)
-        quat = R.from_matrix(detection.pose_R).as_quat()
+        # Re-solve tag pose with SOLVEPNP_IPPE_SQUARE for better accuracy at oblique angles.
+        # pupil_apriltags corners order: [BL, BR, TR, TL] in image coords.
+        camera_matrix, dist_coeffs, _, _ = self._current_camera_model()
+        half = self.tag_size / 2.0
+        obj_pts = np.array([
+            [-half, -half, 0], [ half, -half, 0],
+            [ half,  half, 0], [-half,  half, 0],
+        ], dtype=np.float64)
+        ok, rvec, tvec_cv = cv2.solvePnP(
+            obj_pts, detection.corners.astype(np.float64),
+            camera_matrix, dist_coeffs,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE)
+        use_ippe = False
+        if ok and float(tvec_cv[2]) > 0.0:
+            r_ippe, _ = cv2.Rodrigues(rvec)
+            t_ippe = tvec_cv.reshape(3)
+            proj, _ = cv2.projectPoints(
+                obj_pts, rvec, tvec_cv, camera_matrix, dist_coeffs)
+            reproj_err = float(np.mean(np.linalg.norm(
+                proj.reshape(-1, 2) - detection.corners, axis=1)))
+            if reproj_err < 3.0:
+                pose_R, tvec = r_ippe, t_ippe
+                use_ippe = True
+                self.get_logger().debug(
+                    f'[IPPE_SQUARE] reproj={reproj_err:.2f}px '
+                    f'tvec=({tvec[0]:.4f},{tvec[1]:.4f},{tvec[2]:.4f})')
+            else:
+                self.get_logger().warn(
+                    f'[IPPE_SQUARE] high reproj error {reproj_err:.2f}px, '
+                    f'fallback to pupil_apriltags pose')
+        if not use_ippe:
+            pose_R = detection.pose_R
+            tvec = np.asarray(detection.pose_t, dtype=np.float64).reshape(3)
+        quat = R.from_matrix(pose_R).as_quat()
 
         pose_cam = PoseStamped()
         pose_cam.header.stamp = capture_stamp
@@ -834,7 +866,7 @@ class V4L2AprilTagTrigger(Node):
         pose_cam.pose.orientation.w = float(quat[3])
 
         t_cam_tag = np.eye(4, dtype=np.float64)
-        t_cam_tag[:3, :3] = detection.pose_R
+        t_cam_tag[:3, :3] = pose_R
         t_cam_tag[:3, 3] = tvec
         t_tag_target = np.eye(4, dtype=np.float64)
         t_tag_target[:3, 3] = self.offset_xyz

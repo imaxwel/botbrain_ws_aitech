@@ -85,7 +85,7 @@ Visualization Manager:
       Value: true
     - Alpha: 0.44999998807907104
       Class: rviz_default_plugins/Map
-      Color Scheme: costmap
+      Color Scheme: map
       Draw Behind: false
       Enabled: false
       Name: Global Costmap (optional)
@@ -303,7 +303,7 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 0; 0; 139
+      Color: 119; 149; 172
       Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
@@ -339,7 +339,7 @@ Visualization Manager:
       Class: rviz_default_plugins/PointCloud2
       Color: 255; 0; 0
       Color Transformer: FlatColor
-      Decay Time: 8
+      Decay Time: 1
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255

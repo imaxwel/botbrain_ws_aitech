@@ -162,11 +162,11 @@ def test_navigation_scan_uses_local_floor_height_and_keeps_wall():
         slope * floor_x,
     ))
     wall_y = np.linspace(-0.5, 0.5, 11)
-    wall = np.column_stack((
-        np.full_like(wall_y, 3.0),
-        wall_y,
-        slope * 3.0 + np.full_like(wall_y, 0.7),
-    ))
+    wall = np.array([
+        [3.0, y, slope * 3.0 + height]
+        for y in wall_y
+        for height in (0.05, 0.70)
+    ])
     ranges, metrics = navigation_scan_ranges(
         np.vstack((floor, wall)),
         angle_min=-0.5,
@@ -180,11 +180,66 @@ def test_navigation_scan_uses_local_floor_height_and_keeps_wall():
         max_bridge_angle=0.18,
         max_bridge_distance=0.45,
     )
-    assert metrics["obstacle_points"] == len(wall)
+    assert metrics["obstacle_points"] == len(wall_y)
     assert metrics["measured_bins"] > 5
     finite = ranges[np.isfinite(ranges)]
     assert len(finite) > metrics["measured_bins"]
     assert np.all((finite >= 2.999) & (finite < 3.1))
+
+
+def test_navigation_scan_rejects_persistent_lifted_floor_sheet():
+    # A warped floor can sit above the global plane for many frames. It must
+    # fail geometrically rather than being promoted by temporal persistence.
+    xs = np.linspace(0.7, 4.0, 24)
+    ys = np.linspace(-0.8, 0.8, 12)
+    xx, yy = np.meshgrid(xs, ys)
+    lifted_floor = np.column_stack((
+        xx.ravel(), yy.ravel(),
+        0.24 + 0.015 * np.sin(xx.ravel()),
+    ))
+    ranges, metrics = navigation_scan_ranges(
+        lifted_floor,
+        angle_min=-1.0,
+        angle_max=1.0,
+        angle_increment=0.01,
+        range_min=0.45,
+        range_max=5.0,
+        min_obstacle_height=0.20,
+        max_obstacle_height=1.35,
+        ground_coefficients=np.zeros(3),
+    )
+    assert metrics["height_candidate_points"] == len(lifted_floor)
+    assert metrics["obstacle_points"] == 0
+    assert metrics["rejected_thin_points"] == len(lifted_floor)
+    assert not np.isfinite(ranges).any()
+
+
+def test_navigation_scan_keeps_vertical_wall_and_low_box_side():
+    wall = np.array([
+        [2.0, y, z]
+        for y in np.linspace(-0.6, 0.6, 7)
+        for z in (0.05, 0.25, 0.55, 0.85)
+    ])
+    # The top point is in the cell neighboring its vertically observed side.
+    low_box = np.array([
+        [1.0, 0.9, 0.02],
+        [1.0, 0.9, 0.24],
+        [1.25, 0.9, 0.24],
+    ])
+    ranges, metrics = navigation_scan_ranges(
+        np.vstack((wall, low_box)),
+        angle_min=-1.0,
+        angle_max=1.0,
+        angle_increment=0.01,
+        range_min=0.45,
+        range_max=5.0,
+        min_obstacle_height=0.20,
+        max_obstacle_height=1.35,
+        ground_coefficients=np.zeros(3),
+    )
+    assert metrics["structure_cells"] > 0
+    assert metrics["obstacle_points"] >= 16
+    assert np.isfinite(ranges).any()
 
 
 def test_surface_gap_bridge_does_not_close_a_doorway():
@@ -209,7 +264,7 @@ def test_surface_gap_bridge_does_not_close_a_doorway():
 def test_temporal_scan_rejects_one_frame_floor_speckle():
     first = np.full(100, np.inf)
     first[50] = 2.0
-    published, counts, confirmed = confirm_temporal_scan_obstacles(
+    published, tracked, counts, confirmed = confirm_temporal_scan_obstacles(
         first, None, None,
         required_frames=2,
         angle_window_bins=8,
@@ -218,38 +273,70 @@ def test_temporal_scan_rejects_one_frame_floor_speckle():
     )
     assert confirmed == 0
     assert np.isinf(published[50])
-    assert counts[50] == 1
+    assert tracked[50] == 2.0
+    assert counts[50] == 2
 
 
 def test_temporal_scan_keeps_persistent_dynamic_obstacle_with_motion():
     first = np.full(100, np.inf)
     first[50] = 2.0
-    _, counts, _ = confirm_temporal_scan_obstacles(
+    _, tracked, counts, _ = confirm_temporal_scan_obstacles(
         first, None, None, required_frames=2)
     second = np.full(100, np.inf)
     second[55] = 2.12
-    published, counts, confirmed = confirm_temporal_scan_obstacles(
-        second, first, counts,
+    published, tracked, counts, confirmed = confirm_temporal_scan_obstacles(
+        second, tracked, counts,
         required_frames=2,
         angle_window_bins=8,
         range_tolerance=0.25,
     )
     assert confirmed == 1
     assert published[55] == second[55]
-    assert counts[55] == 2
+    assert tracked[55] == second[55]
+    assert counts[55] == 4
 
 
 def test_temporal_scan_near_hazard_is_immediate():
     current = np.full(20, np.inf)
     current[10] = 0.70
-    published, counts, confirmed = confirm_temporal_scan_obstacles(
+    published, tracked, counts, confirmed = confirm_temporal_scan_obstacles(
         current, None, None,
         required_frames=2,
         immediate_range=0.90,
     )
     assert confirmed == 1
     assert published[10] == 0.70
-    assert counts[10] == 2
+    assert tracked[10] == 0.70
+    assert counts[10] == 4
+
+
+def test_temporal_scan_rejects_two_frames_and_holds_one_dropout():
+    first = np.full(60, np.inf)
+    first[30] = 2.0
+    published, tracked, evidence, _ = confirm_temporal_scan_obstacles(
+        first, None, None, required_frames=3)
+    assert np.isinf(published[30])
+
+    second = np.full(60, np.inf)
+    second[31] = 2.05
+    published, tracked, evidence, _ = confirm_temporal_scan_obstacles(
+        second, tracked, evidence, required_frames=3)
+    assert np.isinf(published[31])
+
+    third = np.full(60, np.inf)
+    third[32] = 2.10
+    published, tracked, evidence, _ = confirm_temporal_scan_obstacles(
+        third, tracked, evidence, required_frames=3)
+    assert published[32] == 2.10
+
+    missing = np.full(60, np.inf)
+    published, tracked, evidence, _ = confirm_temporal_scan_obstacles(
+        missing, tracked, evidence, required_frames=3)
+    assert published[32] == 2.10
+
+    published, tracked, evidence, _ = confirm_temporal_scan_obstacles(
+        missing, tracked, evidence, required_frames=3)
+    assert np.isinf(published[32])
 
 
 def test_log_odds_requires_three_distinct_updates_and_can_clear():

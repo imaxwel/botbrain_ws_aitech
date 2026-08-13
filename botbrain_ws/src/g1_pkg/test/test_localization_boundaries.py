@@ -531,7 +531,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
 
     red = "255; 0; 0"
     white = "255; 255; 255"
-    dark_blue = "0; 0; 139"
+    map_blue_gray = "119; 149; 172"
 
     mapping_manager = mapping["Visualization Manager"]
     nav_manager = navigation["Visualization Manager"]
@@ -587,7 +587,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert static_pcd["Topic"]["Durability Policy"] == "Transient Local"
     assert float(static_pcd["Alpha"]) >= 0.80
     assert static_pcd["Color Transformer"] == "FlatColor"
-    assert static_pcd["Color"] == dark_blue
+    assert static_pcd["Color"] == map_blue_gray
     candidate_cloud = nav_displays["live/candidate scan preview (scan2map)"]
     assert candidate_cloud["Topic"]["Value"] == "/scan2map"
     assert candidate_cloud["Topic"]["Depth"] == 1
@@ -596,6 +596,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert candidate_cloud["Enabled"] is True
     assert candidate_cloud["Value"] is True
     assert candidate_cloud["Color"] == red
+    assert float(candidate_cloud["Decay Time"]) == 1
     mapping_point_cloud_colors = {
         display["Color"]
         for display in mapping_manager["Displays"]
@@ -607,7 +608,7 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
         if display.get("Class") == "rviz_default_plugins/PointCloud2"
     }
     assert mapping_point_cloud_colors <= {red, white}
-    assert navigation_point_cloud_colors <= {red, white, dark_blue}
+    assert navigation_point_cloud_colors <= {red, white, map_blue_gray}
     assert not any(
         display.get("Class") == "rviz_default_plugins/RobotModel"
         for display in nav_manager["Displays"]
@@ -615,9 +616,11 @@ def test_rviz_presets_match_runtime_topics_and_keep_live_plus_bounded_history():
     assert nav_displays["Global Costmap (optional)"]["Topic"]["Value"] == (
         "/g1_robot/global_costmap/costmap"
     )
+    assert nav_displays["Global Costmap (optional)"]["Color Scheme"] == "map"
     assert nav_displays["Local Costmap (optional)"]["Topic"]["Value"] == (
         "/g1_robot/local_costmap/costmap"
     )
+    assert nav_displays["Local Costmap (optional)"]["Color Scheme"] == "costmap"
 
     nav_tools = {
         tool["Class"]: tool for tool in nav_manager["Tools"]
@@ -705,6 +708,11 @@ def test_navigation_restart_explicitly_disables_mapping_outputs():
 def test_localization_republishes_static_pcd_and_publishes_candidate_preview():
     source = _read("botbrain_ws/src/open3d_loc/src/global_localization.cpp")
     assert "pcd_map_republish_timer_" in source
+    assert "scan2map_preview_timer_" in source
+    assert "std::chrono::milliseconds(250)" in source
+    assert "CacheAndPublishScan2Map" in source
+    assert "scan_receive_steady_ns_" in source
+    assert "scan_age_sec > 1.0" in source
     assert "std::chrono::seconds(5)" in source
     assert "Published localization PCD for RViz" in source
     assert source.index("Published localization PCD for RViz") < source.index(
@@ -720,6 +728,10 @@ def test_localization_republishes_static_pcd_and_publishes_candidate_preview():
     assert "rclcpp::QoS(rclcpp::KeepLast(1)).best_effort()" in source
     assert "publish_scan_preview(pcd_scan, current_odom2map);" in source
     assert "publish_scan_preview(pcd_scan, candidate_odom2map);" in source
+    initialization = source.index("void GloabalLocalization::LocalizationInitialize()")
+    assert source.index(
+        "publish_scan_preview(pcd_scan, current_odom2map);", initialization
+    ) < source.index("PrepareGlobalFeatureLevels();", initialization)
     preview = source.index("Visualization is diagnostic, not authorization")
     quality_rejection = source.index("if (!safe_initialization_step)")
     assert preview < quality_rejection
@@ -727,6 +739,8 @@ def test_localization_republishes_static_pcd_and_publishes_candidate_preview():
 
 def test_g1_laserscan_uses_only_accepted_world_cloud_for_navigation_obstacles():
     launch = _read("botbrain_ws/src/g1_pkg/launch/pc2ls.launch.py")
+    projector_source = _read(
+        "botbrain_ws/src/g1_pkg/scripts/navigation_scan_projector.py")
     params = yaml.safe_load(_read(
         "botbrain_ws/src/g1_pkg/config/pointcloud_to_laserscan_params.yaml"))
     scan_params = params["navigation_scan_projector"]["ros__parameters"]
@@ -751,7 +765,14 @@ def test_g1_laserscan_uses_only_accepted_world_cloud_for_navigation_obstacles():
     assert 0.15 <= float(scan_params["ground_min_inlier_ratio"]) <= 0.30
     assert float(scan_params["ground_max_origin_error"]) <= 0.10
     assert float(scan_params["max_bridge_distance"]) <= 0.45
-    assert int(scan_params["temporal_confirmation_frames"]) == 2
+    assert float(scan_params["structure_cell_size"]) == 0.30
+    assert float(scan_params["structure_min_vertical_span"]) == 0.16
+    assert int(scan_params["temporal_confirmation_frames"]) == 3
+    geometry_gate = projector_source.index(
+        "structure_min_vertical_span=self.structure_min_vertical_span")
+    temporal_gate = projector_source.index(
+        "confirm_temporal_scan_obstacles(", geometry_gate)
+    assert geometry_gate < temporal_gate
     assert float(scan_params["immediate_obstacle_range"]) <= 0.90
     assert "concurrency_level" not in scan_params
 
@@ -1003,8 +1024,8 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "{1.0, 2.5}" in source
     assert "kPriorInitializationConfirmations = 2" in source
     assert "kPriorMaxConfirmationAttempts = 6" in source
-    assert "kPriorInitializationMinFitness = 0.72" in source
-    assert "kPriorInitializationMaxRmse = 0.20" in source
+    assert "kPriorInitializationMinFitness = 0.98" in source
+    assert "kPriorInitializationMaxRmse = 0.16" in source
     assert "kExactPriorMaxRefinementTranslation = 0.90" in source
     assert "min_icp_fitness_improvement" in source
     assert "Rejecting non-improving ICP" in source
@@ -1016,6 +1037,14 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "must not erase" in source
     assert '"localization_ready"' in source
     assert "Localization ready: verified map->odom is now available" in source
+    assert float(params["threshold_fitness_init"]) == 0.90
+    assert float(params["min_initialization_fitness"]) == 0.90
+    assert float(params["global_min_fitness"]) == 0.98
+    assert float(params["global_max_inlier_rmse"]) == 0.16
+    assert "'threshold_fitness_init':   0.90" in launch
+    assert "'min_initialization_fitness':  0.90" in launch
+    assert "'global_min_fitness':         0.98" in launch
+    assert "'global_max_inlier_rmse':     0.16" in launch
     assert source.index("if (!loc_initialized_.load())") < source.index(
         "// Do not publish an identity/seeded map transform")
     assert "RegistrationRANSACBasedOnFeatureMatching" in registration
@@ -1137,6 +1166,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     # and persistent-failure replanning, but the BT no longer invalidates the
     # active path on each transient global scan update.
     assert global_costmap["track_unknown_space"] is True
+    assert global_costmap["always_send_full_costmap"] is True
     assert global_costmap["plugins"] == [
         "static_layer", "obstacle_layer", "denoise_layer", "inflation_layer"]
     global_scan = global_costmap["obstacle_layer"]["scan"]
@@ -1162,6 +1192,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     )
     assert local_costmap["plugins"] == [
         "obstacle_layer", "denoise_layer", "inflation_layer"]
+    assert local_costmap["always_send_full_costmap"] is True
     assert float(local_costmap["width"]) >= 8.0
     assert float(local_costmap["height"]) >= 8.0
     local_scan = local_costmap["obstacle_layer"]["scan"]
@@ -1300,6 +1331,9 @@ def test_navigation_uses_preflight_and_coherent_nav_odometry():
     icp_log_prefix = localization_source.split('"ICP: accepted=%s', 1)[0][-250:]
     assert "RCLCPP_INFO(" in icp_log_prefix
     assert "RCLCPP_INFO_THROTTLE" not in icp_log_prefix
+    assert "Keep /scan2map live after initialization as well" in localization_source
+    assert "accepted ? candidate_odom2map : current_odom2map" in localization_source
+    assert "map_fine_crop->Clear();" in localization_source
     assert "max_base_tilt_deg" in preflight
     assert "twist_odom_topic" in preflight
     assert "_twist_odom_is_fresh" in preflight
