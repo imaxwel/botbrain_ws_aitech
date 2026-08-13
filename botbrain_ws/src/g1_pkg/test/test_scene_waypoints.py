@@ -52,7 +52,7 @@ def test_scene_resolution_uses_explicit_state_env_then_ug(tmp_path):
     ) == ("aitech", "MAP_SCENE")
 
 
-def test_localization_startup_priors_prefer_origin_and_scene_start_points(
+def test_localization_startup_priors_prefer_scene_start_points_then_origin(
         tmp_path):
     waypoint = lambda x, y, qz=0.0, qw=1.0: {
         "frame": "g1_robot/map", "x": x, "y": y,
@@ -72,9 +72,9 @@ def test_localization_startup_priors_prefer_origin_and_scene_start_points(
     priors = _load_launch_prior_helper()(path, "aitech_v2")
 
     assert [item[0] for item in priors[:5]] == [
-        "map_origin", "aitech_v2_0", "aitech_v2_2", "aitech_v2_1", "home"
+        "aitech_v2_0", "aitech_v2_2", "aitech_v2_1", "home", "later"
     ]
-    assert priors[0][1:] == (0.0, 0.0, 0.0)
+    assert priors[-1] == ("map_origin", 0.0, 0.0, 0.0)
 
 
 def test_scene_database_isolates_name_and_migrates_legacy(tmp_path):

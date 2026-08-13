@@ -43,9 +43,13 @@
 
 namespace
 {
-constexpr double kPriorInitializationMinFitness = 0.60;
+constexpr double kPriorInitializationMinFitness = 0.72;
+constexpr double kPriorInitializationMaxRmse = 0.20;
 constexpr int kPriorInitializationConfirmations = 2;
-constexpr int kPriorMaxConfirmationAttempts = 4;
+constexpr int kPriorMaxConfirmationAttempts = 6;
+constexpr double kExactPriorMaxRefinementTranslation = 0.90;
+constexpr double kNearbyPriorMaxRefinementTranslation = 0.60;
+constexpr double kPriorMaxRefinementRotationDeg = 25.0;
 
 bool IsRigidTransform(const Eigen::Matrix4d &transform)
 {
@@ -364,6 +368,8 @@ private:
     bool lock_map_odom_roll_pitch_ = false;
     double map_odom_z_ = 0.0;
     double max_icp_inlier_rmse_;
+    double min_icp_fitness_improvement_ = 0.01;
+    double min_icp_rmse_improvement_ = 0.005;
     double min_initialization_fitness_;
     double max_initialization_translation_step_;
     double max_initialization_rotation_step_deg_;
@@ -548,6 +554,8 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->declare_parameter<bool>("lock_map_odom_roll_pitch", false);
     this->declare_parameter<double>("map_odom_z", 0.0);
     this->declare_parameter<double>("max_icp_inlier_rmse", 0.30);
+    this->declare_parameter<double>("min_icp_fitness_improvement", 0.01);
+    this->declare_parameter<double>("min_icp_rmse_improvement", 0.005);
     this->declare_parameter<double>("min_initialization_fitness", 0.20);
     this->declare_parameter<double>("max_initialization_translation_step", 2.0);
     this->declare_parameter<double>("max_initialization_rotation_step_deg", 45.0);
@@ -634,6 +642,10 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->get_parameter("lock_map_odom_roll_pitch", lock_map_odom_roll_pitch_);
     this->get_parameter("map_odom_z", map_odom_z_);
     this->get_parameter("max_icp_inlier_rmse", max_icp_inlier_rmse_);
+    this->get_parameter(
+        "min_icp_fitness_improvement", min_icp_fitness_improvement_);
+    this->get_parameter(
+        "min_icp_rmse_improvement", min_icp_rmse_improvement_);
     this->get_parameter("min_initialization_fitness", min_initialization_fitness_);
     this->get_parameter("max_initialization_translation_step", max_initialization_translation_step_);
     this->get_parameter("max_initialization_rotation_step_deg", max_initialization_rotation_step_deg_);
@@ -731,6 +743,10 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     icp_candidate_max_age_sec_ = std::max(icp_candidate_max_age_sec_, 0.1);
     max_scan_odom_time_skew_sec_ = std::max(max_scan_odom_time_skew_sec_, 0.001);
     max_icp_inlier_rmse_ = std::max(max_icp_inlier_rmse_, 0.01);
+    min_icp_fitness_improvement_ = std::max(
+        min_icp_fitness_improvement_, 0.0);
+    min_icp_rmse_improvement_ = std::max(
+        min_icp_rmse_improvement_, 0.0);
     min_initialization_fitness_ = std::max(
         std::max(0.0, std::min(1.0, threshold_fitness_init_)),
         std::max(0.0, std::min(1.0, min_initialization_fitness_)));
@@ -1069,9 +1085,9 @@ void GloabalLocalization::ParseInitialPosePriors()
     initial_pose_priors_.insert(
         initial_pose_priors_.end(), exact_priors.begin(), exact_priors.end());
     const std::vector<Eigen::Vector3d> nearby_offsets = {
-        {0.60, 0.0, 0.0}, {-0.60, 0.0, 0.0},
-        {0.0, 0.60, 0.0}, {0.0, -0.60, 0.0},
-        {0.0, 0.0, 25.0}, {0.0, 0.0, -25.0},
+        {0.35, 0.0, 0.0}, {-0.35, 0.0, 0.0},
+        {0.0, 0.35, 0.0}, {0.0, -0.35, 0.0},
+        {0.0, 0.0, 12.0}, {0.0, 0.0, -12.0},
     };
     for (const auto &exact : exact_priors)
     {
@@ -1232,8 +1248,12 @@ bool GloabalLocalization::ComputePriorInitializationCandidate(
         correction_from_seed.block<3, 3>(0, 0));
     // A local prior is a bounded search basin, not permission to jump to a
     // different repeated corridor that happened to score well.
+    const double max_seed_translation = prior.exact
+        ? kExactPriorMaxRefinementTranslation
+        : kNearbyPriorMaxRefinementTranslation;
     if (!std::isfinite(seed_translation) || !std::isfinite(seed_rotation) ||
-        seed_translation > 2.0 || seed_rotation > 45.0)
+        seed_translation > max_seed_translation ||
+        seed_rotation > kPriorMaxRefinementRotationDeg)
     {
         return false;
     }
@@ -2073,6 +2093,9 @@ void GloabalLocalization::LocalizationInitialize()
                 : min_initialization_fitness_;
         const double allowed_rmse = used_global_initialization
             ? std::min(max_icp_inlier_rmse_, global_max_inlier_rmse_)
+            : used_prior_initialization
+                ? std::min(max_icp_inlier_rmse_,
+                           kPriorInitializationMaxRmse)
             : max_icp_inlier_rmse_;
         const bool step_is_safe =
             used_global_initialization || used_prior_initialization ||
@@ -2574,6 +2597,11 @@ void GloabalLocalization::Localization()
             *source, *target, voxelsize_fine_ * 2, candidate_odom2map);
         const double fitness = evaluation.fitness_;
         const double inlier_rmse = evaluation.inlier_rmse_;
+        const auto current_evaluation =
+            open3d::pipelines::registration::EvaluateRegistration(
+                *source, *target, voxelsize_fine_ * 2, current_odom2map);
+        const double current_fitness = current_evaluation.fitness_;
+        const double current_inlier_rmse = current_evaluation.inlier_rmse_;
 
         const double translation_step =
             effective_correction.block<3, 1>(0, 3).norm();
@@ -2587,6 +2615,17 @@ void GloabalLocalization::Localization()
             std::isfinite(translation_step) && std::isfinite(rotation_step_deg);
         const bool fitness_ok = fitness > threshold_fitness_ &&
                                 inlier_rmse <= max_icp_inlier_rmse_;
+        const bool current_quality_valid =
+            std::isfinite(current_fitness) &&
+            std::isfinite(current_inlier_rmse);
+        const bool improves_fitness =
+            !current_quality_valid ||
+            fitness >= current_fitness + min_icp_fitness_improvement_;
+        const bool improves_rmse =
+            !current_quality_valid ||
+            (inlier_rmse <= current_inlier_rmse - min_icp_rmse_improvement_ &&
+             fitness >= current_fitness - min_icp_fitness_improvement_);
+        const bool improves_alignment = improves_fitness || improves_rmse;
         const bool within_step_gate =
             translation_step <= max_icp_translation_step_ &&
             rotation_step_deg <= max_icp_rotation_step_deg_;
@@ -2595,7 +2634,8 @@ void GloabalLocalization::Localization()
             rotation_step_deg <= immediate_icp_rotation_step_deg_;
 
         bool large_step_confirmed = false;
-        if (valid_result && fitness_ok && within_step_gate && !immediate_step)
+        if (valid_result && fitness_ok && improves_alignment &&
+            within_step_gate && !immediate_step)
         {
             const auto candidate_time = std::chrono::steady_clock::now();
             // As during initialization, allow the configured inter-scan gap
@@ -2640,7 +2680,7 @@ void GloabalLocalization::Localization()
         }
 
         bool accepted =
-            valid_result && fitness_ok && within_step_gate &&
+            valid_result && fitness_ok && improves_alignment && within_step_gate &&
             (immediate_step || large_step_confirmed);
         bool stale_after_manual_pose = false;
 
@@ -2706,6 +2746,13 @@ void GloabalLocalization::Localization()
                 this->get_logger(), *this->get_clock(), 2000,
                 "Rejecting ICP quality: fitness %.3f (min %.3f), rmse %.3f (max %.3f)",
                 fitness, threshold_fitness_, inlier_rmse, max_icp_inlier_rmse_);
+        }
+        else if (!improves_alignment)
+        {
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(), *this->get_clock(), 2000,
+                "Rejecting non-improving ICP: candidate fitness %.3f rmse %.3f, current fitness %.3f rmse %.3f",
+                fitness, inlier_rmse, current_fitness, current_inlier_rmse);
         }
         else
         {

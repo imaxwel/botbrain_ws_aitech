@@ -507,8 +507,12 @@ def main():
     p.add_argument('--scan-topic', default='/scan')
     p.add_argument('--scan-timeout', type=float, default=5.0)
     p.add_argument('--max-scan-age', type=float, default=1.0)
-    p.add_argument('--success-distance-limit', type=float, default=0.15)
-    p.add_argument('--success-yaw-limit-deg', type=float, default=12.0)
+    # Keep this independent final TF check just outside Nav2's executable
+    # 0.20 m goal radius. It still rejects a false action success, while not
+    # contradicting the controller and reporting a real 0.18--0.20 m finish as
+    # a waypoint failure.
+    p.add_argument('--success-distance-limit', type=float, default=0.22)
+    p.add_argument('--success-yaw-limit-deg', type=float, default=8.0)
     p.add_argument('--map-timeout', type=float, default=5.0)
     p.add_argument('--goal-grid-check-radius', type=float, default=0.10)
     p.add_argument('--occupied-threshold', type=int, default=65)

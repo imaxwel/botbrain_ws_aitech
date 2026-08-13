@@ -82,6 +82,7 @@ verify_navigation_install_matches_source() {
         "botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py:botbrain_ws/install/g1_pkg/share/g1_pkg/launch/localization_3d.launch.py"
         "botbrain_ws/src/g1_pkg/launch/robot_interface.launch.py:botbrain_ws/install/g1_pkg/share/g1_pkg/launch/robot_interface.launch.py"
         "botbrain_ws/src/g1_pkg/scripts/g1_read.py:botbrain_ws/install/g1_pkg/lib/g1_pkg/g1_read.py"
+        "botbrain_ws/src/g1_pkg/scripts/navigation_scan_projector.py:botbrain_ws/install/g1_pkg/lib/g1_pkg/navigation_scan_projector.py"
         "botbrain_ws/src/bot_bringup/config/twist_mux.yaml:botbrain_ws/install/bot_bringup/share/bot_bringup/config/twist_mux.yaml"
     )
     local pair

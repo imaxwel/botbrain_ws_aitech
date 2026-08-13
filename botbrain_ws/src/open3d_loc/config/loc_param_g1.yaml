@@ -32,11 +32,11 @@ global_localization_node:
     # medium corrections require two consistent, distinct incoming scan windows.
     max_icp_translation_step: 1.0
     max_icp_rotation_step_deg: 15.0
-    immediate_icp_translation_step: 0.10
-    immediate_icp_rotation_step_deg: 2.0
-    large_correction_confirmations: 2
-    icp_candidate_consistency_translation: 0.20
-    icp_candidate_consistency_rotation_deg: 4.0
+    immediate_icp_translation_step: 0.02
+    immediate_icp_rotation_step_deg: 0.30
+    large_correction_confirmations: 3
+    icp_candidate_consistency_translation: 0.12
+    icp_candidate_consistency_rotation_deg: 2.0
     # A candidate from an old/paused scan stream cannot confirm a later turn.
     icp_candidate_max_age_sec: 1.0
     # /Odometry_loc is published before /cloud_registered_1; require the two
@@ -48,6 +48,8 @@ global_localization_node:
     lock_map_odom_roll_pitch: false
     map_odom_z: 0.0
     max_icp_inlier_rmse: 0.30
+    min_icp_fitness_improvement: 0.01
+    min_icp_rmse_improvement: 0.005
 
     # Initialization uses the same high-quality floor as threshold_fitness_init;
     # low-quality ICP must never walk map->odom away one iteration at a time.
@@ -65,8 +67,8 @@ global_localization_node:
     # Raw RANSAC only seeds ICP. The final 0.65 fitness / 0.30 m RMSE gates and
     # three consistent confirmations remain responsible for pose acceptance.
     global_min_ransac_fitness: 0.0
-    global_min_fitness: 0.65
-    global_max_inlier_rmse: 0.30
+    global_min_fitness: 0.72
+    global_max_inlier_rmse: 0.20
     global_retry_interval_sec: 2.0
     global_initialization_confirmations: 3
     global_candidate_consistency_translation: 0.35

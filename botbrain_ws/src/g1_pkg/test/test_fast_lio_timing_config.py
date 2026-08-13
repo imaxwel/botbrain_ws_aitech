@@ -55,10 +55,11 @@ def test_imu_initialization_aligns_gravity_only_from_a_stationary_window():
     assert "preserving initial world orientation" in source
 
 
-def test_laserscan_keeps_only_a_short_same_stamp_tf_wait_queue():
+def test_navigation_scan_keeps_only_the_latest_cloud_during_tf_wait():
     params = yaml.safe_load(_read(
         "botbrain_ws/src/g1_pkg/config/pointcloud_to_laserscan_params.yaml"
-    ))["pointcloud_to_laserscan_node"]["ros__parameters"]
+    ))["navigation_scan_projector"]["ros__parameters"]
 
-    assert float(params["transform_tolerance"]) == 0.0
-    assert 1 < params["queue_size"] <= 3
+    assert float(params["transform_timeout"]) == 0.0
+    assert 0.0 < float(params["cloud_max_age"]) <= 0.20
+    assert params["ground_filter_enabled"] is True

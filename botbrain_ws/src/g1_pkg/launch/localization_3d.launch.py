@@ -39,25 +39,25 @@ def _waypoint_yaw_degrees(waypoint):
 
 def _scene_initial_pose_priors(waypoints_file, scene):
     """Return a small, ordered set of likely map-frame startup poses."""
-    priors = [('map_origin', 0.0, 0.0, 0.0)]
+    priors = []
     path = Path(waypoints_file)
     if not path.is_file():
-        return priors
+        return [('map_origin', 0.0, 0.0, 0.0)]
     try:
         document = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
     except (OSError, yaml.YAMLError):
-        return priors
+        return [('map_origin', 0.0, 0.0, 0.0)]
     if not isinstance(document, dict):
-        return priors
+        return [('map_origin', 0.0, 0.0, 0.0)]
     scenes = document.get('scenes') or {}
     if not isinstance(scenes, dict):
-        return priors
+        return [('map_origin', 0.0, 0.0, 0.0)]
     scene_data = scenes.get(scene) or {}
     if not isinstance(scene_data, dict):
-        return priors
+        return [('map_origin', 0.0, 0.0, 0.0)]
     waypoints = scene_data.get('waypoints') or {}
     if not isinstance(waypoints, dict):
-        return priors
+        return [('map_origin', 0.0, 0.0, 0.0)]
 
     preferred_names = [
         f'{scene}_0', f'{scene}_2', f'{scene}_1',
@@ -101,6 +101,9 @@ def _scene_initial_pose_priors(waypoints_file, scene):
         # safe without changing the waypoint stored on disk.
         safe_name = re.sub(r'[,;\r\n]+', '_', str(name)).strip() or 'waypoint'
         priors.append((safe_name, x, y, yaw_deg))
+    # Recorded scene starts are stronger priors than the generic map origin.
+    # Keep origin as the final local candidate before whole-map fallback.
+    priors.append(('map_origin', 0.0, 0.0, 0.0))
     return priors
 
 
@@ -263,11 +266,11 @@ def generate_launch_description():
                 'loc_frequence':            4.0,    # 真实 4 Hz，即约每 250 ms 尝试一次 ICP
                 'max_icp_translation_step':  1.0,
                 'max_icp_rotation_step_deg': 15.0,
-                'immediate_icp_translation_step': 0.10,
-                'immediate_icp_rotation_step_deg': 2.0,
-                'large_correction_confirmations':  2,
-                'icp_candidate_consistency_translation': 0.20,
-                'icp_candidate_consistency_rotation_deg': 4.0,
+                'immediate_icp_translation_step': 0.02,
+                'immediate_icp_rotation_step_deg': 0.30,
+                'large_correction_confirmations':  3,
+                'icp_candidate_consistency_translation': 0.12,
+                'icp_candidate_consistency_rotation_deg': 2.0,
                 'icp_candidate_max_age_sec': 1.0,
                 # Pair world cloud N only with Odometry_loc N; FAST-LIO publishes
                 # odometry first, so an ICP timer can otherwise mix N and N+1.
@@ -282,6 +285,8 @@ def generate_launch_description():
                 'lock_map_odom_roll_pitch': True,
                 'map_odom_z':               IMU_HEIGHT,
                 'max_icp_inlier_rmse':         0.30,
+                'min_icp_fitness_improvement': 0.010,
+                'min_icp_rmse_improvement':    0.005,
                 'min_initialization_fitness':  0.50,
                 'max_initialization_translation_step': 2.0,
                 'max_initialization_rotation_step_deg': 45.0,
@@ -300,8 +305,8 @@ def generate_launch_description():
                 # then let fine ICP quality and three consistent confirmations
                 # decide whether the absolute pose is safe to publish.
                 'global_min_ransac_fitness':  0.0,
-                'global_min_fitness':         0.65,
-                'global_max_inlier_rmse':     0.30,
+                'global_min_fitness':         0.72,
+                'global_max_inlier_rmse':     0.20,
                 'global_retry_interval_sec':  2.0,
                 'global_initialization_confirmations': 3,
                 'global_candidate_consistency_translation': 0.35,

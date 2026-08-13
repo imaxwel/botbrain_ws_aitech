@@ -20,10 +20,11 @@
       # 30--50 degrees away from the requested direction.
       use_final_approach_orientation: false
       max_iterations: 500000
-      # Keep a middle ground between the old value of 15 (large detours from
-      # transient scan costs) and 3 (paths that were observed hugging inflated
-      # obstacles closely enough for the walking G1 to make contact).
-      cost_travel_multiplier: 5.0
+      # The navigation scan now rejects transient floor returns before they
+      # reach this costmap. Prefer clearance strongly enough that a valid
+      # centerline route no longer hugs inflated walls; keep well below the old
+      # value of 15 that let unfiltered transient costs cause large detours.
+      cost_travel_multiplier: 8.0
 
 
 /**/controller_server:
@@ -62,11 +63,12 @@
       # localization motion carried the robot back outside it.
       stateful: false
       plugin: "nav2_controller::SimpleGoalChecker"
-      # The planner already targets within 0.05 m.  Require the controller to
-      # finish within another 0.10 m instead of accepting the observed 0.20 m
-      # short stop.
-      xy_goal_tolerance: 0.10
-      yaw_goal_tolerance: 0.17
+      # True G1 tests settle repeatedly at 0.17--0.20 m. A 0.10 m checker left
+      # an otherwise finished pose active for several minutes because the
+      # remaining command was below the walking deadband. Keep XY stateful
+      # checking disabled, but use a tolerance the platform can execute.
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 0.12
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       # MPPI requires model_dt >= controller period. A 1.67 s horizon keeps
@@ -106,7 +108,8 @@
           "PathAlignCritic",
           "PathFollowCritic",
           "PathAngleCritic",
-          "PreferForwardCritic"
+          "PreferForwardCritic",
+          "VelocityDeadbandCritic"
         ]
       ConstraintCritic:
         enabled: true
@@ -133,12 +136,15 @@
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 8.0
+        cost_weight: 10.0
         near_collision_cost: 253
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
-        near_goal_distance: 1.0
+        # Keep collision/inflation cost active until the goal checker can
+        # actually finish; disabling it one metre from a goal can let the
+        # controller cut across a wall or obstacle beside the waypoint.
+        near_goal_distance: 0.25
         # Check every predicted pose.  Skipping alternate poses can step over
         # a thin obstacle at the configured 0.5 m/s maximum speed.
         trajectory_point_step: 1
@@ -167,6 +173,14 @@
         threshold_to_consider: 0.45
         max_angle_to_furthest: 1.0
         mode: 0
+      VelocityDeadbandCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        # Unitree ignores tiny optimizer outputs. Prefer either a command that
+        # can initiate a step/yaw correction or a completed goal instead of
+        # sitting indefinitely on an ineffective 1--5 cm/s command.
+        deadband_velocities: [0.08, 0.05, 0.10]
 
     # A short, slow recovery controller is invoked for one second before the
     # behavior tree clears costmaps or waits.  It deliberately forbids reverse
@@ -201,7 +215,8 @@
           "PathAlignCritic",
           "PathFollowCritic",
           "PathAngleCritic",
-          "PreferForwardCritic"
+          "PreferForwardCritic",
+          "VelocityDeadbandCritic"
         ]
       ConstraintCritic:
         enabled: true
@@ -225,12 +240,12 @@
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 6.0
+        cost_weight: 8.0
         near_collision_cost: 253
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
-        near_goal_distance: 0.7
+        near_goal_distance: 0.25
         trajectory_point_step: 1
       PathAlignCritic:
         enabled: true
@@ -255,6 +270,11 @@
         threshold_to_consider: 0.35
         max_angle_to_furthest: 1.0
         mode: 0
+      VelocityDeadbandCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        deadband_velocities: [0.08, 0.05, 0.10]
 
 /**/velocity_smoother:
   ros__parameters:
@@ -351,7 +371,7 @@
         plugin: "nav2_costmap_2d::InflationLayer"
         # Explicitly requested 20 cm costmap inflation. Footprint collision
         # checking remains enabled separately in Smac and MPPI.
-        inflation_radius: 0.20
+        inflation_radius: 0.38
         cost_scaling_factor: 15.0
 
 /**/local_costmap:
@@ -404,7 +424,7 @@
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.32
+        inflation_radius: 0.40
         cost_scaling_factor: 12.0
 
 /**/behavior_server:

@@ -198,6 +198,7 @@ install(PROGRAMS
   scripts/grid_accumulator.py
   scripts/imu_flip.py
   scripts/initialpose_z_fix.py
+  scripts/navigation_scan_projector.py
   scripts/shift_pcd_z.py
   DESTINATION lib/${PROJECT_NAME}
 )

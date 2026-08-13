@@ -179,6 +179,9 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
         "g1_pkg/share/g1_pkg/config/pointcloud_to_laserscan_params.yaml"
     ) in selector
     assert (
+        "g1_pkg/lib/g1_pkg/navigation_scan_projector.py"
+    ) in selector
+    assert (
         "bot_bringup/share/bot_bringup/config/twist_mux.yaml"
     ) in selector
     assert (
@@ -726,11 +729,13 @@ def test_g1_laserscan_uses_only_accepted_world_cloud_for_navigation_obstacles():
     launch = _read("botbrain_ws/src/g1_pkg/launch/pc2ls.launch.py")
     params = yaml.safe_load(_read(
         "botbrain_ws/src/g1_pkg/config/pointcloud_to_laserscan_params.yaml"))
-    scan_params = params["pointcloud_to_laserscan_node"]["ros__parameters"]
+    scan_params = params["navigation_scan_projector"]["ros__parameters"]
 
     assert "('cloud_in', '/cloud_registered_1')" in launch
     assert "('cloud_in', '/cloud_registered_body_1')" not in launch
     assert "('scan', '/scan')" in launch
+    assert "executable='navigation_scan_projector.py'" in launch
+    assert "package='pointcloud_to_laserscan'" not in launch
     assert "/livox/lidar" not in launch
     assert "f'{robot_name}/base_footprint'" in launch
     assert scan_params["target_frame"] == "g1_robot/base_footprint"
@@ -738,9 +743,16 @@ def test_g1_laserscan_uses_only_accepted_world_cloud_for_navigation_obstacles():
     assert 1.20 <= float(scan_params["max_height"]) <= 1.50
     assert float(scan_params["range_min"]) >= 0.40
     assert float(scan_params["range_max"]) >= 3.0
-    assert float(scan_params["transform_tolerance"]) == 0.0
-    assert scan_params["use_inf"] is True
-    assert int(scan_params["queue_size"]) == 3
+    assert float(scan_params["transform_timeout"]) == 0.0
+    assert 0.0 < float(scan_params["cloud_max_age"]) <= 0.20
+    assert scan_params["ground_filter_enabled"] is True
+    assert int(scan_params["ground_confirmation_frames"]) >= 2
+    assert float(scan_params["ground_plane_max_age"]) <= 0.50
+    assert 0.15 <= float(scan_params["ground_min_inlier_ratio"]) <= 0.30
+    assert float(scan_params["ground_max_origin_error"]) <= 0.10
+    assert float(scan_params["max_bridge_distance"]) <= 0.45
+    assert int(scan_params["temporal_confirmation_frames"]) == 2
+    assert float(scan_params["immediate_obstacle_range"]) <= 0.90
     assert "concurrency_level" not in scan_params
 
     compose_localization_launch = _read(
@@ -990,7 +1002,12 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
         "PrepareGlobalFeatureLevels();")
     assert "{1.0, 2.5}" in source
     assert "kPriorInitializationConfirmations = 2" in source
-    assert "kPriorMaxConfirmationAttempts = 4" in source
+    assert "kPriorMaxConfirmationAttempts = 6" in source
+    assert "kPriorInitializationMinFitness = 0.72" in source
+    assert "kPriorInitializationMaxRmse = 0.20" in source
+    assert "kExactPriorMaxRefinementTranslation = 0.90" in source
+    assert "min_icp_fitness_improvement" in source
+    assert "Rejecting non-improving ICP" in source
     assert "retrying with the next scan" in source
     assert "mutual_filter" in source
     assert "Global RANSAC rejected" in source
@@ -1005,7 +1022,7 @@ def test_open3d_initializes_from_current_cloud_without_persisted_pose():
     assert "global_ransac_max_iterations_" in source
     assert "'enable_global_initialization': True" in launch
     assert "f'{scene}_0', f'{scene}_2', f'{scene}_1'" in launch
-    assert "priors = [('map_origin', 0.0, 0.0, 0.0)]" in launch
+    assert "priors.append(('map_origin', 0.0, 0.0, 0.0))" in launch
     assert "initial_pose_priors" in launch
     assert "initial_pose_prior_names" in launch
     assert "nav_waypoints.yaml" in launch
@@ -1140,7 +1157,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert math.isclose(global_padding, 0.02, abs_tol=1e-9)
     assert math.isclose(
         float(global_costmap["inflation_layer"]["inflation_radius"]),
-        0.20,
+        0.38,
         abs_tol=1e-9,
     )
     assert local_costmap["plugins"] == [
@@ -1160,7 +1177,7 @@ def test_g1_mppi_period_matches_controller_and_preserves_horizon():
     assert math.isclose(local_padding, 0.03, abs_tol=1e-9)
     assert math.isclose(
         float(local_costmap["inflation_layer"]["inflation_radius"]),
-        0.32,
+        0.40,
         abs_tol=1e-9,
     )
     assert math.isclose(
@@ -1339,11 +1356,12 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
 
     assert 0.0 <= float(planner["tolerance"]) <= 0.05
     assert planner["allow_unknown"] is False
-    assert 1.0 <= float(planner["cost_travel_multiplier"]) <= 5.0
+    assert 5.0 < float(planner["cost_travel_multiplier"]) < 15.0
     goal_checker = controller["general_goal_checker"]
     assert goal_checker["stateful"] is False
-    assert 0.08 <= float(goal_checker["xy_goal_tolerance"]) <= 0.12
-    assert 0.15 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.20
+    assert 0.18 <= float(goal_checker["xy_goal_tolerance"]) <= 0.20
+    assert 0.10 <= float(goal_checker["yaw_goal_tolerance"]) <= 0.13
+    assert int(controller["FollowPath"]["iteration_count"]) == 1
     assert float(controller["progress_checker"]["required_movement_radius"]) <= 0.15
     assert controller["progress_checker"]["plugin"] == (
         "nav2_controller::PoseProgressChecker")
@@ -1358,6 +1376,12 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert int(controller["FollowPath"]["iteration_count"]) == 1
     assert int(controller["FollowPath"]["CostCritic"][
         "trajectory_point_step"]) == 1
+    for controller_name in ("FollowPath", "FollowPathFallback"):
+        mppi = controller[controller_name]
+        assert "VelocityDeadbandCritic" in mppi["critics"]
+        assert mppi["VelocityDeadbandCritic"]["deadband_velocities"] == [
+            0.08, 0.05, 0.10]
+        assert float(mppi["CostCritic"]["near_goal_distance"]) <= 0.25
     assert math.isclose(float(controller["FollowPath"]["vx_max"]), 0.50)
     assert controller["controller_plugins"] == [
         "FollowPath", "FollowPathFallback"]
@@ -1441,7 +1465,7 @@ def test_g1_navigation_avoids_replanning_timeouts_and_slippery_recoveries():
     assert "goal_pose_bridge.py" in cmake
     waypoint_navigator = _read(
         "botbrain_ws/src/bot_navigation/scripts/waypoint_navigator.py")
-    assert "--success-distance-limit', type=float, default=0.15" in (
+    assert "--success-distance-limit', type=float, default=0.22" in (
         waypoint_navigator)
     twist_mux = yaml.safe_load(_read(
         "botbrain_ws/src/bot_bringup/config/twist_mux.yaml"))

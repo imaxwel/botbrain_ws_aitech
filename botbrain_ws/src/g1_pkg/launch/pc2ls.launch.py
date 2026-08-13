@@ -27,9 +27,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         Node(
-            package='pointcloud_to_laserscan',
-            executable='pointcloud_to_laserscan_node',
-            name='pointcloud_to_laserscan_node',
+            package='g1_pkg',
+            executable='navigation_scan_projector.py',
+            name='navigation_scan_projector',
             output='screen',
             parameters=[params_file, {'target_frame': target_frame}],
             remappings=[

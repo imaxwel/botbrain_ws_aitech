@@ -32,6 +32,46 @@ def plane_height(coefficients, xs, ys):
     return coefficients[0] * xs + coefficients[1] * ys + coefficients[2]
 
 
+def accumulate_consistent_horizontal_plane(
+        previous, count, candidate, *, max_height_delta, required_count,
+        max_tilt_delta_deg=None):
+    """Accumulate consecutive horizontal floor candidates safely.
+
+    A candidate outside the current cluster starts a new sequence.  The
+    caller may replace its active floor model only when ``confirmed`` is true.
+    """
+    candidate = np.asarray(candidate, dtype=np.float64)
+    if candidate.shape != (3,) or not np.isfinite(candidate).all():
+        raise ValueError("invalid plane candidate")
+    if previous is None:
+        return candidate.copy(), 1, required_count <= 1
+    previous = np.asarray(previous, dtype=np.float64)
+    if previous.shape != (3,) or not np.isfinite(previous).all():
+        raise ValueError("invalid previous plane candidate")
+    height_inconsistent = (
+        abs(float(candidate[2] - previous[2])) > max_height_delta)
+    tilt_inconsistent = False
+    if max_tilt_delta_deg is not None:
+        previous_tilt = np.array(previous[:2], dtype=np.float64)
+        candidate_tilt = np.array(candidate[:2], dtype=np.float64)
+        tilt_inconsistent = (
+            float(np.linalg.norm(candidate_tilt - previous_tilt)) >
+            math.tan(math.radians(max_tilt_delta_deg))
+        )
+    if height_inconsistent or tilt_inconsistent:
+        return candidate.copy(), 1, required_count <= 1
+    previous_count = max(0, int(count))
+    next_count = min(previous_count + 1, max(1, int(required_count)))
+    if previous_count >= required_count:
+        # Once confirmed, keep a bounded two-sample smoother. An all-history
+        # average becomes effectively frozen after long runs and can let a
+        # slowly changing floor tilt leak back into the obstacle band.
+        averaged = 0.5 * previous + 0.5 * candidate
+    else:
+        averaged = (previous_count * previous + candidate) / next_count
+    return averaged, next_count, next_count >= required_count
+
+
 def fit_ground_plane_ransac(
         points,
         body_position,
@@ -212,6 +252,235 @@ def classify_points(
         (heights < max_obstacle_height)
     )
     return ground_mask, obstacle_mask, heights
+
+
+def bridge_scan_surface_gaps(
+        ranges,
+        *,
+        angle_min,
+        angle_increment,
+        max_angle_gap,
+        max_surface_gap):
+    """Fill only the angular gaps bounded by one short physical surface.
+
+    A voxel-filtered cloud can contain real wall returns that are several
+    LaserScan bins apart.  Passing those sparse bins to a costmap denoiser can
+    erase the wall.  This function reconstructs the ray/line-segment
+    intersections between two measured endpoints, but only when the endpoints
+    are close in both angle and Euclidean distance.  It therefore does not
+    bridge doorways or invent an obstacle beyond the measured segment.
+    """
+    output = np.asarray(ranges, dtype=np.float64).copy()
+    if output.ndim != 1:
+        raise ValueError("ranges must be one-dimensional")
+    if (
+        len(output) < 3 or angle_increment <= 0.0 or
+        max_angle_gap <= angle_increment or max_surface_gap <= 0.0
+    ):
+        return output, 0
+
+    measured = np.flatnonzero(np.isfinite(output))
+    if len(measured) < 2:
+        return output, 0
+
+    filled = 0
+    max_bin_gap = int(math.floor(max_angle_gap / angle_increment))
+    for first, second in zip(measured[:-1], measured[1:]):
+        bin_gap = int(second - first)
+        if bin_gap <= 1 or bin_gap > max_bin_gap:
+            continue
+
+        first_angle = angle_min + float(first) * angle_increment
+        second_angle = angle_min + float(second) * angle_increment
+        first_point = np.array([
+            output[first] * math.cos(first_angle),
+            output[first] * math.sin(first_angle),
+        ])
+        second_point = np.array([
+            output[second] * math.cos(second_angle),
+            output[second] * math.sin(second_angle),
+        ])
+        segment = second_point - first_point
+        if float(np.linalg.norm(segment)) > max_surface_gap:
+            continue
+
+        for index in range(int(first) + 1, int(second)):
+            angle = angle_min + float(index) * angle_increment
+            direction = np.array([math.cos(angle), math.sin(angle)])
+            denominator = (
+                segment[0] * direction[1] -
+                segment[1] * direction[0]
+            )
+            if abs(float(denominator)) < 1e-9:
+                continue
+            numerator = -(
+                first_point[0] * direction[1] -
+                first_point[1] * direction[0]
+            )
+            fraction = numerator / denominator
+            if fraction < -1e-6 or fraction > 1.0 + 1e-6:
+                continue
+            intersection = first_point + fraction * segment
+            ray_range = float(np.dot(intersection, direction))
+            if ray_range > 0.0 and math.isfinite(ray_range):
+                output[index] = min(output[index], ray_range)
+                filled += 1
+    return output, filled
+
+
+def navigation_scan_ranges(
+        points,
+        *,
+        angle_min=-math.pi,
+        angle_max=math.pi,
+        angle_increment=0.007,
+        range_min=0.45,
+        range_max=5.0,
+        min_obstacle_height=0.20,
+        max_obstacle_height=1.35,
+        ground_coefficients=None,
+        max_bridge_angle=0.18,
+        max_bridge_distance=0.45):
+    """Project base-frame points into a ground-relative navigation scan."""
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points must have shape (N, 3)")
+    if angle_increment <= 0.0 or angle_max <= angle_min:
+        raise ValueError("invalid scan angle limits")
+    if range_min < 0.0 or range_max <= range_min:
+        raise ValueError("invalid scan range limits")
+    if max_obstacle_height <= min_obstacle_height:
+        raise ValueError("invalid obstacle height limits")
+
+    bin_count = int(math.floor(
+        (angle_max - angle_min) / angle_increment)) + 1
+    scan = np.full(bin_count, np.inf, dtype=np.float64)
+    if len(points) == 0:
+        return scan, {
+            "finite_points": 0,
+            "obstacle_points": 0,
+            "measured_bins": 0,
+            "bridged_bins": 0,
+        }
+
+    finite = np.isfinite(points).all(axis=1)
+    filtered = points[finite]
+    if ground_coefficients is None:
+        heights = filtered[:, 2]
+    else:
+        heights = filtered[:, 2] - plane_height(
+            ground_coefficients, filtered[:, 0], filtered[:, 1])
+    planar_ranges = np.hypot(filtered[:, 0], filtered[:, 1])
+    angles = np.arctan2(filtered[:, 1], filtered[:, 0])
+    obstacle = (
+        (heights >= min_obstacle_height) &
+        (heights <= max_obstacle_height) &
+        (planar_ranges >= range_min) &
+        (planar_ranges <= range_max) &
+        (angles >= angle_min) &
+        (angles <= angle_max)
+    )
+    obstacle_ranges = planar_ranges[obstacle]
+    obstacle_angles = angles[obstacle]
+    if len(obstacle_ranges):
+        bins = np.floor(
+            (obstacle_angles - angle_min) / angle_increment
+        ).astype(np.int64)
+        bins = np.clip(bins, 0, bin_count - 1)
+        np.minimum.at(scan, bins, obstacle_ranges)
+
+    measured_bins = int(np.isfinite(scan).sum())
+    scan, bridged_bins = bridge_scan_surface_gaps(
+        scan,
+        angle_min=angle_min,
+        angle_increment=angle_increment,
+        max_angle_gap=max_bridge_angle,
+        max_surface_gap=max_bridge_distance,
+    )
+    return scan, {
+        "finite_points": int(len(filtered)),
+        "obstacle_points": int(len(obstacle_ranges)),
+        "measured_bins": measured_bins,
+        "bridged_bins": int(bridged_bins),
+    }
+
+
+def confirm_temporal_scan_obstacles(
+        current_ranges,
+        previous_ranges,
+        previous_confirmations,
+        *,
+        required_frames=2,
+        angle_window_bins=8,
+        range_tolerance=0.25,
+        immediate_range=0.90):
+    """Reject isolated scan returns while preserving immediate hazards.
+
+    Far obstacle endpoints must agree with a nearby endpoint from the previous
+    scan. The angular window tolerates normal G1 translation/yaw between scan
+    frames; the range gate prevents unrelated surfaces from confirming each
+    other. Obstacles close enough to require an immediate stop bypass the
+    temporal delay.
+    """
+    current = np.asarray(current_ranges, dtype=np.float64)
+    if current.ndim != 1:
+        raise ValueError("current_ranges must be one-dimensional")
+    if required_frames <= 1:
+        confirmations = np.where(np.isfinite(current), 1, 0).astype(np.uint8)
+        return current.copy(), confirmations, int(np.isfinite(current).sum())
+
+    previous = None
+    previous_counts = None
+    if previous_ranges is not None:
+        previous = np.asarray(previous_ranges, dtype=np.float64)
+        if previous.shape != current.shape:
+            previous = None
+    if previous_confirmations is not None:
+        previous_counts = np.asarray(previous_confirmations, dtype=np.uint8)
+        if previous_counts.shape != current.shape:
+            previous_counts = None
+
+    output = np.full(current.shape, np.inf, dtype=np.float64)
+    confirmations = np.zeros(current.shape, dtype=np.uint8)
+    finite_indices = np.flatnonzero(np.isfinite(current))
+    confirmed_count = 0
+    window = max(0, int(angle_window_bins))
+    tolerance = max(0.0, float(range_tolerance))
+
+    for index in finite_indices:
+        distance = float(current[index])
+        if distance <= immediate_range:
+            confirmations[index] = min(255, required_frames)
+            output[index] = distance
+            confirmed_count += 1
+            continue
+        if previous is None:
+            confirmations[index] = 1
+            continue
+
+        start = max(0, int(index) - window)
+        stop = min(len(current), int(index) + window + 1)
+        candidates = np.flatnonzero(
+            np.isfinite(previous[start:stop]) &
+            (np.abs(previous[start:stop] - distance) <= tolerance)
+        )
+        if not len(candidates):
+            confirmations[index] = 1
+            continue
+
+        candidate_indices = candidates + start
+        best = int(candidate_indices[np.argmin(
+            np.abs(previous[candidate_indices] - distance)
+        )])
+        previous_count = (
+            int(previous_counts[best]) if previous_counts is not None else 1
+        )
+        confirmations[index] = min(255, previous_count + 1)
+        if confirmations[index] >= required_frames:
+            output[index] = distance
+            confirmed_count += 1
+
+    return output, confirmations, confirmed_count
 
 
 def unique_cell_ids(ix, iy, width):

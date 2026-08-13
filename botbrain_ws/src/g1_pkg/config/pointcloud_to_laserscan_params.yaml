@@ -1,13 +1,13 @@
-pointcloud_to_laserscan_node:
+navigation_scan_projector:
   ros__parameters:
     # Transform the FAST-LIO body cloud into the planar navigation frame before
     # height filtering. Filtering in body would let normal gait roll/pitch make
     # the floor look sloped and leak into the obstacle band.
     target_frame: "g1_robot/base_footprint"
-    # Require the transform for the cloud's own timestamp. A positive tf2
-    # tolerance waits for a future transform and can retain a cloud after a
-    # localization gap, which is exactly the stale-floor failure mode here.
-    transform_tolerance: 0.0
+    # Require the transform for the cloud's own timestamp. Retry only this
+    # latest cloud briefly; never replay a historical cloud after recovery.
+    transform_timeout: 0.0
+    cloud_max_age: 0.20
     min_height: 0.20
     max_height: 1.35
     angle_min: -3.1415926
@@ -17,10 +17,35 @@ pointcloud_to_laserscan_node:
     # Ignore near-body returns from legs, shell, cables, and floor splash.
     range_min: 0.45
     range_max: 5.0
-    use_inf: true
-    inf_epsilon: 1.0
-    # The accepted world cloud and its same-stamp planar TF are published by
-    # different processes. Keep a very short queue so normal container/Zenoh
-    # jitter does not drop the cloud while preserving the proven world-cloud
-    # height filtering and avoiding a backlog of historical frames.
-    queue_size: 3
+    # Estimate a tightly constrained local floor plane before applying the
+    # same 20 cm obstacle-height threshold. This removes tilted-floor returns
+    # without lowering or widening the already proven obstacle band.
+    ground_filter_enabled: true
+    ground_candidate_half_band: 0.22
+    ground_max_tilt_deg: 8.0
+    ground_distance_threshold: 0.045
+    ground_min_inliers: 40
+    ground_min_inlier_ratio: 0.15
+    ground_max_origin_error: 0.10
+    ground_max_median_residual: 0.035
+    ground_ransac_iterations: 32
+    ground_max_candidates: 3000
+    # Never let one accidental horizontal patch replace the floor reference.
+    # Confirm consecutive height/tilt-consistent fits; briefly retain the last
+    # confirmed plane across one sparse frame, then fall back to fixed base z.
+    ground_confirmation_frames: 2
+    ground_consistency_height: 0.05
+    ground_consistency_tilt_deg: 2.0
+    ground_plane_max_age: 0.50
+    # FAST-LIO publishes a 0.3 m voxelized cloud. Reconnect only neighboring
+    # measured endpoints from the same short physical surface so walls remain
+    # continuous through the costmap denoiser; doorways are not bridged.
+    max_bridge_angle: 0.18
+    max_bridge_distance: 0.45
+    # Dynamic observations beyond immediate collision range must persist for
+    # two consecutive scans. This keeps people and changed furniture while
+    # preventing a one-frame floor return from invalidating the active path.
+    temporal_confirmation_frames: 2
+    temporal_angle_window_bins: 16
+    temporal_range_tolerance: 0.25
+    immediate_obstacle_range: 0.90
