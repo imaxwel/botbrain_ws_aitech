@@ -5,13 +5,13 @@ NODE = '/g1_robot/front_camera'
 SETUP = '/botbrain_ws/install/setup.bash'
 FRAME_FILE = '/run/latest_cam.bin'
 STALE_TIMEOUT_S = 45.0
-INITIAL_NODE_WAIT_S = 35.0
+INITIAL_NODE_WAIT_S = 20.0
 NOT_FOUND_RESTART_COUNT = 20
 TRANSITION_CONFIGURE = 1
 TRANSITION_ACTIVATE = 3
 TRANSITION_DEACTIVATE = 4
 
-def ros2(*args, timeout=20):
+def ros2(*args, timeout=10):
     cmd = f'source {SETUP} && ros2 ' + ' '.join(args)
     r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout.strip(), r.stderr.strip()

@@ -13,7 +13,7 @@ class CamFrameWriter(Node):
     def __init__(self):
         super().__init__('cam_frame_writer')
         qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST, depth=10,
             durability=DurabilityPolicy.VOLATILE)
         self.create_subscription(Image, '/g1_robot/front_camera/color/image_raw', self._cb, qos)
