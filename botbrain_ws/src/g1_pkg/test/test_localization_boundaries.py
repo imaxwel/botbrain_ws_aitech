@@ -2,6 +2,7 @@ import ast
 import re
 import json
 import math
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -110,9 +111,18 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     ] == "${FAST_LIO_START_DELAY_SEC:-0}"
     localization_command = compose["services"]["localization"]["command"][-1]
     assert localization_command.count("MAP_SCENE") == 1
-    assert 'map_scene:="$${MAP_SCENE}"' in localization_command
-    assert 'localization_mode:="$${LOCALIZATION_MODE}"' in localization_command
+    assert '"map_scene:=$${MAP_SCENE}"' in localization_command
+    assert '"localization_mode:=$${LOCALIZATION_MODE}"' in localization_command
     assert "initial_pose_priors_override" in localization_command
+    assert 'launch_args+=("initial_pose_priors_override:' in localization_command
+    assert 'exec ros2 launch g1_pkg localization_3d.launch.py ' in (
+        localization_command
+    )
+    assert '"$${launch_args[@]}"' in localization_command
+    assert (
+        'initial_pose_priors_override:="$${LOCALIZATION_INITIAL_POSE_PRIORS}"'
+        not in localization_command
+    )
     assert "map_file:=" not in localization_command
     assert "grid_map_file:=" not in localization_command
     assert compose["services"]["navigation"]["restart"] == "no"
@@ -127,6 +137,81 @@ def test_localization_service_starts_the_installed_launch_file_directly():
         "${NAVIGATION_PREFLIGHT_TIMEOUT_SEC:-60}"
     )
     assert "sleep 30" not in navigation_command
+
+
+def _render_localization_launch_args(priors, names):
+    compose = yaml.safe_load(_read("docker-compose.yaml"))
+    command = compose["services"]["localization"]["command"][-1]
+    command = command.replace("$$", "$")
+    command = command.replace(
+        "sleep \"${LOCALIZATION_START_DELAY_SEC}\" && ", ""
+    )
+    command = command.replace(
+        "source /opt/ros/humble/setup.bash && ", ""
+    )
+    command = command.replace(
+        "source /botbrain_ws/install/setup.bash && ", ""
+    )
+    command = command.replace(
+        "exec ros2 launch g1_pkg localization_3d.launch.py ",
+        "printf '%s\\n' ",
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "LOCALIZATION_START_DELAY_SEC": "0",
+            "MAP_SCENE": "floor14",
+            "LOCALIZATION_MODE": "floor_transition",
+            "LOCALIZATION_INITIAL_POSE_PRIORS": priors,
+            "LOCALIZATION_INITIAL_POSE_PRIOR_NAMES": names,
+            "LOCALIZATION_PRIOR_SEARCH_RADIUS_M": "1.5",
+            "LOCALIZATION_PRIOR_YAW_RANGE_DEG": "30.0",
+            "LOCALIZATION_PRIOR_SEARCH_XY_STEP_M": "0.5",
+            "LOCALIZATION_PRIOR_SEARCH_YAW_STEP_DEG": "10.0",
+            "LOCALIZATION_PRIOR_MAX_NEARBY_CANDIDATES": "32",
+        }
+    )
+    return subprocess.run(
+        ["bash", "-c", command],
+        env=environment,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_localization_compose_omits_empty_optional_prior_arguments():
+    result = _render_localization_launch_args("", "")
+
+    assert result.returncode == 0
+    assert "map_scene:=floor14" in result.stdout
+    assert "localization_mode:=floor_transition" in result.stdout
+    assert "initial_pose_priors_override" not in result.stdout
+    assert "initial_pose_prior_names_override" not in result.stdout
+
+
+def test_localization_compose_preserves_multi_prior_values_as_single_arguments():
+    result = _render_localization_launch_args(
+        "8.2,6.7,90;8.2,6.7,-90",
+        "elevator_a_forward;elevator_a_reverse",
+    )
+
+    assert result.returncode == 0
+    assert (
+        "initial_pose_priors_override:=8.2,6.7,90;8.2,6.7,-90"
+        in result.stdout.splitlines()
+    )
+    assert (
+        "initial_pose_prior_names_override:="
+        "elevator_a_forward;elevator_a_reverse"
+        in result.stdout.splitlines()
+    )
+
+
+def test_localization_compose_rejects_half_configured_priors():
+    result = _render_localization_launch_args("8.2,6.7,90", "")
+
+    assert result.returncode == 2
+    assert "pose priors and names must be supplied together" in result.stderr
 
 
 def test_map_scene_selector_recreates_and_verifies_localization_container():
