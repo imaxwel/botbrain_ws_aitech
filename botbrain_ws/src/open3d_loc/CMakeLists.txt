@@ -120,12 +120,19 @@ ament_target_dependencies(open3d_conversions
         urdf
 )
 
+add_library(bbs_localizer src/bbs_localizer.cpp)
+target_link_libraries(bbs_localizer
+        ${OpenCV_LIBRARIES}
+        ${YAMLCPP_LIBRARIES}
+)
+
 # Build global_localization_node
 add_executable(global_localization_node src/global_localization.cpp)
 target_link_libraries(global_localization_node
         ${Open3D_LIBRARIES}
         open3d_registration
         open3d_conversions
+        bbs_localizer
 )
 ament_target_dependencies(global_localization_node
         rclcpp
@@ -145,6 +152,7 @@ ament_target_dependencies(global_localization_node
 install(TARGETS
         open3d_registration
         open3d_conversions
+        bbs_localizer
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin
@@ -164,12 +172,29 @@ install(DIRECTORY
         DESTINATION share/${PROJECT_NAME}/
 )
 
+# The notice is source-controlled documentation, not a runtime dependency. A
+# deployment assembled from a partial source sync must still be buildable; do
+# not make the install step fail after all binaries have compiled merely
+# because this optional documentation file was omitted.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md")
+        install(FILES THIRD_PARTY_NOTICES.md
+                DESTINATION share/${PROJECT_NAME})
+else()
+        message(WARNING
+                "THIRD_PARTY_NOTICES.md is missing; continuing without installing third-party notices")
+endif()
+
 # Install include directory
 install(DIRECTORY include/
         DESTINATION include/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)
+        find_package(ament_cmake_gtest REQUIRED)
+        ament_add_gtest(test_bbs_localizer test/test_bbs_localizer.cpp)
+        if(TARGET test_bbs_localizer)
+                target_link_libraries(test_bbs_localizer bbs_localizer)
+        endif()
         find_package(ament_lint_auto REQUIRED)
         ament_lint_auto_find_test_dependencies()
 endif()

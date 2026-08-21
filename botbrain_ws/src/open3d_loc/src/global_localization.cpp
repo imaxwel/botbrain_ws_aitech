@@ -15,6 +15,7 @@
 
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -38,6 +39,7 @@
 
 #include "open3d_registration/open3d_registration.h"
 #include "open3d_conversions/open3d_conversions.h"
+#include "open3d_loc/bbs_localizer.hpp"
 
 #define PI 3.1415926
 
@@ -260,6 +262,19 @@ private:
         Eigen::Matrix4d &candidate_odom2map,
         double &fitness,
         double &inlier_rmse);
+    bool ComputeBbsInitializationCandidate(
+        const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+        const Eigen::Matrix4d &baselink_to_odom,
+        Eigen::Matrix4d &candidate_odom2map,
+        double &fitness,
+        double &inlier_rmse,
+        double &bbs_score,
+        double &fitness_margin);
+    bool PrepareBbsPlanarScan(
+        const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+        const Eigen::Matrix4d &baselink_to_odom,
+        std::vector<std::array<double, 2>> &planar_scan,
+        open3d_loc::ScanObservability &observability) const;
     void ParseInitialPosePriors();
     bool PrepareGlobalFeatureLevels();
     void UpdateLocalizationConfidence(double confidence);
@@ -409,8 +424,35 @@ private:
     bool global_feature_preparation_attempted_ = false;
     std::string initial_pose_priors_serialized_;
     std::string initial_pose_prior_names_serialized_;
+    double prior_search_radius_m_ = 0.35;
+    double prior_yaw_range_deg_ = 12.0;
+    double prior_search_xy_step_m_ = 0.35;
+    double prior_search_yaw_step_deg_ = 12.0;
+    int prior_max_nearby_candidates_ = 6;
     std::vector<InitialPosePrior, Eigen::aligned_allocator<InitialPosePrior>>
         initial_pose_priors_;
+    bool enable_bbs_initialization_ = false;
+    bool enable_initialization_observability_gate_ = false;
+    std::string bbs_map_yaml_;
+    double bbs_resolution_m_ = 0.20;
+    double bbs_angular_resolution_deg_ = 10.0;
+    int bbs_pyramid_depth_ = 5;
+    int bbs_max_candidates_ = 5;
+    double bbs_nms_radius_m_ = 1.0;
+    double bbs_min_score_ = 0.20;
+    int bbs_min_scan_points_ = 100;
+    double bbs_min_scan_span_m_ = 3.0;
+    double bbs_min_scan_max_range_m_ = 4.0;
+    double bbs_z_min_m_ = -0.5;
+    double bbs_z_max_m_ = 1.5;
+    double bbs_min_range_m_ = 0.5;
+    double bbs_max_range_m_ = 25.0;
+    double bbs_scan_voxel_m_ = 0.15;
+    int bbs_max_scan_points_ = 512;
+    int bbs_max_attempts_ = 3;
+    double bbs_candidate_fitness_margin_ = 0.02;
+    open3d_loc::BbsMap bbs_map_;
+    bool bbs_map_loaded_ = false;
 
     /// @brief source点云最大点数量
     int maxpoints_source_ = 50000;
@@ -623,6 +665,32 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     this->declare_parameter<double>("global_min_ransac_fitness", 0.0);
     this->declare_parameter<std::string>("initial_pose_priors", "");
     this->declare_parameter<std::string>("initial_pose_prior_names", "");
+    this->declare_parameter<double>("prior_search_radius_m", 0.35);
+    this->declare_parameter<double>("prior_yaw_range_deg", 12.0);
+    this->declare_parameter<double>("prior_search_xy_step_m", 0.35);
+    this->declare_parameter<double>("prior_search_yaw_step_deg", 12.0);
+    this->declare_parameter<int>("prior_max_nearby_candidates", 6);
+    this->declare_parameter<bool>("enable_bbs_initialization", false);
+    this->declare_parameter<bool>(
+        "enable_initialization_observability_gate", false);
+    this->declare_parameter<std::string>("bbs_map_yaml", "");
+    this->declare_parameter<double>("bbs_resolution_m", 0.20);
+    this->declare_parameter<double>("bbs_angular_resolution_deg", 10.0);
+    this->declare_parameter<int>("bbs_pyramid_depth", 5);
+    this->declare_parameter<int>("bbs_max_candidates", 5);
+    this->declare_parameter<double>("bbs_nms_radius_m", 1.0);
+    this->declare_parameter<double>("bbs_min_score", 0.20);
+    this->declare_parameter<int>("bbs_min_scan_points", 100);
+    this->declare_parameter<double>("bbs_min_scan_span_m", 3.0);
+    this->declare_parameter<double>("bbs_min_scan_max_range_m", 4.0);
+    this->declare_parameter<double>("bbs_z_min_m", -0.5);
+    this->declare_parameter<double>("bbs_z_max_m", 1.5);
+    this->declare_parameter<double>("bbs_min_range_m", 0.5);
+    this->declare_parameter<double>("bbs_max_range_m", 25.0);
+    this->declare_parameter<double>("bbs_scan_voxel_m", 0.15);
+    this->declare_parameter<int>("bbs_max_scan_points", 512);
+    this->declare_parameter<int>("bbs_max_attempts", 3);
+    this->declare_parameter<double>("bbs_candidate_fitness_margin", 0.02);
 
     /// 定位阈值
     this->declare_parameter<double>("confidence_loc_th", 0.6);
@@ -714,6 +782,37 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
         "initial_pose_priors", initial_pose_priors_serialized_);
     this->get_parameter(
         "initial_pose_prior_names", initial_pose_prior_names_serialized_);
+    this->get_parameter("prior_search_radius_m", prior_search_radius_m_);
+    this->get_parameter("prior_yaw_range_deg", prior_yaw_range_deg_);
+    this->get_parameter("prior_search_xy_step_m", prior_search_xy_step_m_);
+    this->get_parameter("prior_search_yaw_step_deg", prior_search_yaw_step_deg_);
+    this->get_parameter(
+        "prior_max_nearby_candidates", prior_max_nearby_candidates_);
+    this->get_parameter("enable_bbs_initialization", enable_bbs_initialization_);
+    this->get_parameter(
+        "enable_initialization_observability_gate",
+        enable_initialization_observability_gate_);
+    this->get_parameter("bbs_map_yaml", bbs_map_yaml_);
+    this->get_parameter("bbs_resolution_m", bbs_resolution_m_);
+    this->get_parameter(
+        "bbs_angular_resolution_deg", bbs_angular_resolution_deg_);
+    this->get_parameter("bbs_pyramid_depth", bbs_pyramid_depth_);
+    this->get_parameter("bbs_max_candidates", bbs_max_candidates_);
+    this->get_parameter("bbs_nms_radius_m", bbs_nms_radius_m_);
+    this->get_parameter("bbs_min_score", bbs_min_score_);
+    this->get_parameter("bbs_min_scan_points", bbs_min_scan_points_);
+    this->get_parameter("bbs_min_scan_span_m", bbs_min_scan_span_m_);
+    this->get_parameter(
+        "bbs_min_scan_max_range_m", bbs_min_scan_max_range_m_);
+    this->get_parameter("bbs_z_min_m", bbs_z_min_m_);
+    this->get_parameter("bbs_z_max_m", bbs_z_max_m_);
+    this->get_parameter("bbs_min_range_m", bbs_min_range_m_);
+    this->get_parameter("bbs_max_range_m", bbs_max_range_m_);
+    this->get_parameter("bbs_scan_voxel_m", bbs_scan_voxel_m_);
+    this->get_parameter("bbs_max_scan_points", bbs_max_scan_points_);
+    this->get_parameter("bbs_max_attempts", bbs_max_attempts_);
+    this->get_parameter(
+        "bbs_candidate_fitness_margin", bbs_candidate_fitness_margin_);
     this->get_parameter("confidence_loc_th", confidence_loc_th_);
     this->get_parameter("kf_baselink2map_x", kf_param_x_);
     this->get_parameter("kf_baselink2map_y", kf_param_y_);
@@ -831,6 +930,40 @@ GloabalLocalization::GloabalLocalization() : Node("global_loc_node"),
     global_scan_window_size_ = std::max(1, std::min(global_scan_window_size_, 30));
     global_min_ransac_fitness_ = std::max(
         0.0, std::min(1.0, global_min_ransac_fitness_));
+    bbs_resolution_m_ = std::max(bbs_resolution_m_, 0.05);
+    bbs_angular_resolution_deg_ = std::max(bbs_angular_resolution_deg_, 1.0);
+    bbs_pyramid_depth_ = std::max(0, std::min(bbs_pyramid_depth_, 10));
+    bbs_max_candidates_ = std::max(1, std::min(bbs_max_candidates_, 20));
+    bbs_nms_radius_m_ = std::max(0.0, bbs_nms_radius_m_);
+    bbs_min_score_ = std::max(0.0, std::min(1.0, bbs_min_score_));
+    bbs_min_scan_points_ = std::max(10, bbs_min_scan_points_);
+    bbs_min_scan_span_m_ = std::max(0.1, bbs_min_scan_span_m_);
+    bbs_min_scan_max_range_m_ = std::max(0.1, bbs_min_scan_max_range_m_);
+    bbs_scan_voxel_m_ = std::max(0.02, bbs_scan_voxel_m_);
+    bbs_max_scan_points_ = std::max(32, bbs_max_scan_points_);
+    bbs_max_attempts_ = std::max(1, bbs_max_attempts_);
+    bbs_candidate_fitness_margin_ = std::max(
+        0.0, bbs_candidate_fitness_margin_);
+    if (enable_bbs_initialization_)
+    {
+        std::string bbs_error;
+        bbs_map_loaded_ = open3d_loc::LoadBbsMap(
+            bbs_map_yaml_, bbs_resolution_m_, &bbs_map_, &bbs_error);
+        if (!bbs_map_loaded_)
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "BBS map load failed for '%s': %s; continuing with existing global localization",
+                         bbs_map_yaml_.c_str(), bbs_error.c_str());
+            enable_bbs_initialization_ = false;
+        }
+        else
+        {
+            RCLCPP_INFO(this->get_logger(),
+                        "BBS floor-transition fallback enabled: grid=%dx%d resolution=%.3fm top_k=%d",
+                        bbs_map_.occupancy.width, bbs_map_.occupancy.height,
+                        bbs_map_.resolution_m, bbs_max_candidates_);
+        }
+    }
     ParseInitialPosePriors();
     RCLCPP_INFO(this->get_logger(), "Registered cloud world frame: %s",
                 registered_cloud_world_frame_.c_str());
@@ -1143,11 +1276,64 @@ void GloabalLocalization::ParseInitialPosePriors()
     // Exact recorded starts are always exhausted before their neighbourhood.
     initial_pose_priors_.insert(
         initial_pose_priors_.end(), exact_priors.begin(), exact_priors.end());
-    const std::vector<Eigen::Vector3d> nearby_offsets = {
-        {0.35, 0.0, 0.0}, {-0.35, 0.0, 0.0},
-        {0.0, 0.35, 0.0}, {0.0, -0.35, 0.0},
-        {0.0, 0.0, 12.0}, {0.0, 0.0, -12.0},
-    };
+    std::vector<Eigen::Vector3d> nearby_offsets;
+    const bool valid_search =
+        std::isfinite(prior_search_radius_m_) && prior_search_radius_m_ >= 0.0 &&
+        std::isfinite(prior_yaw_range_deg_) && prior_yaw_range_deg_ >= 0.0 &&
+        std::isfinite(prior_search_xy_step_m_) && prior_search_xy_step_m_ > 0.0 &&
+        std::isfinite(prior_search_yaw_step_deg_) &&
+        prior_search_yaw_step_deg_ > 0.0 && prior_max_nearby_candidates_ > 0;
+    if (!valid_search)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Invalid prior neighbourhood parameters; disabling nearby candidates");
+    }
+    else
+    {
+        for (double x = -prior_search_radius_m_;
+             x <= prior_search_radius_m_ + 1.0e-9;
+             x += prior_search_xy_step_m_)
+        {
+            for (double y = -prior_search_radius_m_;
+                 y <= prior_search_radius_m_ + 1.0e-9;
+                 y += prior_search_xy_step_m_)
+            {
+                const double distance = std::hypot(x, y);
+                if (distance > 1.0e-9 &&
+                    distance <= prior_search_radius_m_ + 1.0e-9)
+                {
+                    nearby_offsets.emplace_back(x, y, 0.0);
+                }
+            }
+        }
+        std::sort(nearby_offsets.begin(), nearby_offsets.end(),
+                  [](const Eigen::Vector3d &left, const Eigen::Vector3d &right) {
+                      const double left_distance = left.head<2>().norm();
+                      const double right_distance = right.head<2>().norm();
+                      if (std::abs(left_distance - right_distance) > 1.0e-9)
+                      {
+                          return left_distance < right_distance;
+                      }
+                      if (std::abs(left.x() - right.x()) > 1.0e-9)
+                      {
+                          return left.x() > right.x();
+                      }
+                      return left.y() > right.y();
+                  });
+        for (double yaw = prior_search_yaw_step_deg_;
+             yaw <= prior_yaw_range_deg_ + 1.0e-9;
+             yaw += prior_search_yaw_step_deg_)
+        {
+            nearby_offsets.emplace_back(0.0, 0.0, yaw);
+            nearby_offsets.emplace_back(0.0, 0.0, -yaw);
+        }
+        if (nearby_offsets.size() >
+            static_cast<std::size_t>(prior_max_nearby_candidates_))
+        {
+            nearby_offsets.resize(
+                static_cast<std::size_t>(prior_max_nearby_candidates_));
+        }
+    }
     for (const auto &exact : exact_priors)
     {
         const double exact_yaw = std::atan2(
@@ -1329,6 +1515,148 @@ bool GloabalLocalization::ComputePriorInitializationCandidate(
                 prior.name.c_str(), prior.exact ? "true" : "false",
                 fitness, inlier_rmse, seed_translation, seed_rotation);
     return std::isfinite(fitness) && std::isfinite(inlier_rmse);
+}
+
+bool GloabalLocalization::PrepareBbsPlanarScan(
+    const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+    const Eigen::Matrix4d &baselink_to_odom,
+    std::vector<std::array<double, 2>> &planar_scan,
+    open3d_loc::ScanObservability &observability) const
+{
+    planar_scan.clear();
+    if (!scan || scan->IsEmpty() || !IsRigidTransform(baselink_to_odom))
+    {
+        observability.reason = "missing scan or odometry pose";
+        return false;
+    }
+    const Eigen::Matrix4d odom_to_baselink = baselink_to_odom.inverse();
+    std::vector<std::array<double, 3>> base_points;
+    base_points.reserve(scan->points_.size());
+    for (const auto &point : scan->points_)
+    {
+        const Eigen::Vector4d transformed =
+            odom_to_baselink * Eigen::Vector4d(point.x(), point.y(), point.z(), 1.0);
+        base_points.push_back(
+            {transformed.x(), transformed.y(), transformed.z()});
+    }
+    open3d_loc::ScanPreparationConfig preparation;
+    preparation.z_min_m = bbs_z_min_m_;
+    preparation.z_max_m = bbs_z_max_m_;
+    preparation.min_range_m = bbs_min_range_m_;
+    preparation.max_range_m = bbs_max_range_m_;
+    preparation.voxel_size_m = bbs_scan_voxel_m_;
+    preparation.max_points = static_cast<std::size_t>(bbs_max_scan_points_);
+    planar_scan = open3d_loc::PreparePlanarScan(base_points, preparation);
+
+    open3d_loc::ScanObservabilityConfig gate;
+    gate.min_points = static_cast<std::size_t>(bbs_min_scan_points_);
+    gate.min_xy_span_m = bbs_min_scan_span_m_;
+    gate.min_max_range_m = bbs_min_scan_max_range_m_;
+    observability = open3d_loc::EvaluateObservability(planar_scan, gate);
+    return !planar_scan.empty();
+}
+
+bool GloabalLocalization::ComputeBbsInitializationCandidate(
+    const std::shared_ptr<open3d::geometry::PointCloud> &scan,
+    const Eigen::Matrix4d &baselink_to_odom,
+    Eigen::Matrix4d &candidate_odom2map,
+    double &fitness,
+    double &inlier_rmse,
+    double &bbs_score,
+    double &fitness_margin)
+{
+    fitness = 0.0;
+    inlier_rmse = std::numeric_limits<double>::infinity();
+    bbs_score = 0.0;
+    fitness_margin = 0.0;
+    if (!enable_bbs_initialization_ || !bbs_map_loaded_)
+    {
+        return false;
+    }
+    std::vector<std::array<double, 2>> planar_scan;
+    open3d_loc::ScanObservability observability;
+    if (!PrepareBbsPlanarScan(
+            scan, baselink_to_odom, planar_scan, observability))
+    {
+        return false;
+    }
+    const auto pose_candidates = open3d_loc::SearchBbsPoses(
+        bbs_map_, planar_scan,
+        bbs_angular_resolution_deg_ * M_PI / 180.0,
+        bbs_pyramid_depth_, bbs_max_candidates_, bbs_nms_radius_m_,
+        bbs_min_score_);
+    if (pose_candidates.empty())
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "BBS produced no candidate above score %.3f",
+                    bbs_min_score_);
+        return false;
+    }
+
+    double second_fitness = -std::numeric_limits<double>::infinity();
+    bool found = false;
+    std::size_t best_index = 0;
+    for (std::size_t index = 0; index < pose_candidates.size(); ++index)
+    {
+        InitialPosePrior prior;
+        prior.name = "bbs_" + std::to_string(index);
+        prior.baselink_to_map = Eigen::Matrix4d::Identity();
+        prior.baselink_to_map.block<3, 3>(0, 0) = Eigen::AngleAxisd(
+            pose_candidates[index].yaw_rad,
+            Eigen::Vector3d::UnitZ()).toRotationMatrix();
+        prior.baselink_to_map.block<3, 1>(0, 3) = Eigen::Vector3d(
+            pose_candidates[index].x_m,
+            pose_candidates[index].y_m,
+            map_odom_z_);
+        prior.exact = false;
+        Eigen::Matrix4d refined = Eigen::Matrix4d::Identity();
+        double refined_fitness = 0.0;
+        double refined_rmse = std::numeric_limits<double>::infinity();
+        if (!ComputePriorInitializationCandidate(
+                scan, baselink_to_odom, prior, refined,
+                refined_fitness, refined_rmse))
+        {
+            continue;
+        }
+        if (!found || refined_fitness > fitness ||
+            (std::abs(refined_fitness - fitness) < 1.0e-9 &&
+             refined_rmse < inlier_rmse))
+        {
+            if (found)
+            {
+                second_fitness = std::max(second_fitness, fitness);
+            }
+            found = true;
+            best_index = index;
+            candidate_odom2map = refined;
+            fitness = refined_fitness;
+            inlier_rmse = refined_rmse;
+            bbs_score = pose_candidates[index].score;
+        }
+        else
+        {
+            second_fitness = std::max(second_fitness, refined_fitness);
+        }
+    }
+    if (!found)
+    {
+        return false;
+    }
+    fitness_margin = std::isfinite(second_fitness)
+        ? fitness - second_fitness : 1.0;
+    RCLCPP_INFO(this->get_logger(),
+                "BBS top-K verification selected %zu/%zu: grid_score=%.3f ICP=%.3f/%.3f margin=%.3f",
+                best_index + 1, pose_candidates.size(), bbs_score, fitness,
+                inlier_rmse, fitness_margin);
+    if (pose_candidates.size() > 1 &&
+        fitness_margin < bbs_candidate_fitness_margin_)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Rejecting ambiguous BBS result: ICP fitness margin %.3f < %.3f",
+                    fitness_margin, bbs_candidate_fitness_margin_);
+        return false;
+    }
+    return true;
 }
 
 bool GloabalLocalization::ComputeGlobalInitializationCandidate(
@@ -1880,6 +2208,7 @@ void GloabalLocalization::LocalizationInitialize()
     unsigned long long last_processed_scan_generation = 0;
     unsigned int observed_manual_pose_generation = manual_pose_generation_.load();
     int global_attempt_failures = 0;
+    int bbs_attempt_count = 0;
     std::size_t prior_candidate_index = 0;
     int prior_confirmation_attempts = 0;
     const auto clear_pending_candidate = [&]()
@@ -1983,11 +2312,36 @@ void GloabalLocalization::LocalizationInitialize()
             continue;
         }
 
+        if (enable_initialization_observability_gate_ &&
+            iteration_manual_pose_generation == 0)
+        {
+            std::vector<std::array<double, 2>> planar_scan;
+            open3d_loc::ScanObservability observability;
+            const bool prepared = PrepareBbsPlanarScan(
+                pcd_scan, mat_baselink2odom_cur, planar_scan, observability);
+            if (!prepared || !observability.observable)
+            {
+                loc_fitness_.store(0.0);
+                clear_pending_candidate();
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 2000,
+                    "Initialization observability gate closed: %s (points=%zu span=%.2f/%.2fm max_range=%.2fm); no retry consumed",
+                    observability.reason.c_str(), observability.point_count,
+                    observability.x_span_m, observability.y_span_m,
+                    observability.max_range_m);
+                continue;
+            }
+        }
+
         const bool automatic_initialization =
             iteration_manual_pose_generation == 0;
         const bool used_prior_initialization =
             automatic_initialization &&
             prior_candidate_index < initial_pose_priors_.size();
+        const bool used_bbs_initialization =
+            automatic_initialization && !used_prior_initialization &&
+            enable_bbs_initialization_ && bbs_map_loaded_ &&
+            bbs_attempt_count < bbs_max_attempts_;
 
         // Seed the independent RViz refresh cache before any whole-map feature
         // preparation. That preparation can take several seconds after all
@@ -1996,6 +2350,7 @@ void GloabalLocalization::LocalizationInitialize()
         publish_scan_preview(pcd_scan, current_odom2map);
 
         if (automatic_initialization && !used_prior_initialization &&
+            !used_bbs_initialization &&
             enable_global_initialization_ &&
             !global_feature_preparation_attempted_)
         {
@@ -2006,6 +2361,7 @@ void GloabalLocalization::LocalizationInitialize()
         }
         const bool used_global_initialization =
             automatic_initialization && !used_prior_initialization &&
+            !used_bbs_initialization &&
             enable_global_initialization_ &&
             !global_feature_levels_.empty();
 
@@ -2014,6 +2370,8 @@ void GloabalLocalization::LocalizationInitialize()
         double fitness = 0.0;
         double inlier_rmse = 0.0;
         double ransac_fitness = 0.0;
+        double bbs_score = 0.0;
+        double bbs_fitness_margin = 0.0;
         unsigned int ransac_seed = 0;
 
         if (used_prior_initialization)
@@ -2048,6 +2406,26 @@ void GloabalLocalization::LocalizationInitialize()
                         prior_confirmation_attempts,
                         kPriorMaxConfirmationAttempts);
                 }
+                continue;
+            }
+            raw_correction = candidate_odom2map * current_odom2map.inverse();
+        }
+        else if (used_bbs_initialization)
+        {
+            ++bbs_attempt_count;
+            if (!ComputeBbsInitializationCandidate(
+                    pcd_scan, mat_baselink2odom_cur, candidate_odom2map,
+                    fitness, inlier_rmse, bbs_score, bbs_fitness_margin))
+            {
+                loc_fitness_.store(0.0);
+                clear_pending_candidate();
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "BBS/ICP transition attempt %d/%d failed; %s",
+                    bbs_attempt_count, bbs_max_attempts_,
+                    bbs_attempt_count < bbs_max_attempts_
+                        ? "waiting for the next observable scan"
+                        : "falling back to existing FPFH/RANSAC initialization");
                 continue;
             }
             raw_correction = candidate_odom2map * current_odom2map.inverse();
@@ -2146,18 +2524,19 @@ void GloabalLocalization::LocalizationInitialize()
             std::isfinite(translation_step) && std::isfinite(rotation_step_deg);
         const double required_fitness = used_global_initialization
             ? std::max(min_initialization_fitness_, global_min_fitness_)
-            : used_prior_initialization
+            : (used_prior_initialization || used_bbs_initialization)
                 ? std::max(min_initialization_fitness_,
                            kPriorInitializationMinFitness)
                 : min_initialization_fitness_;
         const double allowed_rmse = used_global_initialization
             ? std::min(max_icp_inlier_rmse_, global_max_inlier_rmse_)
-            : used_prior_initialization
+            : (used_prior_initialization || used_bbs_initialization)
                 ? std::min(max_icp_inlier_rmse_,
                            kPriorInitializationMaxRmse)
             : max_icp_inlier_rmse_;
         const bool step_is_safe =
             used_global_initialization || used_prior_initialization ||
+            used_bbs_initialization ||
             (translation_step <= max_initialization_translation_step_ &&
              rotation_step_deg <= max_initialization_rotation_step_deg_);
         const bool safe_initialization_step =
@@ -2181,6 +2560,7 @@ void GloabalLocalization::LocalizationInitialize()
                 this->get_logger(), *this->get_clock(), 2000,
                 "LocalizationInitialize: rejecting %s candidate fitness=%.3f rmse=%.3f RANSAC=%.3f step=%.3fm/%.2fdeg (min fitness %.3f, max rmse %.3f)",
                 used_global_initialization ? "global" :
+                    used_bbs_initialization ? "BBS" :
                     used_prior_initialization ? "prior" : "local",
                 fitness, inlier_rmse, ransac_fitness,
                 translation_step, rotation_step_deg,
@@ -2211,6 +2591,10 @@ void GloabalLocalization::LocalizationInitialize()
                         prior_confirmation_attempts,
                         kPriorMaxConfirmationAttempts);
                 }
+            }
+            else if (used_bbs_initialization)
+            {
+                clear_pending_candidate();
             }
             else if (used_global_initialization)
             {
@@ -2260,20 +2644,22 @@ void GloabalLocalization::LocalizationInitialize()
             candidate_time - loc_start).count();
         const double candidate_max_age = used_global_initialization
             ? global_candidate_max_age_sec_
-            : used_prior_initialization
+            : (used_prior_initialization || used_bbs_initialization)
                 ? 10.0 + candidate_processing_sec
                 : icp_candidate_max_age_sec_ + candidate_processing_sec;
         const double candidate_consistency_translation =
-            used_global_initialization || used_prior_initialization
+            used_global_initialization || used_prior_initialization ||
+                    used_bbs_initialization
                 ? global_candidate_consistency_translation_
                 : icp_candidate_consistency_translation_;
         const double candidate_consistency_rotation =
-            used_global_initialization || used_prior_initialization
+            used_global_initialization || used_prior_initialization ||
+                    used_bbs_initialization
                 ? global_candidate_consistency_rotation_deg_
                 : icp_candidate_consistency_rotation_deg_;
         const int required_confirmations = used_global_initialization
             ? global_initialization_confirmations_
-            : used_prior_initialization
+            : (used_prior_initialization || used_bbs_initialization)
                 ? kPriorInitializationConfirmations
                 : std::max(2, large_correction_confirmations_);
         const bool pending_is_fresh =
@@ -2354,6 +2740,7 @@ void GloabalLocalization::LocalizationInitialize()
             RCLCPP_INFO(this->get_logger(),
                         "%s localization initialization succeeded: fitness=%.3f, consistent confirmations=%d, map_odom_z=%.3f, map_odom_rp=%.2f/%.2f deg, last iteration=%.1f ms",
                         used_global_initialization ? "Global" :
+                            used_bbs_initialization ? "BBS" :
                             used_prior_initialization ? "Prior" : "Local",
                         fitness, consecutive_successes,
                         pending_initialization_candidate(2, 3),
@@ -2366,6 +2753,7 @@ void GloabalLocalization::LocalizationInitialize()
             this->get_logger(), *this->get_clock(), 2000,
             "LocalizationInitialize: holding consistent %s candidate (%d/%d), fitness=%.3f rmse=%.3f RANSAC=%.3f",
             used_global_initialization ? "global" :
+                used_bbs_initialization ? "BBS" :
                 used_prior_initialization ? "prior" : "local",
             consecutive_successes, required_confirmations,
             fitness, inlier_rmse, ransac_fitness);

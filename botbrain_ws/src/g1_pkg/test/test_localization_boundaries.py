@@ -99,12 +99,20 @@ def test_localization_service_starts_the_installed_launch_file_directly():
     assert localization_env["LOCALIZATION_START_DELAY_SEC"] == (
         "${LOCALIZATION_START_DELAY_SEC:-0}"
     )
+    assert localization_env["LOCALIZATION_MODE"] == (
+        "${LOCALIZATION_MODE:-cold_start}"
+    )
+    assert localization_env["LOCALIZATION_INITIAL_POSE_PRIORS"] == (
+        "${LOCALIZATION_INITIAL_POSE_PRIORS:-}"
+    )
     assert compose["services"]["fast_lio"]["environment"][
         "FAST_LIO_START_DELAY_SEC"
     ] == "${FAST_LIO_START_DELAY_SEC:-0}"
     localization_command = compose["services"]["localization"]["command"][-1]
     assert localization_command.count("MAP_SCENE") == 1
     assert 'map_scene:="$${MAP_SCENE}"' in localization_command
+    assert 'localization_mode:="$${LOCALIZATION_MODE}"' in localization_command
+    assert "initial_pose_priors_override" in localization_command
     assert "map_file:=" not in localization_command
     assert "grid_map_file:=" not in localization_command
     assert compose["services"]["navigation"]["restart"] == "no"
@@ -126,6 +134,8 @@ def test_map_scene_selector_recreates_and_verifies_localization_container():
     compact_runbook = _read("建图导航指令.md")
 
     assert 'MAP_SCENE="$scene" LOCALIZATION_START_DELAY_SEC=0' in selector
+    assert 'LOCALIZATION_MODE="$localization_mode"' in selector
+    assert 'LOCALIZATION_INITIAL_POSE_PRIORS="$initial_pose_priors"' in selector
     assert "FAST_LIO_START_DELAY_SEC=0" in selector
     assert "FAST_LIO_MAPPING_PROFILE=default" in selector
     assert "docker compose rm -f navigation localization" in selector

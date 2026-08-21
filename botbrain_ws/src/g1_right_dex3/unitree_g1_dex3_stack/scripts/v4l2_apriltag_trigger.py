@@ -924,9 +924,9 @@ class V4L2AprilTagTrigger(Node):
             return
         obj_pts = np.array(
             [[0.0, 0.0, 0.0],
-             [0.03, 0.0, 0.0],
-             [0.0, 0.03, 0.0],
-             [0.0, 0.0, 0.03]], dtype=np.float64)
+             [0.08, 0.0, 0.0],
+             [0.0, 0.08, 0.0],
+             [0.0, 0.0, 0.08]], dtype=np.float64)
         rvec = cv2.Rodrigues(detection.pose_R)[0]
         tvec = np.asarray(detection.pose_t, dtype=np.float64).reshape(3, 1)
         img_pts, _ = cv2.projectPoints(
@@ -936,6 +936,15 @@ class V4L2AprilTagTrigger(Node):
         cv2.line(image, tuple(o), tuple(x), (0, 0, 255), 2)
         cv2.line(image, tuple(o), tuple(y), (0, 255, 0), 2)
         cv2.line(image, tuple(o), tuple(z), (255, 0, 0), 2)
+        cv2.putText(image, 'X', tuple(x + np.array([4, -4])),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+        cv2.putText(image, 'Y', tuple(y + np.array([4, -4])),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(image, 'Z', tuple(z + np.array([4, -4])),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
+        cv2.circle(image, tuple(o), 6, (0, 255, 255), -1)
+        cv2.putText(image, 'tag', (o[0] + 10, o[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA)
 
     def _prepare_debug_dir(self):
         if not self.save_debug_images:

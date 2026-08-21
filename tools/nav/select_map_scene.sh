@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <scene> [--restart-fast-lio] [--wait-ready] [--ready-timeout SEC]" >&2
+    echo "Usage: $0 <scene> [--restart-fast-lio] [--wait-ready] [--ready-timeout SEC] [--localization-mode MODE] [--initial-pose-priors POSES --initial-pose-prior-names NAMES] [--prior-search-radius-m M --prior-yaw-range-deg DEG]" >&2
     echo "Same floor:   $0 aitech" >&2
     echo "Cross floor:  $0 floor4 --restart-fast-lio --wait-ready" >&2
 }
@@ -17,6 +17,14 @@ shift
 restart_fast_lio=false
 wait_ready=false
 ready_timeout=300
+localization_mode=cold_start
+initial_pose_priors=""
+initial_pose_prior_names=""
+prior_search_radius_m=0.35
+prior_yaw_range_deg=12.0
+prior_search_xy_step_m=0.35
+prior_search_yaw_step_deg=12.0
+prior_max_nearby_candidates=6
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --restart-fast-lio)
@@ -36,12 +44,70 @@ while [ "$#" -gt 0 ]; do
             wait_ready=true
             shift 2
             ;;
+        --localization-mode)
+            if [ "$#" -lt 2 ] ||
+                    { [ "$2" != "cold_start" ] &&
+                      [ "$2" != "floor_transition" ]; }; then
+                echo "ERROR: --localization-mode must be cold_start or floor_transition" >&2
+                exit 2
+            fi
+            localization_mode=$2
+            shift 2
+            ;;
+        --initial-pose-priors)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "ERROR: --initial-pose-priors requires a non-empty value" >&2
+                exit 2
+            fi
+            initial_pose_priors=$2
+            shift 2
+            ;;
+        --initial-pose-prior-names)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "ERROR: --initial-pose-prior-names requires a non-empty value" >&2
+                exit 2
+            fi
+            initial_pose_prior_names=$2
+            shift 2
+            ;;
+        --prior-search-radius-m|--prior-yaw-range-deg|--prior-search-xy-step-m|--prior-search-yaw-step-deg)
+            if [ "$#" -lt 2 ] || [[ ! "$2" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
+                echo "ERROR: $1 requires a non-negative finite decimal" >&2
+                exit 2
+            fi
+            case "$1" in
+                --prior-search-radius-m) prior_search_radius_m=$2 ;;
+                --prior-yaw-range-deg) prior_yaw_range_deg=$2 ;;
+                --prior-search-xy-step-m) prior_search_xy_step_m=$2 ;;
+                --prior-search-yaw-step-deg) prior_search_yaw_step_deg=$2 ;;
+            esac
+            shift 2
+            ;;
+        --prior-max-nearby-candidates)
+            if [ "$#" -lt 2 ] || [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo "ERROR: --prior-max-nearby-candidates requires a positive integer" >&2
+                exit 2
+            fi
+            prior_max_nearby_candidates=$2
+            shift 2
+            ;;
         *)
             usage
             exit 2
             ;;
     esac
 done
+if { [ -n "$initial_pose_priors" ] && [ -z "$initial_pose_prior_names" ]; } ||
+        { [ -z "$initial_pose_priors" ] && [ -n "$initial_pose_prior_names" ]; }; then
+    echo "ERROR: pose priors and names must be supplied together" >&2
+    exit 2
+fi
+if [ "$localization_mode" = "cold_start" ] &&
+        { [ -n "$initial_pose_priors" ] ||
+          [ -n "$initial_pose_prior_names" ]; }; then
+    echo "ERROR: explicit pose priors are only accepted in floor_transition mode" >&2
+    exit 2
+fi
 if [[ ! "$scene" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
     echo "ERROR: invalid scene '$scene'" >&2
     exit 2
@@ -220,6 +286,14 @@ restore_previous_runtime() {
         if [ -z "$previous_scene" ]; then
             restore_ok=false
         elif ! MAP_SCENE="$previous_scene" LOCALIZATION_START_DELAY_SEC=0 \
+                LOCALIZATION_MODE=cold_start \
+                LOCALIZATION_INITIAL_POSE_PRIORS= \
+                LOCALIZATION_INITIAL_POSE_PRIOR_NAMES= \
+                LOCALIZATION_PRIOR_SEARCH_RADIUS_M=0.35 \
+                LOCALIZATION_PRIOR_YAW_RANGE_DEG=12.0 \
+                LOCALIZATION_PRIOR_SEARCH_XY_STEP_M=0.35 \
+                LOCALIZATION_PRIOR_SEARCH_YAW_STEP_DEG=12.0 \
+                LOCALIZATION_PRIOR_MAX_NEARBY_CANDIDATES=6 \
                 docker compose --profile navigation up -d --force-recreate \
                     --no-deps localization >/dev/null 2>&1; then
             restore_ok=false
@@ -846,6 +920,14 @@ fi
 
 echo "Starting localization Compose service for scene '$scene'"
 MAP_SCENE="$scene" LOCALIZATION_START_DELAY_SEC=0 \
+    LOCALIZATION_MODE="$localization_mode" \
+    LOCALIZATION_INITIAL_POSE_PRIORS="$initial_pose_priors" \
+    LOCALIZATION_INITIAL_POSE_PRIOR_NAMES="$initial_pose_prior_names" \
+    LOCALIZATION_PRIOR_SEARCH_RADIUS_M="$prior_search_radius_m" \
+    LOCALIZATION_PRIOR_YAW_RANGE_DEG="$prior_yaw_range_deg" \
+    LOCALIZATION_PRIOR_SEARCH_XY_STEP_M="$prior_search_xy_step_m" \
+    LOCALIZATION_PRIOR_SEARCH_YAW_STEP_DEG="$prior_search_yaw_step_deg" \
+    LOCALIZATION_PRIOR_MAX_NEARBY_CANDIDATES="$prior_max_nearby_candidates" \
     docker compose --profile navigation \
     up -d --force-recreate --no-deps localization
 echo "Localization Compose service is running; Navigation remains stopped until localization is verified."
@@ -870,6 +952,14 @@ actual_scene=$(docker inspect g1_robot_localization \
     sed -n 's/^MAP_SCENE=//p' | tail -n 1)
 if [ "$actual_scene" != "$scene" ]; then
     echo "ERROR: localization container has MAP_SCENE='$actual_scene', expected '$scene'" >&2
+    exit 1
+fi
+
+actual_localization_mode=$(docker inspect g1_robot_localization \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' |
+    sed -n 's/^LOCALIZATION_MODE=//p' | tail -n 1)
+if [ "$actual_localization_mode" != "$localization_mode" ]; then
+    echo "ERROR: localization container has LOCALIZATION_MODE='$actual_localization_mode', expected '$localization_mode'" >&2
     exit 1
 fi
 

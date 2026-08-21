@@ -107,8 +107,50 @@ def _scene_initial_pose_priors(waypoints_file, scene):
     return priors
 
 
+def _transition_initial_pose_priors(serialized_priors, serialized_names):
+    """Validate explicit cross-floor priors without changing cold start."""
+    records = [item.strip() for item in serialized_priors.split(';') if item.strip()]
+    names = [item.strip() for item in serialized_names.split(';')]
+    if not records:
+        if any(names):
+            raise RuntimeError(
+                'floor_transition prior names require matching pose records.'
+            )
+        return []
+    if len(names) != len(records) or any(not name for name in names):
+        raise RuntimeError(
+            'floor_transition prior names must match the number of pose records.'
+        )
+
+    priors = []
+    for index, (record, name) in enumerate(zip(records, names)):
+        if re.search(r'[,;\r\n]', name):
+            raise RuntimeError(
+                f'Invalid floor_transition prior name at index {index}: {name!r}'
+            )
+        fields = record.split(',')
+        if len(fields) != 3:
+            raise RuntimeError(
+                f'Invalid floor_transition prior at index {index}: {record!r}'
+            )
+        try:
+            x, y, yaw_deg = (float(field) for field in fields)
+        except ValueError as exc:
+            raise RuntimeError(
+                f'Invalid floor_transition prior at index {index}: {record!r}'
+            ) from exc
+        if not all(math.isfinite(value) for value in (x, y, yaw_deg)):
+            raise RuntimeError(
+                f'Non-finite floor_transition prior at index {index}: {record!r}'
+            )
+        priors.append((name, x, y, yaw_deg))
+    return priors
+
+
 def _validate_map_pair(context, maps_dir, waypoints_file):
     scene = LaunchConfiguration('map_scene').perform(context).strip()
+    localization_mode = LaunchConfiguration(
+        'localization_mode').perform(context).strip()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', scene):
         raise RuntimeError(
             f'Invalid map_scene {scene!r}; use only letters, digits, "_" or "-".'
@@ -193,7 +235,19 @@ def _validate_map_pair(context, maps_dir, waypoints_file):
             f'Requested map_scene={scene}. '
             'Select matching <scene>_scans.pcd, <scene>.yaml and <scene>.pgm files.'
         )
-    priors = _scene_initial_pose_priors(waypoints_file, scene)
+    if localization_mode == 'cold_start':
+        priors = _scene_initial_pose_priors(waypoints_file, scene)
+    elif localization_mode == 'floor_transition':
+        priors = _transition_initial_pose_priors(
+            LaunchConfiguration('initial_pose_priors_override').perform(context),
+            LaunchConfiguration(
+                'initial_pose_prior_names_override').perform(context),
+        )
+    else:
+        raise RuntimeError(
+            f'Unsupported localization_mode {localization_mode!r}; expected '
+            "'cold_start' or 'floor_transition'."
+        )
     serialized_priors = ';'.join(
         f'{x:.9g},{y:.9g},{yaw_deg:.9g}'
         for _, x, y, yaw_deg in priors
@@ -205,13 +259,18 @@ def _validate_map_pair(context, maps_dir, waypoints_file):
             f'YAML={resolved_grid} PGM={image_path}'
         )),
         LogInfo(msg=(
-            f'Localization startup priors for scene={scene}: '
+            f'Localization startup priors for scene={scene} '
+            f'mode={localization_mode}: '
             f'{serialized_names}'
         )),
         SetLaunchConfiguration('map_file', str(resolved_pcd)),
         SetLaunchConfiguration('grid_map_file', str(resolved_grid)),
         SetLaunchConfiguration('initial_pose_priors', serialized_priors),
         SetLaunchConfiguration('initial_pose_prior_names', serialized_names),
+        SetLaunchConfiguration(
+            'enable_floor_transition_features',
+            'true' if localization_mode == 'floor_transition' else 'false',
+        ),
     ]
 
 
@@ -225,6 +284,22 @@ def generate_launch_description():
     pcd_arg = DeclareLaunchArgument('map_file', default_value='')
     grid_map_arg = DeclareLaunchArgument('grid_map_file', default_value='')
     use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value='false')
+    localization_mode_arg = DeclareLaunchArgument(
+        'localization_mode', default_value='cold_start')
+    initial_pose_priors_override_arg = DeclareLaunchArgument(
+        'initial_pose_priors_override', default_value='')
+    initial_pose_prior_names_override_arg = DeclareLaunchArgument(
+        'initial_pose_prior_names_override', default_value='')
+    prior_search_radius_arg = DeclareLaunchArgument(
+        'prior_search_radius_m', default_value='0.35')
+    prior_yaw_range_arg = DeclareLaunchArgument(
+        'prior_yaw_range_deg', default_value='12.0')
+    prior_search_xy_step_arg = DeclareLaunchArgument(
+        'prior_search_xy_step_m', default_value='0.35')
+    prior_search_yaw_step_arg = DeclareLaunchArgument(
+        'prior_search_yaw_step_deg', default_value='12.0')
+    prior_max_nearby_candidates_arg = DeclareLaunchArgument(
+        'prior_max_nearby_candidates', default_value='6')
 
     open3d_config = PathJoinSubstitution([
         FindPackageShare('open3d_loc'), 'config', 'loc_param_g1.yaml'
@@ -329,6 +404,40 @@ def generate_launch_description():
                     'initial_pose_priors'),
                 'initial_pose_prior_names': LaunchConfiguration(
                     'initial_pose_prior_names'),
+                'prior_search_radius_m': LaunchConfiguration(
+                    'prior_search_radius_m'),
+                'prior_yaw_range_deg': LaunchConfiguration(
+                    'prior_yaw_range_deg'),
+                'prior_search_xy_step_m': LaunchConfiguration(
+                    'prior_search_xy_step_m'),
+                'prior_search_yaw_step_deg': LaunchConfiguration(
+                    'prior_search_yaw_step_deg'),
+                'prior_max_nearby_candidates': LaunchConfiguration(
+                    'prior_max_nearby_candidates'),
+                # New recovery layers are strictly scoped to cross-floor
+                # transactions; cold_start retains its established behavior.
+                'enable_bbs_initialization': LaunchConfiguration(
+                    'enable_floor_transition_features'),
+                'enable_initialization_observability_gate': LaunchConfiguration(
+                    'enable_floor_transition_features'),
+                'bbs_map_yaml': LaunchConfiguration('grid_map_file'),
+                'bbs_resolution_m': 0.20,
+                'bbs_angular_resolution_deg': 10.0,
+                'bbs_pyramid_depth': 5,
+                'bbs_max_candidates': 5,
+                'bbs_nms_radius_m': 1.0,
+                'bbs_min_score': 0.20,
+                'bbs_min_scan_points': 100,
+                'bbs_min_scan_span_m': 3.0,
+                'bbs_min_scan_max_range_m': 4.0,
+                'bbs_z_min_m': -0.5,
+                'bbs_z_max_m': 1.5,
+                'bbs_min_range_m': 0.5,
+                'bbs_max_range_m': 25.0,
+                'bbs_scan_voxel_m': 0.15,
+                'bbs_max_scan_points': 512,
+                'bbs_max_attempts': 3,
+                'bbs_candidate_fitness_margin': 0.02,
                 'save_scan':                False,
                 'maxpoints_source':         80000,
                 'maxpoints_target':         400000,
@@ -434,6 +543,14 @@ def generate_launch_description():
         pcd_arg,
         grid_map_arg,
         use_sim_time_arg,
+        localization_mode_arg,
+        initial_pose_priors_override_arg,
+        initial_pose_prior_names_override_arg,
+        prior_search_radius_arg,
+        prior_yaw_range_arg,
+        prior_search_xy_step_arg,
+        prior_search_yaw_step_arg,
+        prior_max_nearby_candidates_arg,
         OpaqueFunction(
             function=_validate_map_pair,
             kwargs={

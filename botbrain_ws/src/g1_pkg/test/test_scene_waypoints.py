@@ -37,6 +37,20 @@ def _load_launch_prior_helper():
     return namespace["_scene_initial_pose_priors"]
 
 
+def _load_transition_prior_helper():
+    path = PROJECT_ROOT / "botbrain_ws/src/g1_pkg/launch/localization_3d.launch.py"
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    function = next(
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_transition_initial_pose_priors"
+    )
+    namespace = {"math": math, "re": re}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"),
+         namespace)
+    return namespace["_transition_initial_pose_priors"]
+
+
 def test_scene_resolution_uses_explicit_state_env_then_ug(tmp_path):
     scene_file = tmp_path / "map_scene"
     scene_file.write_text("floor4\n", encoding="utf-8")
@@ -75,6 +89,32 @@ def test_localization_startup_priors_prefer_scene_start_points_then_origin(
         "aitech_v2_0", "aitech_v2_2", "aitech_v2_1", "home", "later"
     ]
     assert priors[-1] == ("map_origin", 0.0, 0.0, 0.0)
+
+
+def test_floor_transition_uses_only_explicit_elevator_exit_priors():
+    helper = _load_transition_prior_helper()
+
+    assert helper(
+        "12.4,-3.1,0;12.4,-3.1,180",
+        "elevator_a_forward;elevator_a_reverse",
+    ) == [
+        ("elevator_a_forward", 12.4, -3.1, 0.0),
+        ("elevator_a_reverse", 12.4, -3.1, 180.0),
+    ]
+
+
+def test_floor_transition_rejects_missing_or_mismatched_priors():
+    helper = _load_transition_prior_helper()
+
+    # Empty priors are valid: floor_transition can start with the BBS fallback.
+    assert helper("", "") == []
+    for poses, names in (("", "orphan_name"), ("1,2,3;4,5,6", "only_one")):
+        try:
+            helper(poses, names)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalid floor-transition priors were accepted")
 
 
 def test_scene_database_isolates_name_and_migrates_legacy(tmp_path):

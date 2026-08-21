@@ -1,0 +1,90 @@
+# The values here are the final values published on /floor_state, after the
+# floor estimator's floor_number_offset has already been applied.
+floor_to_scene:
+  13: floor13
+  14: floor14
+  15: floor15
+
+floor_topic: /floor_state
+# Confirm this on the robot with: ros2 topic type /floor_state
+floor_message_type: std_msgs/msg/Int32
+floor_field: data
+
+# The manager deliberately uses a VOLATILE subscription, so it never consumes
+# the publisher's retained TRANSIENT_LOCAL sample. Require continued fresh
+# publication before accepting a floor anyway.
+stable_for_sec: 3.0
+min_observations: 3
+message_timeout_sec: 5.0
+
+# A target-floor reading is not enough to prove the elevator has stopped.
+# Require fresh Unitree odometry twist to stay below both thresholds before
+# switching PCD/PGM/YAML or restarting FAST-LIO.
+motion_topic: /g1_robot/odom
+motion_message_type: nav_msgs/msg/Odometry
+stationary_for_sec: 2.0
+stationary_min_observations: 5
+motion_message_timeout_sec: 1.0
+max_linear_speed_mps: 0.05
+max_angular_speed_rps: 0.10
+# Once armed, fail closed instead of allowing a delayed reading to trigger an
+# unexpected switch minutes or hours later.
+expected_floor_timeout_sec: 120.0
+retry_interval_sec: 30.0
+max_switch_attempts: 3
+
+# Cross-floor changes must rebuild FAST-LIO's local odometry origin, verify the
+# matching PCD/YAML/PGM set, wait for stable localization, then start Nav2.
+restart_fast_lio: true
+ready_timeout_sec: 300
+start_navigation: true
+navigation_ready_timeout_sec: 90
+
+# Safe default: a mission must arm the destination with:
+#   ros2 param set /floor_map_switcher expected_floor 14
+# Set allow_uncommanded_switch=true only if every observed mapped-floor change
+# should automatically rebuild the navigation runtime.
+expected_floor: -1
+# Route context only; this is not an elevator-control interface. Set these
+# before arming expected_floor so the exact exit prior can be selected.
+from_floor: -1
+elevator_id: ""
+# Optional external confirmation input. It is ignored while
+# require_arrival_confirmation=false; the runtime ROS parameter starts false.
+arrival_confirmed: false
+# This project has no elevator-controller/door-open signal. Keep this false to
+# use target-floor stability + odometry stationarity as the automatic gate.
+# Set true only if a future task node owns the arrival_confirmed ROS parameter.
+require_arrival_confirmation: false
+allow_uncommanded_switch: false
+stop_navigation_on_timeout: true
+
+# Legacy target-floor-only priors remain accepted for compatibility.
+arrival_priors: {}
+# arrival_priors:
+#   13:
+#     - {name: elevator_a_forward, x: 12.4, y: -3.1, yaw_deg: 0.0}
+#     - {name: elevator_a_reverse, x: 12.4, y: -3.1, yaw_deg: 180.0}
+#   14:
+#     - {name: elevator_a_forward, x: 8.2, y: 6.7, yaw_deg: 90.0}
+
+# Preferred route-specific configuration. These poses are only consumed by a
+# floor_transition transaction; ordinary cold_start localization is untouched.
+# When no matching profile/prior exists, the transition uses BBS/global
+# point-cloud matching as its automatic fallback.
+transitions: []
+# transitions:
+#   - elevator_id: elevator_a
+#     from_floor: 13
+#     target_floor: 14
+#     search_radius_m: 1.5
+#     yaw_range_deg: 30.0
+#     search_xy_step_m: 0.5
+#     search_yaw_step_deg: 10.0
+#     max_nearby_candidates: 32
+#     arrival_priors:
+#       - {name: elevator_a_forward, x: 8.2, y: 6.7, yaw_deg: 90.0}
+
+maps_dir: botbrain_ws/src/g1_pkg/maps
+selector: tools/nav/select_map_scene.sh
+scene_state_file: botbrain_ws/.runtime/map_scene

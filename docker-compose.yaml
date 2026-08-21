@@ -144,6 +144,16 @@ services:
     profiles: ["navigation"]
     environment:
       MAP_SCENE: ${MAP_SCENE:-ug}
+      # Defaults preserve the existing first-start localization path. The
+      # floor switcher sets these only for an explicit cross-floor transaction.
+      LOCALIZATION_MODE: ${LOCALIZATION_MODE:-cold_start}
+      LOCALIZATION_INITIAL_POSE_PRIORS: ${LOCALIZATION_INITIAL_POSE_PRIORS:-}
+      LOCALIZATION_INITIAL_POSE_PRIOR_NAMES: ${LOCALIZATION_INITIAL_POSE_PRIOR_NAMES:-}
+      LOCALIZATION_PRIOR_SEARCH_RADIUS_M: ${LOCALIZATION_PRIOR_SEARCH_RADIUS_M:-0.35}
+      LOCALIZATION_PRIOR_YAW_RANGE_DEG: ${LOCALIZATION_PRIOR_YAW_RANGE_DEG:-12.0}
+      LOCALIZATION_PRIOR_SEARCH_XY_STEP_M: ${LOCALIZATION_PRIOR_SEARCH_XY_STEP_M:-0.35}
+      LOCALIZATION_PRIOR_SEARCH_YAW_STEP_DEG: ${LOCALIZATION_PRIOR_SEARCH_YAW_STEP_DEG:-12.0}
+      LOCALIZATION_PRIOR_MAX_NEARBY_CANDIDATES: ${LOCALIZATION_PRIOR_MAX_NEARBY_CANDIDATES:-6}
       # Keep global FPFH/RANSAC from starving the real-time FAST-LIO process.
       OMP_NUM_THREADS: "2"
       OMP_DYNAMIC: "FALSE"
@@ -153,7 +163,7 @@ services:
       # Scene selection enforces the FAST-LIO-before-localization order.
       # A second fixed delay only postpones /pcd_map visibility.
       LOCALIZATION_START_DELAY_SEC: ${LOCALIZATION_START_DELAY_SEC:-0}
-    command: ["bash", "-lc", "sleep \"$${LOCALIZATION_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_pkg localization_3d.launch.py map_scene:=\"$${MAP_SCENE}\""]
+    command: ["bash", "-lc", "sleep \"$${LOCALIZATION_START_DELAY_SEC}\" && source /opt/ros/humble/setup.bash && source /botbrain_ws/install/setup.bash && exec ros2 launch g1_pkg localization_3d.launch.py map_scene:=\"$${MAP_SCENE}\" localization_mode:=\"$${LOCALIZATION_MODE}\" initial_pose_priors_override:=\"$${LOCALIZATION_INITIAL_POSE_PRIORS}\" initial_pose_prior_names_override:=\"$${LOCALIZATION_INITIAL_POSE_PRIOR_NAMES}\" prior_search_radius_m:=\"$${LOCALIZATION_PRIOR_SEARCH_RADIUS_M}\" prior_yaw_range_deg:=\"$${LOCALIZATION_PRIOR_YAW_RANGE_DEG}\" prior_search_xy_step_m:=\"$${LOCALIZATION_PRIOR_SEARCH_XY_STEP_M}\" prior_search_yaw_step_deg:=\"$${LOCALIZATION_PRIOR_SEARCH_YAW_STEP_DEG}\" prior_max_nearby_candidates:=\"$${LOCALIZATION_PRIOR_MAX_NEARBY_CANDIDATES}\""]
     # Localization is map-specific and must be started explicitly after
     # FAST-LIO. A profile does not prevent an already-created container with
     # restart: always from auto-starting after a robot/Docker reboot.
@@ -215,7 +225,7 @@ services:
       UNITREE_SDK2_ROOT: /opt/robot_sdk
     container_name: g1_robot_manipulation
     command: ["bash", "/botbrain_ws/src/g1_manipulation_pkg/scripts/start_manipulation.sh"]
-    restart: no
+    restart: always
 
   jetson_stats:
     extends: base
