@@ -32,16 +32,31 @@ def _run_selector_filter(function_name, next_function_name, log_text):
     return result.stdout.splitlines()
 
 
-def test_open3d_directory_is_an_overridable_cache_default():
+def test_open3d_dependency_uses_vendor_install_when_present_and_system_fallback():
     source = _read("botbrain_ws/src/open3d_loc/CMakeLists.txt")
-    match = re.search(r"set\s*\(\s*Open3D_DIR\b(?P<body>.*?)\)", source, re.DOTALL)
-
+    assert 'set(OPEN3D_VENDOR_DIR "/opt/open3d/lib/cmake/Open3D")' in source
+    assert 'if(EXISTS "${OPEN3D_VENDOR_DIR}/Open3DConfig.cmake")' in source
+    assert "elseif(Open3D_DIR STREQUAL OPEN3D_VENDOR_DIR)" in source
+    assert "unset(Open3D_DIR CACHE)" in source
+    match = re.search(
+        r"set\s*\(\s*Open3D_DIR\b(?P<body>.*?)\)", source, re.DOTALL)
     assert match is not None
     definition = match.group("body")
-    assert '"/opt/open3d/lib/cmake/Open3D"' in definition
+    assert '"${OPEN3D_VENDOR_DIR}"' in definition
     assert "CACHE PATH" in definition
     assert "FORCE" not in definition
-    assert "/root/3d_nav_g1" not in source
+
+    compose = yaml.safe_load(_read("docker-compose.yaml"))
+    nav3d = compose["services"]["nav3d"]
+    assert nav3d["build"]["dockerfile"] == "docker/Dockerfile.nav3d"
+    assert nav3d["build"]["network"] == "host"
+    assert "-DOpen3D_DIR=" not in compose["services"]["builder_base"]["command"][-1]
+
+    dockerfile = _read("docker/Dockerfile.nav3d")
+    assert "libopen3d-dev" in dockerfile
+    assert dockerfile.index("apt-get install --fix-broken -y") < (
+        dockerfile.index("libopen3d-dev")
+    )
 
 
 def test_localization_launch_keeps_pcd_and_grid_map_arguments_separate():

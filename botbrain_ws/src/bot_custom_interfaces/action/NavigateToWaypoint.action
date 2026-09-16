@@ -1,0 +1,22 @@
+# Goal
+string destination
+string[] sequence
+string scene
+bool loop
+string request_id
+---
+# Result
+bool success
+string status
+string message
+string task_id
+string[] completed_waypoints
+---
+# Feedback
+string task_id
+string current_waypoint
+string state
+float32 distance_remaining
+float32 distance_to_goal
+float32 yaw_error_deg
+uint32 recoveries

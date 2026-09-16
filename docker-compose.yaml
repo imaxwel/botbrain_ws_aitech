@@ -34,6 +34,10 @@ services:
 
   nav3d:
     <<: *robot-env
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.nav3d
+      network: host
     image: botbotrobotics/botbrain:nav3d
     stdin_open: true
     tty: true
@@ -83,14 +87,14 @@ services:
           bot_state_machine \
           bot_jetson_stats \
           bot_jetson_stats_interfaces \
+          bot_voice_navigation \
           bot_rosa \
           g1_pkg \
           go2w_pkg \
           g1_manipulation_pkg \
           fast_lio \
           open3d_loc \
-          g1_loop_closure \
-          --cmake-args -DOpen3D_DIR=/opt/open3d/lib/cmake/Open3D"]
+          g1_loop_closure"]
 
   zenoh:
     image: botbotrobotics/botbrain:nav3d
@@ -238,6 +242,27 @@ services:
     container_name: g1_robot_rosa
     command: ["bash", "-lc", "source install/setup.bash && ros2 launch bot_rosa rosa.launch.py"]
     restart: always
+
+  voice_navigation:
+    extends: base
+    container_name: g1_robot_voice_navigation
+    profiles: ["voice_navigation"]
+    environment:
+      G1_DDS_INTERFACE: ${G1_DDS_INTERFACE:-enP8p1s0}
+      G1_ROBOT_NAMESPACE: ${G1_ROBOT_NAMESPACE:-g1_robot}
+      MAP_SCENE: ${MAP_SCENE:-ug}
+      G1_LLM_ENDPOINT: ${G1_LLM_ENDPOINT:-}
+      G1_LLM_API_KEY: ${G1_LLM_API_KEY:-}
+      G1_LLM_MODEL: ${G1_LLM_MODEL:-}
+      G1_TTS_ENDPOINT: ${G1_TTS_ENDPOINT:-}
+      G1_TTS_API_KEY: ${G1_TTS_API_KEY:-}
+      G1_TTS_MODEL: ${G1_TTS_MODEL:-}
+      G1_TTS_VOICE: ${G1_TTS_VOICE:-zh-CN}
+    command: ["bash", "-lc", "source install/setup.bash && exec ros2 launch bot_voice_navigation voice_navigation.launch.py"]
+    depends_on:
+      - zenoh
+      - bringup
+    restart: "no"
 
   yolo_base:
     image: botbotrobotics/botbrain:yolo

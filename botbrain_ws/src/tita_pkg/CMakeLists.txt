@@ -25,16 +25,17 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+set(_resource_directories urdf xacro launch maps config)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/meshes")
+  list(APPEND _resource_directories meshes)
+else()
+  message(WARNING
+    "${PROJECT_NAME}: meshes/ is absent; visual mesh assets will not be installed")
+endif()
+
 install(
-  DIRECTORY
-    urdf
-    meshes
-    xacro
-    launch
-    maps
-    config
-  DESTINATION
-    share/${PROJECT_NAME}/
+  DIRECTORY ${_resource_directories}
+  DESTINATION share/${PROJECT_NAME}/
 )
 
 install(PROGRAMS

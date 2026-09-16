@@ -27,6 +27,7 @@ if(BUILD_TESTING)
 endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/NavigateToWaypoint.action"
   "msg/ControllerButtonsState.msg"
   "msg/RobotStatus.msg"
   "msg/DeviceInfo.msg"
@@ -55,7 +56,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ArmCmd.srv"
   "msg/Names.msg"
   "msg/MotorTemperature.msg"
-  DEPENDENCIES std_msgs
+  DEPENDENCIES std_msgs action_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)

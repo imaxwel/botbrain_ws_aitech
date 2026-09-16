@@ -1,8 +1,11 @@
 FROM botbotrobotics/botbrain:base
-RUN apt-get update && apt-get install -y \
+RUN apt-get update \
+    && apt-get install --fix-broken -y \
+    && apt-get install -y \
     liblapacke-dev \
     libglu1-mesa-dev \
     libosmesa6-dev \
+    libopen3d-dev \
     libxi-dev \
     libudev-dev \
     && rm -rf /var/lib/apt/lists/*

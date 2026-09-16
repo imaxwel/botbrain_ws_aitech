@@ -1,0 +1,19 @@
+# Aliases are resolved against the active scene's actual nav_waypoints.yaml.
+# An alias whose target is not recorded in that scene is intentionally ignored.
+scenes:
+  ug:
+    aliases:
+      家: home
+      回家: home
+      办公室一: office1
+      办公室1: office1
+      办公室二: office2
+      办公室2: office2
+      办公室三: office3
+      办公室3: office3
+      办公室四: office4
+      办公室4: office4
+      办公室五: office5
+      办公室5: office5
+      转弯点: turn
+      转弯处: turn
