@@ -17,15 +17,21 @@ G1 本体原生 ASR 到当前 BotBrain waypoint/Nav2 的本机桥接。
 
 ## 配置
 
-```bash
-export G1_LLM_ENDPOINT="https://api.example/v1/chat/completions"
-export G1_LLM_API_KEY="..."
-export G1_LLM_MODEL="..."
-export G1_TTS_ENDPOINT="https://api.example/v1/audio/speech"
-export G1_TTS_API_KEY="..."
-export G1_TTS_MODEL="..."
-export G1_TTS_VOICE="zh-CN"
+LLM/TTS 配置位于项目的 `botbrain_ws/robot_config.yaml`：
+
+```yaml
+robot_configuration:
+  voice_navigation:
+    llm_endpoint: "https://api.example/v1/chat/completions"
+    llm_api_key: "..."
+    llm_model: "..."
+    tts_endpoint: ""
+    tts_api_key: ""
+    tts_model: ""
+    tts_voice: "zh-CN"
 ```
+
+`llm_endpoint`、`llm_api_key`、`llm_model` 为必填项。TTS 配置可留空；不配置 TTS 只会关闭语音播报，不影响 ASR、意图提取和导航。环境变量 `G1_LLM_*`、`G1_TTS_*` 仅作为兼容覆盖，不是正常部署的主配置方式。
 
 地点别名位于 `config/voice_destinations.yaml`，只会解析到当前 `nav_waypoints.yaml` 中已经实际登记的点位。当前场景由 `/botbrain_ws/.runtime/map_scene` 决定，与 `建图导航指令.md` 的运行流程一致。
 

@@ -15,6 +15,11 @@ from .cloud import CloudLLMError, CloudTTSClient, OpenAICompatibleLLM
 from .command_guard import CommandCancellationGuard
 from .destinations import DestinationResolver
 from .intent import IntentValidationError, NavigationContext, NavigationIntent
+from .runtime_config import (
+    VoiceNavigationConfig,
+    load_voice_navigation_config,
+    validate_llm_configuration,
+)
 from .speech_output import SpeechDispatcher, SpeechOutput, UnitreeAudioSink
 
 
@@ -87,15 +92,17 @@ class _NoopSink:
         return None
 
 
-def _make_speech_output(audio_client: Any | None = None) -> SpeechOutput | None:
-    endpoint = os.environ.get("G1_TTS_ENDPOINT", "").strip()
-    if not endpoint:
+def _make_speech_output(
+    config: VoiceNavigationConfig,
+    audio_client: Any | None = None,
+) -> SpeechOutput | None:
+    if not config.tts_endpoint:
         return None
     tts = CloudTTSClient(
-        endpoint=endpoint,
-        api_key=os.environ.get("G1_TTS_API_KEY", os.environ.get("G1_LLM_API_KEY", "")),
-        voice=os.environ.get("G1_TTS_VOICE", "zh-CN"),
-        model=os.environ.get("G1_TTS_MODEL", ""),
+        endpoint=config.tts_endpoint,
+        api_key=config.tts_api_key or config.llm_api_key,
+        voice=config.tts_voice,
+        model=config.tts_model,
     )
     sink = UnitreeAudioSink(
         network_interface=os.environ.get("G1_DDS_INTERFACE", "enP8p1s0"),
@@ -128,6 +135,7 @@ def main(args=None) -> None:
                 "/botbrain_ws/src/bot_voice_navigation/config/voice_destinations.yaml",
             )
             self.declare_parameter("scene_file", "/botbrain_ws/.runtime/map_scene")
+            self.declare_parameter("robot_config_file", "/botbrain_ws/robot_config.yaml")
             self.declare_parameter("asr_topic", "")
             self.declare_parameter("asr_topics", ["/audio_msg", "/rt/audio_msg"])
             self.declare_parameter("enable_native_dds_asr", True)
@@ -144,12 +152,20 @@ def main(args=None) -> None:
                 float(self.get_parameter("dedup_window_seconds").value)
             )
             self.min_confidence = float(self.get_parameter("min_intent_confidence").value)
-            self.llm = OpenAICompatibleLLM(
-                endpoint=os.environ.get("G1_LLM_ENDPOINT", ""),
-                api_key=os.environ.get("G1_LLM_API_KEY", ""),
-                model=os.environ.get("G1_LLM_MODEL", ""),
+            self.voice_config = load_voice_navigation_config(
+                os.path.expanduser(str(self.get_parameter("robot_config_file").value))
             )
-            self.speech = _make_speech_output()
+            try:
+                validate_llm_configuration(self.voice_config)
+                self._llm_config_error = ""
+            except ValueError as error:
+                self._llm_config_error = str(error)
+            self.llm = OpenAICompatibleLLM(
+                endpoint=self.voice_config.llm_endpoint,
+                api_key=self.voice_config.llm_api_key,
+                model=self.voice_config.llm_model,
+            )
+            self.speech = _make_speech_output(self.voice_config)
             self.speech_dispatcher = (
                 SpeechDispatcher(
                     self.speech,
@@ -271,8 +287,8 @@ def main(args=None) -> None:
                 active_task_id=active_task_id,
                 navigation_state="NAVIGATING" if active else "IDLE",
             )
-            if not self.llm.endpoint:
-                self.get_logger().error("G1_LLM_ENDPOINT is not configured")
+            if self._llm_config_error:
+                self.get_logger().error(self._llm_config_error)
                 return
             try:
                 intent = asyncio.run(self.llm.parse_navigation_intent(transcript.text, context))
